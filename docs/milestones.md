@@ -1,0 +1,137 @@
+# Milestone plan (M0–M7)
+
+Sequenced to **de-risk the decoder first** (the verified center of gravity), then
+build outward along the spine. Each milestone has a **goal**, **exit criteria**, the
+**hardware** it needs, and its **dominant risk** (full register in
+[`risk-register.md`](risk-register.md)).
+
+> The biggest deviation from the original sketch: **M0–M1 explicitly include getting
+> `MiSTer_MPEG2` to confirmed, stable video output.** The prior art does *not* give
+> us a working Cyclone V MPEG-2 decoder for free (see [`findings.md`](findings.md)
+> §1, §4), so "confirmed video-out" is a gate, not an assumption.
+
+---
+
+## M0 — Reproduce existing VCD/MPEG playback (baseline + toolchain)
+**Goal:** stand up the build/test environment and reproduce *known* playback so we
+have a working reference and a regression baseline.
+- Build & run the **CD-i core** and play an `mister_cdi_vcd_creator` VCD (MPEG-1) on
+  the SuperStation — confirms the toolchain, the MiSTer video-out path, and a real
+  MPEG decode end-to-end.
+- Clone **`mrchrisster/MiSTer_MPEG2`**; attempt to reproduce its referenced "prior
+  working config that produced video" (even if degraded). Document what builds, what
+  hangs.
+- Reach out to **mrchrisster / Slamy** (upstream) re: current state and
+  collaboration.
+
+**Exit:** Quartus builds a core for the SuperStation; CD-i VCD plays; a documented,
+reproducible `MiSTer_MPEG2` build (working or hanging) with notes.
+**Hardware:** SuperStation One; SD card; CRT/display. **Risk:** toolchain/core-template
+constraints.
+
+## M1 — Confirmed MPEG-2 video-out, then file → decoder via the ARM (the seam) ⟵ *gating*
+**Goal:** the de-risk gate — prove the FPGA actually **decodes MPEG-2 to correct
+video**, then prove the **ARM can feed it** over the `sd_*` seam.
+- **M1a:** get `MiSTer_MPEG2` to **confirmed, stable video output** from an on-SD
+  `.mpg` (resolve the `mem_shim`/DDR3-CMA hangs; one-PLL clocking). *This is the
+  single most important task in the project.*
+- **M1b:** drive the decoder from a **file-based MPEG-2 PS supplied by an ARM
+  userspace app** through the `sd_*` sector service (the seam) — i.e. the bytes come
+  from an ARM process, not the core's built-in loader. Validate against the
+  `mpg_streamer.sv` hardware-verified loading path.
+
+**Exit:** a known 480i MPEG-2 PS clip plays correctly, fed by an ARM process via
+`sd_*`; output is recognizable, stable, full-color. **Hardware:** SuperStation.
+**Risk:** decoder bring-up (#1); RTL seam wiring (low — proven pattern).
+
+## M2 — Live network ingest, basic play
+**Goal:** replace the ARM's local file with the **network**.
+- ARM ingest app: **TCP client** receiving **PS over TCP** from a stub Pi server →
+  ring buffer → PS demux → video ES → `sd_*` seam.
+- Stub Pi server streams a canned PS file (from `tools/`). Basic `play`/`stop` over
+  the control channel.
+- Video-first acceptable here; audio path stubbed.
+
+**Exit:** a clip streams Pi→console over the LAN and plays; decoder paces via pull;
+no buffer under/overrun at steady state. **Hardware:** SuperStation + Pi 5 + LAN.
+**Risk:** flow-control/backpressure correctness; clock-domain CDC at the seam.
+
+## M3 — DVDDumpSource end-to-end (the lossless spine)
+**Goal:** first real source; prove **field-exact lossless** path.
+- Implement **DVDDumpSource**: IFO parse → title enumeration → PGC/VOBU read →
+  **nav-pack-stripped PS passthrough** via `open(id)`.
+- Play a real title from your dumps, Pi→console, lossless. Verify field-exactness as
+  far as the current decoder output allows (full field-cadence polish is M7).
+
+**Exit:** pick a dumped DVD title in a minimal list and watch it play, field-exact,
+near-zero Pi CPU. **Hardware:** SuperStation + Pi 5 + your dumps. **Risk:** VOBU nav
+correctness; field-cadence (partial; finished M7).
+
+## M4 — Catalog/browse + two-library listing + selection (incl. NFC/Zaparoo)
+**Goal:** make it usable without a keyboard.
+- Catalog aggregator with **two separate libraries**; **badging**; control-channel
+  `browse`.
+- **HPS-side browse UI** rendering lists; selection → `play`.
+- **Disc-ID metadata** for dumps (fingerprint → lookup → TMDB; sidecar/folder
+  fallbacks; local cache).
+- **NFC/Zaparoo:** tag → `{source, id}` → `play`. Confirm Zaparoo launch surface.
+
+**Exit:** browse "DVD Dumps" as named, (ideally postered) titles; tap an NFC tag to
+launch one. **Hardware:** + NFC tags. **Risk:** Zaparoo integration specifics; UI on
+console; disc-ID match quality.
+
+## M5 — PlexSource as the second library
+**Goal:** add the transcoded library.
+- **PlexSource:** Plex API browse (posters/metadata) → catalog; `open(id)` pulls the
+  original and **`ffmpeg` transcodes to 480i MPEG-2 PS** on the Pi.
+- Surfaced as the **separate "Plex" library** with the `transcoded` badge.
+- Validate Pi CPU **alone** and **under concurrent Plex transcode** (contention flag).
+
+**Exit:** browse + play a Plex item transcoded to 480i, listed separately from dumps.
+**Hardware:** + Plex server. **Risk:** Plex private-API stability; transcode CPU
+contention.
+
+## M6 — Playback controls + seek + A/V-sync hardening
+**Goal:** real playback UX + lip-sync.
+- `pause`/`resume`/`seek{t}`; **GOP/VOBU-aligned seek** with buffer flush + decoder
+  I-frame reset (both sources).
+- **Audio on the ARM:** AC-3/MP2 decode → PCM → I2S; **slave audio to the video
+  presentation clock** via PTS (resample slew + post-seek resync). Settle the video
+  clock reference (core-exposed vblank/frame counter).
+
+**Exit:** seek lands cleanly on a keyframe with correct field parity; audio stays in
+lip-sync through play/seek/underrun on both libraries. **Hardware:** as M5. **Risk:**
+A/V sync over network; seek across GOP; possible small RTL add for a vblank tick.
+
+## M7 — 480i / 24-bit / field-cadence polish (true field-exact)
+**Goal:** the headline quality bar.
+- Lock **native 480i** output timing into the ADV7125 (correct field rate, parity,
+  porches); verify **24-bit** end-to-end (no truncation/dither).
+- **True field-exact / film cadence:** ensure interlaced field pictures and **3:2
+  pulldown** are reproduced in original cadence (decoder field order + display
+  timing + seek field-parity all consistent). For PlexSource, choose encoder field
+  settings that match 480i; for DVDDumpSource, preserve the disc's native cadence.
+- Replace `MiSTer_MPEG2`'s hardcoded 27 MHz SD assumption with correct, validated
+  480i modeline(s).
+
+**Exit:** a CRT shows native 480i, 24-bit, field-exact playback from the DVD spine;
+PlexSource looks correct at 480i. **Hardware:** SuperStation + CRT + (ideally) a
+capture/scope for field-timing verification. **Risk:** field-cadence preservation
+(#3); modeline/DAC timing.
+
+---
+
+## Future tier (OUT OF SCOPE now — design admits them)
+- **DiscSource** — live DVD from SuperDock DVD-RW, read/remuxed on the console ARM.
+- **SSDDumpSource** — VOB dumps on SuperDock NVMe, read locally.
+- Gated on owning a SuperDock and on the **parked** question of optical-as-OS-block-
+  device exposure. Neither blocks M0–M7; both are `Source` implementations behind the
+  existing interface.
+
+## Dependency notes
+- **M1a gates everything** — if the decoder can't be made to output confirmed video,
+  the project rescopes (see risk #1 contingencies). Tackle it first and hard.
+- M2–M3 depend on M1; M4 depends on M3 (needs something to list); M5 depends on M4's
+  catalog UI; M6 depends on M3/M5 (real streams); M7 hardens what M1–M6 produced.
+- Audio (D2) physically lands in **M6**, but stub the audio ES split in **M2** so the
+  PS demux is audio-aware from the start.
