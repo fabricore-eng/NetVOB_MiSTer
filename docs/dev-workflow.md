@@ -6,7 +6,9 @@ core**. The arcade specifics don't transfer; the build/sim/streaming/verificatio
 patterns do. Where this core differs from the sibling, it's called out **⚠️**.
 
 > Still planning — no build is wired up yet. This is the playbook to stand up in
-> **M0** ([`milestones.md`](milestones.md)).
+> **M0** ([`milestones.md`](milestones.md)). For unattended runs, pair this with
+> [`session-bootstrap.md`](session-bootstrap.md) (prerequisites to stage) and
+> [`autonomy.md`](autonomy.md) (the never-block run-loop).
 
 ---
 

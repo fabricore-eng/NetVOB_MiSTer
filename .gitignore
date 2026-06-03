@@ -1,0 +1,43 @@
+# Secrets / local config
+.env
+*.local
+
+# Python (service/, tools/)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# FPGA build outputs (Quartus)
+*.rbf
+*.sof
+output_files/
+db/
+incremental_db/
+*.qws
+*.rpt
+
+# Simulation / verification artifacts (keep trace dirs single-writer; don't commit)
+obj_dir/
+sim_build/
+traces/
+sim_out/
+*.vcd
+*.fst
+
+# Hardware-capture artifacts
+screenshots/
+filmstrips/
+
+# Large test media (stage out-of-repo; see docs/session-bootstrap.md)
+*.mpg
+*.vob
+*.iso
+*.chd
+*.m1v
+*.m2v
+tools/media/
+
+# OS
+.DS_Store

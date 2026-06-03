@@ -16,6 +16,10 @@ build outward along the spine. Each milestone has a **goal**, **exit criteria**,
 **Goal:** stand up the build/sim/test environment and reproduce *known* playback so we
 have a working reference and a regression baseline. (See
 [`dev-workflow.md`](dev-workflow.md) for the how.)
+- **Stage session prerequisites** ([`session-bootstrap.md`](session-bootstrap.md)): fill
+  `.env` (SSH to the SuperStation/Pi/x86 build box, Plex/TMDB creds), stage DVD test
+  dumps, set the network policy; register the SessionStart hook (`.claude/settings.json` →
+  `scripts/verify-session.sh`) so each session opens with a reachable/blocked report.
 - **Reuse the existing SuperStation build flow** from the other project (it already
   compiles and runs cores on the SuperStation — no porting/board-file blocker). Record
   its Quartus **DEVICE** target for reproducibility. See

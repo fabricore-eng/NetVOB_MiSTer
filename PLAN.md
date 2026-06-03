@@ -182,6 +182,12 @@ NetVOB_MiSTer/
 ├── README.md                 # one-paragraph intro + pointers
 ├── PLAN.md                   # this file — architecture, decisions, data flow
 ├── CLAUDE.md                 # guidance for future Claude/dev sessions
+├── .env.example              # session secrets/config template (copy → .env, gitignored)
+├── .gitignore                # ignores .env, build/sim artifacts, large test media
+├── .claude/
+│   └── hooks/session-start.sh  # SessionStart hook wrapper (register in settings.json to enable)
+├── scripts/
+│   └── verify-session.sh     # prerequisite verifier — prints reachable/blocked report
 ├── docs/
 │   ├── findings.md           # VERIFIED prior art + the injection seam (with citations)
 │   ├── service-design.md     # Pi 5 provider service + Source plugin interface
@@ -189,7 +195,9 @@ NetVOB_MiSTer/
 │   ├── catalog-browse.md     # two-library UI, badging, NFC/Zaparoo, metadata/disc-ID
 │   ├── milestones.md         # M0–M7 (+ future tier)
 │   ├── risk-register.md      # ranked risks + mitigations
-│   └── dev-workflow.md       # build / sim / HPS data paths / hardware bring-up
+│   ├── dev-workflow.md       # build / sim / HPS data paths / hardware bring-up
+│   ├── session-bootstrap.md  # AUTONOMY: what to stage up front (secrets/assets/hosts)
+│   └── autonomy.md           # AUTONOMY: the unattended run-loop (ultracode/multi-agent)
 ├── service/                  # Pi 5 provider service (code lands post-planning)
 │   ├── README.md
 │   ├── core/                 #   protocol server (PS-over-TCP), pre-buffer, control channel
@@ -244,3 +252,5 @@ Full detail, exit criteria, and per-milestone risk in
 | Milestone plan M0–M7 | [`docs/milestones.md`](docs/milestones.md) |
 | Risk register | [`docs/risk-register.md`](docs/risk-register.md) |
 | Build / sim / HPS data paths / hardware bring-up | [`docs/dev-workflow.md`](docs/dev-workflow.md) |
+| Autonomy — prerequisites to stage up front | [`docs/session-bootstrap.md`](docs/session-bootstrap.md) |
+| Autonomy — unattended run-loop (ultracode/multi-agent) | [`docs/autonomy.md`](docs/autonomy.md) |

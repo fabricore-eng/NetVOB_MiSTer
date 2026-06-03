@@ -109,8 +109,30 @@ Full operational playbook (carried over from a sibling MiSTer core, adapted):
 - **Video out:** drive the decoder's raster **`VGA_*`** for field-exact 480i → ADV7125;
   `FB_*` DDR framebuffer is the fallback/HDMI path.
 - **Pi service:** Python project under `service/` (no code yet).
-- A **SessionStart hook** to verify the toolchain (Quartus Docker reachable, Verilator,
-  `ssh mister`) should be added once code exists.
+- A **SessionStart hook** to verify prerequisites is **scaffolded**:
+  `scripts/verify-session.sh` (+ the `.claude/hooks/session-start.sh` wrapper) prints a
+  reachability/asset report (build box, `ssh mister`, Verilator/ffmpeg, `.env`, dumps,
+  submodule pins). Register it in `.claude/settings.json` to auto-run. See
+  [`docs/session-bootstrap.md`](docs/session-bootstrap.md).
+
+## Autonomy & session bootstrap
+
+This repo is set up for **long unattended runs** by a Claude Code (web) session. Two docs
+govern it:
+
+- [`docs/session-bootstrap.md`](docs/session-bootstrap.md) — **prerequisites**: every
+  secret/asset that must be staged up front because the agent can't fetch it (SSH to the
+  SuperStation/Pi/an x86 **build box**, `.env` creds, DVD test dumps, the network policy).
+  The cloud container **can't run Quartus or reach the LAN by itself** — provision a
+  reachable build box; otherwise the run is productively **sim-only**.
+- [`docs/autonomy.md`](docs/autonomy.md) — the **run-loop**: run high-effort
+  (**ultracode**) mode + **multi-agent orchestration**; advance every FPGA-independent
+  track in parallel (Pi service, ARM logic, `tools/`, **decoder sim**); launch Quartus
+  builds **detached** and sims in **background** (never block); **checkpoint via frequent
+  commits/push** (ephemeral container); climb the verification ladder (sim PNG →
+  filmstrip), one writer per trace dir, **reproduce before claiming**.
+- Read the `scripts/verify-session.sh` report **first** each session to know which
+  workstreams are unblocked.
 
 ## Git
 
