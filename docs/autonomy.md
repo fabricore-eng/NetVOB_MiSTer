@@ -18,6 +18,53 @@ FPGA-independent Pi/ARM tracks).
 
 ---
 
+## 0. Kicking off an unattended run — the `/loop` invocation
+
+An unattended run is started with **one `/loop` command** (the `loop` skill). `/loop`
+**with no interval self-paces**: it re-runs the prompt each cycle the instant the prior
+cycle's work is durably checkpointed — which is precisely the loop in §7. The canonical
+kickoff (fill the `<…>` slots):
+
+    /loop continue the core mission — <MISSION>; but FIRST enumerate every prerequisite
+    in docs/session-bootstrap.md and request anything missing from me before starting
+    build/HW work, then advance every track that needs nothing withheld; full autonomy
+    (commit/push/build/HW-test on <FEAT-BRANCH>, never main); checkpoint to memory each
+    cycle (commit+push + docs/progress.md); always use effort ultracode
+
+What each clause binds to in this playbook:
+
+| Clause | Means | See |
+|--------|-------|-----|
+| `continue the core mission — <MISSION>` | the standing objective each cycle re-derives its next action from; the loop picks the deepest unblocked step toward it | §2, §7 |
+| **`request missing prerequisites first`** | **pre-flight gate** — run `verify-session.sh`, diff vs [`session-bootstrap.md`](session-bootstrap.md), post **one** consolidated resource request (SSH to mister/Pi, `.env` creds, DVD dumps, Quartus/build box, Plex/TMDB keys…) **before** any build/HW work; never discover blockers mid-run | §6 + [`session-bootstrap.md`](session-bootstrap.md) |
+| `full autonomy (commit/push/build/HW-test …)` | don't stop for routine progress — commit, push, kick detached builds, run sims, inspect filmstrips unprompted | §3, §5 |
+| `on <FEAT-BRANCH>, never main` | hard git guardrail: every push lands on the feature branch; `main` is never written | §4 |
+| `checkpoint to memory each cycle` | end every cycle durably — **commit+push** the coherent increment AND append a dated one-liner to [`progress.md`](progress.md) | §4 |
+| `always use effort ultracode` | spend the high-effort thinking budget — claims-sensitive systems work where a shallow pass over-claims | §1 |
+
+Concrete kickoff for this repo (mission = the whole system, end-to-end on real hardware;
+resources requested first):
+
+    /loop continue the core mission — drive NetVOB_MiSTer end-to-end to a fully working
+    system on the real SuperStation/MiSTer over SSH (decoder video-out → file via the
+    sd_* seam → live PS-over-TCP from the Pi → DVDDumpSource → catalog/browse →
+    PlexSource → A/V-sync → field-exact 480i); but FIRST enumerate every prerequisite in
+    docs/session-bootstrap.md and request anything missing from me before starting
+    build/HW work, then advance every track that needs nothing withheld; full autonomy
+    (commit/push/build/HW-test on feat-decoder-bringup, never main); checkpoint to memory
+    each cycle (commit+push + docs/progress.md); always use effort ultracode
+
+After the pre-flight request, the loop runs §7 each cycle: read state → pick the deepest
+unblocked track (§2) → spawn parallel agents / kick detached builds (§1, §3) → verify up
+the ladder (§5) → checkpoint (§4) → repeat; escalate **only** for the genuinely-blocked
+few (§7).
+
+> **The "memory" the checkpoint writes to.** Primarily **git** — frequent commits/push
+> (§4; an ephemeral container makes uncommitted work = lost). Plus a short human-readable
+> trail: one dated line per cycle in [`progress.md`](progress.md) (what advanced / what's
+> blocked / what's building). **Single-writer:** only the orchestrator thread touches it,
+> never a parallel agent (§5).
+
 ## 1. Effort mode & orchestration
 
 - **Run high-effort ("ultracode") mode.** This is a planning-heavy, multi-track
@@ -161,6 +208,13 @@ autonomously vs. which are blocked** — no probing, no guessing:
 
 Knowing the blocked set up front is what makes a long unattended run possible: the
 agent spends its time on what it *can* finish instead of stalling on what it can't.
+
+**Request, don't probe** (the §0 `/loop` pre-flight clause). When the mission needs
+something the report shows missing, post **one** consolidated resource request to the
+human up front — the [`session-bootstrap.md`](session-bootstrap.md) §8 items (SSH to
+mister/Pi, `.env` creds, DVD dumps, Quartus/build box, Plex/TMDB keys) — and meanwhile
+advance only tracks that need nothing withheld. Never open a build/hardware track you'll
+have to abandon for a missing secret.
 
 ## 7. Autonomous session loop (pseudo-runbook)
 

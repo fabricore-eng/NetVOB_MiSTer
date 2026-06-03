@@ -131,6 +131,11 @@ govern it:
   builds **detached** and sims in **background** (never block); **checkpoint via frequent
   commits/push** (ephemeral container); climb the verification ladder (sim PNG →
   filmstrip), one writer per trace dir, **reproduce before claiming**.
+- **Kick off** an unattended run with a single **`/loop`** (self-paced) — the canonical
+  invocation is in [`docs/autonomy.md`](docs/autonomy.md) §0: *continue the core mission →
+  **request missing prerequisites first** → full autonomy on `<feat-branch>` (never
+  `main`) → checkpoint each cycle to git + [`docs/progress.md`](docs/progress.md) → effort
+  ultracode*.
 - Read the `scripts/verify-session.sh` report **first** each session to know which
   workstreams are unblocked.
 
