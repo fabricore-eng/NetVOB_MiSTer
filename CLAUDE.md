@@ -12,9 +12,15 @@ true 24-bit **ADV7125** analog DAC at 480i.
 The name nods to DVD's Video Object (`.VOB`) container — the same MPEG-2
 program-stream payload, streamed over the network instead of read off a disc.
 
-**Current phase: PLANNING.** The deliverable is documentation, not code. Do **not**
-write HDL or implementation code unless the milestone explicitly calls for it and
-the user asks. Start at [`PLAN.md`](PLAN.md).
+**Current phase: PLANNING → IMPLEMENTATION (authorized).** The planning deliverable
+(`PLAN.md` + `docs/`) is complete. The user has authorized building the full system,
+so **HDL and implementation code are now in scope**, driven decoder-first down the
+milestone ladder ([`docs/milestones.md`](docs/milestones.md)). Implementation runs as an
+unattended **`/loop`** on the `feat-decoder-bringup` branch — read
+[`docs/autonomy.md`](docs/autonomy.md) §0 (the kickoff) **first**, and honor its
+**pre-flight: request every missing prerequisite (per
+[`docs/session-bootstrap.md`](docs/session-bootstrap.md)) before any build/HW work.**
+Start at [`PLAN.md`](PLAN.md).
 
 ## Ground rules
 
