@@ -82,12 +82,34 @@ non-issue. Ranked alternatives (DDR ring, `ioctl`+`ioctl_wait`) in
   userspace daemon that feeds the existing mechanism.
 - Don't invent module/signal names — use the verified ones or mark them as proposed.
 
-## Build/test (to be filled in as milestones land)
+## Build/test workflow
 
-- FPGA: Intel Quartus (Cyclone V), MiSTer core template. No build wired up yet.
-- Pi service: Python project under `service/` (no code yet).
-- Test harness: canned MPEG-2 PS streams + a disc-ID utility under `tools/`.
-- A **SessionStart hook** to verify the toolchain should be added once code exists.
+Full operational playbook (carried over from a sibling MiSTer core, adapted):
+[`docs/dev-workflow.md`](docs/dev-workflow.md). Key facts:
+
+- **⚠️ Device target is unsettled.** DE10-Nano = Cyclone V SE `5CSEBA6U23I7` (the
+  sibling project's target); SuperStation One = Cyclone V SX `5CSXFC6D6F31I7N`
+  (different package). Bitstreams are part/pin-specific, so DE10-Nano `.rbf` won't
+  load as-is — final builds need the SuperStation's board-support `sys/`. Develop on
+  DE10-Nano-class first (toolchain transfers verbatim), port at the end. Confirm in M0.
+- **FPGA build:** Quartus Prime Lite **17.0.x** (x86-only); use Docker
+  `raetro/quartus:17.0`; launch remote builds **detached** (`setsid nohup … &`);
+  ~30 min, single-thread-bound. `TOP_LEVEL_ENTITY sys_top`; `sys.tcl` sets the DEVICE.
+- **Sim first (the #1 de-risk):** `mpeg2fpga` is Verilog, CD-i is SystemVerilog →
+  **Verilator**. Reuse `mpeg2fpga`'s `bench/conformance` and **dump a framebuffer PNG**
+  to validate decode (incl. interlaced) *before* building a bitstream. One writer per
+  trace dir; never claim a milestone from a single run.
+- **Hardware loop:** `ssh mister`; `/dev/MiSTer_cmd` (`load_core`, `Mount`,
+  `screenshot`). For this `sd_*`-streaming core, hands-off test = **`Mount` a vdisk
+  with a test clip** (not `.mra`/ioctl); verify with a **filmstrip** burst, not single
+  shots.
+- **Vendoring:** `core/` vendors `MiSTer_MPEG2` + MiSTer `sys/` + the CD-i core as
+  **submodules pinned to a SHA**, with our edits as **re-appliable patch files**.
+- **Video out:** drive the decoder's raster **`VGA_*`** for field-exact 480i → ADV7125;
+  `FB_*` DDR framebuffer is the fallback/HDMI path.
+- **Pi service:** Python project under `service/` (no code yet).
+- A **SessionStart hook** to verify the toolchain (Quartus Docker reachable, Verilator,
+  `ssh mister`) should be added once code exists.
 
 ## Git
 

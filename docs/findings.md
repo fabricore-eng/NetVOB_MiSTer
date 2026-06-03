@@ -90,6 +90,10 @@ is unchanged.
 - **Reference platform:** Xilinx **ML505 / Virtex-5 XC5VLX50T**, decoder ~50% of the
   FPGA, 75 MHz decoder clock. → **Cyclone V resource/timing fit is a porting risk**
   (BlockRAM shapes, multipliers, DDR latency differ from Virtex-5).
+- **Conformance bench — CONFIRMED (a de-risk lever):** `bench/conformance` ("`make
+  clean test` simulates all MP@ML conformance test bitstreams"). It's Verilog → drive
+  it under **Verilator** and dump decoded frames to **PNG** to validate decode (incl.
+  interlaced) *before* building a bitstream. See [`dev-workflow.md`](dev-workflow.md) §5.
 
 ---
 
@@ -233,6 +237,18 @@ scaler.cpp}`.
 
 **Decision:** standardize on **Seam #1** (matches `MiSTer_MPEG2` and the CD-i core;
 lowest RTL risk). Keep Seam #2 as the escape hatch for latency/buffering.
+
+### Output integration (the other seam — decoded video → DAC)
+Two ways to get decoded frames to the ADV7125:
+- **Raster `VGA_*` (RECOMMENDED):** the decoder already produces a pixel raster
+  (`mpeg2fpga` `syncgen`; CD-i `frameplayer`) → MiSTer `VGA_R/G/B` + `VGA_HS/VS/DE` +
+  `CE_PIXEL`/`CLK_VIDEO` → `sys/` routes to the analog DAC. **Best for field-exact
+  native 480i** (you own the interlaced timing/parity into the DAC).
+- **`FB_*` DDR framebuffer (fallback/HDMI):** write frames to DDR3 and hand them to the
+  MiSTer scaler (`FB_EN`/`FB_BASE`/`FB_FORMAT`/`FB_WIDTH/HEIGHT`). Easiest first
+  picture, but the scaler scandoubles/scales — harder to guarantee field-exact 480i.
+
+Detail + decision rationale: [`dev-workflow.md`](dev-workflow.md) §3.1.
 
 ---
 

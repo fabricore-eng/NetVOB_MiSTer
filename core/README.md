@@ -1,25 +1,52 @@
 # core/ — FPGA MPEG-2 decoder core (Cyclone V)
 
 A fork of **`mrchrisster/MiSTer_MPEG2`** (which wraps the BSD **`mpeg2fpga`** decoder
-by Koen De Vleeschauwer) targeted at the SuperStation One.
+by Koen De Vleeschauwer) targeted at the SuperStation One. Decode runs **in fabric**,
+independent of the HPS.
 
-> **No RTL imported yet — planning phase.** Findings + the injection seam:
-> [`../docs/findings.md`](../docs/findings.md).
+> **No RTL imported yet — planning phase.** Findings + injection seam:
+> [`../docs/findings.md`](../docs/findings.md). Build/sim/bring-up playbook:
+> [`../docs/dev-workflow.md`](../docs/dev-workflow.md).
 
-Key facts to carry forward (verified — see findings.md):
+## Vendoring (planned)
+Vendor big deps as **git submodules pinned to a SHA**; keep our edits as **isolated,
+re-appliable patch files** (`git apply`) + an idempotent `apply_patches.sh`. The pin
+never moves and our diffs stay upstream-offer-able. Vendor:
+- `mrchrisster/MiSTer_MPEG2` — the port we build on (`mpg_streamer.sv`, `mem_shim.sv`).
+- MiSTer `sys/` framework (board support / `sys_top` / `hps_io`).
+- `MiSTer-devel/CDi_MiSTer` — reference for the demux→FIFO→decode→vblank→video-out flow.
+
+## Key facts to carry forward (verified — see findings.md)
 - **Input:** decoder ingests video **ES** (`stream_data[7:0]` + `stream_valid`,
   buffered by `vbuf`/`getbits`). The ARM feeds it via the **`sd_*` CD-sector seam**
-  (`mpg_streamer.sv` already does this, hardware-verified).
-- **Output:** raster **RGB/YCbCr** bus (`r/g/b`, `pixel_en`, `h_sync`/`v_sync`,
-  `dot_clk`) → standard MiSTer `VGA_*` → **ADV7125** 24-bit DAC. Follow the CD-i
-  core's vblank-latched output shape.
-- **External RAM:** frame store + circular buffer via **f2sdram/DDR3**
+  (`mpg_streamer.sv`, hardware-verified loading). Pull-paced.
+- **Output — drive `VGA_*` (decision):** the decoder's own raster (`r/g/b`, `pixel_en`,
+  `h_sync`/`v_sync`, `dot_clk`) → MiSTer `VGA_*` → **ADV7125** 24-bit DAC, for
+  **field-exact native 480i**. The **`FB_*` DDR-framebuffer→scaler** path is the
+  fallback / HDMI option (easier to get *a* picture, harder to guarantee field-exact
+  480i). Follow the CD-i `frameplayer` vblank-latched shape.
+- **External RAM:** frame store + circular bitstream buffer via **f2sdram/DDR3**
   (`mem_shim.sv`: 24 MB CMA @ `0x30000000`; SD/480i needs ~4 MB — comfortable).
 - **State of upstream:** data path verified, **video output NOT yet confirmed** →
-  M1a is "reach confirmed, stable video-out." All clocks from **one PLL**.
-- **Target:** native **480i**, 24-bit, **field-exact** (interlaced output is
-  supported by `mpeg2fpga`; field-exactness is the M7 validation goal). Replace the
-  hardcoded 27 MHz SD clock with a validated 480i modeline.
+  M1a = "reach confirmed, stable video-out." All clocks from **one PLL**.
+- **Target:** native **480i**, 24-bit, **field-exact** (`mpeg2fpga` supports interlaced
+  output; field-exactness is the M7 goal). Replace the hardcoded 27 MHz SD clock with a
+  validated 480i modeline.
 
-License: confirm the exact **BSD** variant of `mpeg2fpga` before redistribution.
-Coordinate with upstream (mrchrisster, and Slamy for the CD-i reference).
+## ⚠️ Device target (build-critical)
+- DE10-Nano = Cyclone V SE `5CSEBA6U23I7` (672-pin); SuperStation = Cyclone V SX
+  `5CSXFC6D6F31I7N` (896-pin). **Bitstreams are part/pin-specific** — DE10-Nano `.rbf`
+  won't load as-is on the SuperStation; "cores run unmodified" means Retro Remake
+  **recompiles** against a board-specific `sys/`. Develop on DE10-Nano (toolchain
+  transfers verbatim) and/or obtain the SuperStation board files; set `sys.tcl`'s DEVICE
+  accordingly. Resolve in M0.
+
+## Sim (the #1 de-risk)
+`mpeg2fpga` is **Verilog**, CD-i is **SystemVerilog** → **Verilator**. Reuse
+`mpeg2fpga`'s `bench/conformance` (MP@ML conformance bitstreams) and **dump a decoded-
+frame PNG** to validate decode (incl. interlaced) before building a bitstream. One
+writer per trace dir; reproduce before claiming.
+
+## License / upstream
+Confirm the exact **BSD** variant of `mpeg2fpga` before redistribution. Coordinate with
+upstream (mrchrisster — also authors the VCD creator; Slamy for the CD-i reference).

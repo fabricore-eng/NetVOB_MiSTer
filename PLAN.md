@@ -154,6 +154,10 @@ mid-2026. Tracked as a **future** risk, not a current blocker.
   8-bit = true 24-bit RGB/component DAC). Built-in **NFC/Zaparoo** reader, Wi-Fi/BT,
   dual PS1 SNAC. Built by Retro Remake (Taki Udon). *480i is a property of the
   core's video timing driving the DAC, not of the DAC itself.*
+  **⚠️ Build-critical caveat:** this SX part differs from the DE10-Nano's SE
+  `5CSEBA6U23I7`, so bitstreams aren't interchangeable — building for the SuperStation
+  needs its board-support `sys/`. Develop on a DE10-Nano and port, or obtain board
+  files. See [`docs/dev-workflow.md`](docs/dev-workflow.md) §0 and risk #6.
 - **Raspberry Pi 5:** quad Cortex-A76 ~2.4 GHz, BCM2712. **HEVC 4Kp60 hardware
   decode only**; **no** hardware H.264 decode, **no** hardware encode, **no** MPEG-2
   hardware. → **MPEG-2 encode is software** (`ffmpeg mpeg2video`); one SD stream
@@ -181,7 +185,8 @@ NetVOB_MiSTer/
 │   ├── transport.md          # PS-over-TCP decision; buffering / flow-control / A-V sync
 │   ├── catalog-browse.md     # two-library UI, badging, NFC/Zaparoo, metadata/disc-ID
 │   ├── milestones.md         # M0–M7 (+ future tier)
-│   └── risk-register.md      # ranked risks + mitigations
+│   ├── risk-register.md      # ranked risks + mitigations
+│   └── dev-workflow.md       # build / sim / HPS data paths / hardware bring-up
 ├── service/                  # Pi 5 provider service (code lands post-planning)
 │   ├── README.md
 │   ├── core/                 #   protocol server (PS-over-TCP), pre-buffer, control channel
@@ -235,3 +240,4 @@ Full detail, exit criteria, and per-milestone risk in
 | Catalog/browse + badging + NFC + metadata/disc-ID | [`docs/catalog-browse.md`](docs/catalog-browse.md) |
 | Milestone plan M0–M7 | [`docs/milestones.md`](docs/milestones.md) |
 | Risk register | [`docs/risk-register.md`](docs/risk-register.md) |
+| Build / sim / HPS data paths / hardware bring-up | [`docs/dev-workflow.md`](docs/dev-workflow.md) |

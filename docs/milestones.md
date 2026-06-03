@@ -13,36 +13,51 @@ build outward along the spine. Each milestone has a **goal**, **exit criteria**,
 ---
 
 ## M0 — Reproduce existing VCD/MPEG playback (baseline + toolchain)
-**Goal:** stand up the build/test environment and reproduce *known* playback so we
-have a working reference and a regression baseline.
-- Build & run the **CD-i core** and play an `mister_cdi_vcd_creator` VCD (MPEG-1) on
-  the SuperStation — confirms the toolchain, the MiSTer video-out path, and a real
-  MPEG decode end-to-end.
+**Goal:** stand up the build/sim/test environment and reproduce *known* playback so we
+have a working reference and a regression baseline. (See
+[`dev-workflow.md`](dev-workflow.md) for the how.)
+- **⚠️ Settle the device target** (build-critical): confirm the SuperStation's
+  `5CSXFC6D6F31I7N` board-support files (its `sys/`, pins, analog/ADV7125 wiring) vs.
+  developing on a DE10-Nano (`5CSEBA6U23I7`, sibling toolchain transfers verbatim) and
+  porting at the end. Get the board files from Retro Remake / Taki Udon if going direct.
+- **Toolchain:** Quartus 17.0.x via Docker `raetro/quartus:17.0`, detached remote
+  builds + log dashboard; **Verilator** sim; `ssh mister` + `/dev/MiSTer_cmd`
+  (`load_core`/`Mount`/`screenshot`) + a **filmstrip** burst tool.
+- **Vendoring:** set up `core/` with `MiSTer_MPEG2` + MiSTer `sys/` + the CD-i core as
+  **submodules pinned to a SHA**, edits as re-appliable patches.
+- Build & run the **CD-i core** and play an `mister_cdi_vcd_creator` VCD (MPEG-1) —
+  confirms the toolchain, the MiSTer video-out path, and a real MPEG decode end-to-end.
+- **Sim baseline:** get `mpeg2fpga`'s `bench/conformance` running under Verilator and
+  **dump a decoded-frame PNG** — establishes the "see a frame before a bitstream" rung.
 - Clone **`mrchrisster/MiSTer_MPEG2`**; attempt to reproduce its referenced "prior
-  working config that produced video" (even if degraded). Document what builds, what
-  hangs.
-- Reach out to **mrchrisster / Slamy** (upstream) re: current state and
-  collaboration.
+  working config that produced video." Document what builds, what hangs.
+- Reach out to **mrchrisster / Slamy** (upstream) re: current state and collaboration.
 
-**Exit:** Quartus builds a core for the SuperStation; CD-i VCD plays; a documented,
-reproducible `MiSTer_MPEG2` build (working or hanging) with notes.
-**Hardware:** SuperStation One; SD card; CRT/display. **Risk:** toolchain/core-template
-constraints.
+**Exit:** Quartus builds a core for the chosen board; CD-i VCD plays on hardware
+(verified by filmstrip); the `mpeg2fpga` conformance sim emits a correct decoded-frame
+PNG; a documented, reproducible `MiSTer_MPEG2` build with notes.
+**Hardware:** SuperStation One (and/or DE10-Nano); SD card; CRT/display. **Risk:**
+device-target/board-support; toolchain/core-template constraints.
 
 ## M1 — Confirmed MPEG-2 video-out, then file → decoder via the ARM (the seam) ⟵ *gating*
 **Goal:** the de-risk gate — prove the FPGA actually **decodes MPEG-2 to correct
 video**, then prove the **ARM can feed it** over the `sd_*` seam.
-- **M1a:** get `MiSTer_MPEG2` to **confirmed, stable video output** from an on-SD
-  `.mpg` (resolve the `mem_shim`/DDR3-CMA hangs; one-PLL clocking). *This is the
-  single most important task in the project.*
+- **M1a:** get `MiSTer_MPEG2` to **confirmed, stable video output**. *Sim first:* run
+  the full decoder in Verilator on a known clip and **dump a correct decoded-frame
+  PNG** (cheap, no 30-min bitstream) — then build and confirm on hardware from an
+  on-board `.mpg` (resolve the `mem_shim`/DDR3-CMA hangs; one-PLL clocking), verified
+  by **filmstrip**. *The single most important task in the project.*
 - **M1b:** drive the decoder from a **file-based MPEG-2 PS supplied by an ARM
-  userspace app** through the `sd_*` sector service (the seam) — i.e. the bytes come
-  from an ARM process, not the core's built-in loader. Validate against the
-  `mpg_streamer.sv` hardware-verified loading path.
+  userspace app** through the `sd_*` sector service (the seam). Hands-off hardware
+  test: **`Mount` a vdisk** containing the clip (this exercises the production
+  sector path; M2 only swaps the image for the network ring buffer). Validate against
+  the `mpg_streamer.sv` hardware-verified loading path.
 
-**Exit:** a known 480i MPEG-2 PS clip plays correctly, fed by an ARM process via
-`sd_*`; output is recognizable, stable, full-color. **Hardware:** SuperStation.
-**Risk:** decoder bring-up (#1); RTL seam wiring (low — proven pattern).
+**Exit:** the decoder emits a correct frame **in sim (PNG)**; then a known 480i MPEG-2
+PS clip plays on hardware, fed by an ARM process via `sd_*`, recognizable/stable/
+full-color (filmstrip-verified, reproduced — not a single lucky run).
+**Hardware:** SuperStation (and/or DE10-Nano). **Risk:** decoder bring-up (#1); RTL
+seam wiring (low — proven pattern).
 
 ## M2 — Live network ingest, basic play
 **Goal:** replace the ARM's local file with the **network**.
