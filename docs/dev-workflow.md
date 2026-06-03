@@ -10,24 +10,25 @@ patterns do. Where this core differs from the sibling, it's called out **⚠️*
 
 ---
 
-## 0. Build target — reuse the existing SuperStation flow
+## 0. Build target — stock MiSTer, confirmed
 
-The other project **already compiles MiSTer cores and runs them on the SuperStation
-One**, so that proven flow is our flow. There is **no portability problem to solve and
-no DE10-Nano required** — M0 just stands our core up in the existing setup (Quartus
-17.0.x, the `sys/` it uses, the deploy path).
+**Confirmed:** the build target is the **standard MiSTer device `5CSEBA6U23I7`**
+(Cyclone V, 672-pin UFBGA, speed grade 7 — the DE10-Nano part), set identically in the
+project `.qsf` and **stock `sys/sys.tcl`** (`FAMILY "Cyclone V"` / `DEVICE
+5CSEBA6U23I7`). The `sys/` is an unmodified snapshot of **Template_MiSTer's `sys/`**
+(`sys_top.v` + `sys.qip` + `sys.tcl`) — **not** a SuperStation-specific framework. The
+other project compiles exactly this way and runs the result on the SuperStation One.
 
-- One detail worth **recording** (not a blocker): a compiled `.rbf` is built for a
-  specific FPGA device, so note the working build's Quartus **DEVICE** target — the
-  `.qsf`/`sys.tcl` line, or whether a SuperStation-specific `sys/` is used. Most likely
-  it's the standard MiSTer target (`5CSEBA6U23I7`), in which case the same `.rbf` also
-  runs on a DE10-Nano; if instead it's a SuperStation-specific `sys/`, you already have
-  it. We set ours to match and build for the SuperStation directly.
-- A DE10-Nano remains **optional** (a handy second test rig), not needed.
-- *Correction:* an earlier draft inferred a DE10-Nano/SuperStation bitstream
-  incompatibility from tech-press part-number specs (`5CSXFC6D6F31I7N` vs
-  `5CSEBA6U23I7`). The working build's hands-on result supersedes that — treat the
-  press part number as the unverified claim, not the proven flow.
+- → For all build purposes the **SuperStation IS the standard MiSTer target**: use the
+  stock Template_MiSTer `sys/`, target `5CSEBA6U23I7`, and the `.rbf` runs on the
+  SuperStation **and** a DE10-Nano interchangeably. No SuperStation-specific board
+  support to obtain; a DE10-Nano is just an optional second test rig.
+- Any SuperStation-vs-DE10-Nano difference would be at most **board-level pin
+  assignments**, never the device — and the stock framework covers it.
+- *Note:* tech-press lists the FPGA as `5CSXFC6D6F31I7N`; that's contradicted by the
+  working `5CSEBA6U23I7` build running on the SuperStation, so treat the press part
+  number as unreliable. (An earlier draft's "bitstreams incompatible" inference from it
+  was wrong.)
 
 ---
 

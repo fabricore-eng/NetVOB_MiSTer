@@ -34,10 +34,11 @@ never moves and our diffs stay upstream-offer-able. Vendor:
   validated 480i modeline.
 
 ## Build target
-Reuse the existing, proven SuperStation build flow from the other project (it already
-compiles and runs cores on the SuperStation). Record its Quartus **DEVICE** target /
-`sys/` for reproducibility and set ours to match. No porting/board-file blocker; a
-DE10-Nano is optional. See [`../docs/dev-workflow.md`](../docs/dev-workflow.md) §0.
+Standard MiSTer device **`5CSEBA6U23I7`** (DE10-Nano part) with the **stock
+Template_MiSTer `sys/`** — *confirmed* to compile and run on the SuperStation (the other
+project does exactly this; the SuperStation is the standard MiSTer target, a DE10-Nano
+is interchangeable). Tech-press's `5CSXFC6D6F31I7N` is contradicted by the working
+build. See [`../docs/dev-workflow.md`](../docs/dev-workflow.md) §0.
 
 ## Sim (the #1 de-risk)
 `mpeg2fpga` is **Verilog**, CD-i is **SystemVerilog** → **Verilator**. Reuse

@@ -5,9 +5,10 @@
 > (`.VOB`) container — the same MPEG-2 program-stream payload, streamed over the
 > network instead of read off a disc.
 
-**Target device:** SuperStation One (Intel Cyclone V SX `5CSXFC6D6F31I7N`,
+**Target device:** SuperStation One — for build purposes the standard MiSTer Intel
+Cyclone V **`5CSEBA6U23I7`** (DE10-Nano part; confirmed build target, see §3),
 dual-core ARM Cortex-A9 @ 800 MHz HPS, 128 MB SDRAM, MiSTer-compatible, true
-24-bit **ADV7125** analog DAC) outputting **480i component**.
+24-bit **ADV7125** analog DAC, outputting **480i component**.
 
 **Status:** Planning. No HDL/implementation code yet. This document and the files
 under [`docs/`](docs/) are the deliverable.
@@ -149,16 +150,17 @@ mid-2026. Tracked as a **future** risk, not a current blocker.
 
 ## 3. Hardware context (verified)
 
-- **SuperStation One:** Cyclone V SX `5CSXFC6D6F31I7N`, dual A9 @ 800 MHz, ~110K
-  LE, **128 MB SDRAM**, runs **stock MiSTer**. Analog out via **ADV7125** (triple
-  8-bit = true 24-bit RGB/component DAC). Built-in **NFC/Zaparoo** reader, Wi-Fi/BT,
-  dual PS1 SNAC. Built by Retro Remake (Taki Udon). *480i is a property of the
-  core's video timing driving the DAC, not of the DAC itself.* (Tech-press lists the
-  FPGA as `5CSXFC6D6F31I7N`; the **working build's Quartus DEVICE target is
-  authoritative** for our compile.)
-  **Build target:** the other project already compiles MiSTer cores and runs them on
-  the SuperStation, so M0 reuses that proven flow (no porting/board-file blocker); just
-  record its DEVICE target. See [`docs/dev-workflow.md`](docs/dev-workflow.md) §0.
+- **SuperStation One:** **build target = `5CSEBA6U23I7`** (standard MiSTer/DE10-Nano
+  Cyclone V part, 672-pin, sg7 — *confirmed*: the other project's stock-`sys/` build
+  targets it and runs on the SuperStation), dual A9 @ 800 MHz, ~110K LE, **128 MB
+  SDRAM**, runs **stock MiSTer**. Analog out via **ADV7125** (triple 8-bit = true
+  24-bit RGB/component DAC). Built-in **NFC/Zaparoo** reader, Wi-Fi/BT, dual PS1 SNAC.
+  Built by Retro Remake (Taki Udon). *480i is a property of the core's video timing
+  driving the DAC, not of the DAC itself.* (For build purposes the SuperStation **is**
+  the standard MiSTer target — stock Template_MiSTer `sys/`, DE10-Nano interchangeable;
+  any difference is at most board-level pins. Tech-press's `5CSXFC6D6F31I7N` is
+  contradicted by the working build — unreliable. See
+  [`docs/dev-workflow.md`](docs/dev-workflow.md) §0.)
 - **Raspberry Pi 5:** quad Cortex-A76 ~2.4 GHz, BCM2712. **HEVC 4Kp60 hardware
   decode only**; **no** hardware H.264 decode, **no** hardware encode, **no** MPEG-2
   hardware. → **MPEG-2 encode is software** (`ffmpeg mpeg2video`); one SD stream

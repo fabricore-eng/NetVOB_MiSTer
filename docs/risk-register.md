@@ -69,9 +69,9 @@ artifacts or wrong field parity.
 
 ### 6. 🟡 MiSTer core-template / CMA / DDR3 constraints
 24 MB CMA, shared DDR3, clock-domain discipline (all clocks from one PLL), and fitting
-the decoder on the part. *(No device/board-support blocker: the other project already
-compiles cores and runs them on the SuperStation, so we reuse that proven flow — just
-record its Quartus DEVICE target. See [`dev-workflow.md`](dev-workflow.md) §0.)*
+the decoder on the part. *(No device/board-support blocker: confirmed standard MiSTer
+`5CSEBA6U23I7` target with stock `sys/`, runs on the SuperStation — a DE10-Nano is
+interchangeable. See [`dev-workflow.md`](dev-workflow.md) §0.)*
 - **Mitigation:** inherit `MiSTer_MPEG2`'s CMA/DDR3 mapping (`{7'b0011000, addr}` @
   `0x30000000`); SD frame stores are small; stay within `DDRAM_*`/`hps_io` conventions;
   one PLL from the start.

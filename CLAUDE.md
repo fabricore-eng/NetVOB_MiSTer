@@ -87,10 +87,11 @@ non-issue. Ranked alternatives (DDR ring, `ioctl`+`ioctl_wait`) in
 Full operational playbook (carried over from a sibling MiSTer core, adapted):
 [`docs/dev-workflow.md`](docs/dev-workflow.md). Key facts:
 
-- **Build target:** reuse the existing, proven SuperStation build flow from the user's
-  other project (it already compiles and runs cores on the SuperStation — no porting or
-  board-file blocker). Record its Quartus DEVICE target for reproducibility; a DE10-Nano
-  is optional. (An earlier spec-sheet-based incompatibility concern was retracted — see
+- **Build target:** the standard MiSTer device **`5CSEBA6U23I7`** (DE10-Nano part) with
+  the stock Template_MiSTer `sys/` — *confirmed* to compile and run on the SuperStation
+  (the user's other project does exactly this). The SuperStation IS the standard MiSTer
+  target; a DE10-Nano is interchangeable. (Tech-press's `5CSXFC6D6F31I7N` is contradicted
+  by the working build; an earlier incompatibility concern was retracted — see
   `docs/dev-workflow.md` §0.)
 - **FPGA build:** Quartus Prime Lite **17.0.x** (x86-only); use Docker
   `raetro/quartus:17.0`; launch remote builds **detached** (`setsid nohup … &`);
