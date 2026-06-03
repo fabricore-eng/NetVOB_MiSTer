@@ -11,6 +11,15 @@ download must be staged by a human first.
 > **PREREQUISITES / ASSETS** — what to provision, not how to run. Read the
 > SessionStart hook report (§7) first, then this checklist (§8) is the human's job.
 
+> **Web vs. local.** This doc (and [`autonomy.md`](autonomy.md)) targets **autonomous
+> Claude Code on the web** — an ephemeral cloud container behind a network policy, which
+> is why a *remote* build box + LAN egress are emphasized. In a **local** CLI session on
+> your own machine those mostly relax: you typically have **direct LAN access** to the
+> SuperStation/Pi and may run **Quartus locally**, so the build-box and network-policy
+> items become optional. What still matters locally: **`.env` creds, staged DVD dumps,
+> and the toolchain** (Verilator/ffmpeg/Docker). The SessionStart hook auto-runs **only
+> on web** (`CLAUDE_CODE_REMOTE`); locally, just run `scripts/verify-session.sh` by hand.
+
 Legend used throughout:
 
 - ✅ **STAGE** — a human must provision this; the agent **cannot** obtain it on its own.
