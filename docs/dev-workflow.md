@@ -10,26 +10,24 @@ patterns do. Where this core differs from the sibling, it's called out **⚠️*
 
 ---
 
-## 0. ⚠️ Device target — resolve before any bitstream (build-critical)
+## 0. Build target — reuse the existing SuperStation flow
 
-- **DE10-Nano** (canonical MiSTer dev board): Cyclone V **SE** `5CSEBA6U23I7`
-  (672-pin), Quartus **17.0.x** Lite. The sibling project's exact target.
-- **SuperStation One** (our deployment target): Cyclone V **SX**
-  `5CSXFC6D6F31I7N` (896-pin, +transceivers/PCIe). **Different package/pinout.**
-- **Bitstreams are part/pin-specific** → a DE10-Nano `.rbf` does **not** load as-is on
-  the SuperStation. "Cores run unmodified" almost certainly means Retro Remake
-  **recompiles** cores against a **board-specific `sys/`** (pin assignments, PLLs,
-  the analog/ADV7125 wiring), not binary compatibility.
-- **Action (M0):** decide the dev path —
-  1. **Develop on a DE10-Nano** if one is available: the entire sibling toolchain
-     (Quartus 17.0.x Docker, NVC/Verilator sim, `.mra`/`Mount` autoload, SSH/filmstrip)
-     transfers verbatim; port to the SuperStation device at the end; **and/or**
-  2. **Obtain the SuperStation board support** (its `sys_top`/QSF/`sys.tcl` device +
-     pin + analog-out definitions) from Retro Remake / Taki Udon and target
-     `5CSXFC6D6F31I7N` directly.
-- `MiSTer_MPEG2` targets generic MiSTer (DE10-Nano), so option 1 is the natural
-  bring-up path; the SuperStation port is a separate, late step. Tracked as a risk
-  in [`risk-register.md`](risk-register.md).
+The other project **already compiles MiSTer cores and runs them on the SuperStation
+One**, so that proven flow is our flow. There is **no portability problem to solve and
+no DE10-Nano required** — M0 just stands our core up in the existing setup (Quartus
+17.0.x, the `sys/` it uses, the deploy path).
+
+- One detail worth **recording** (not a blocker): a compiled `.rbf` is built for a
+  specific FPGA device, so note the working build's Quartus **DEVICE** target — the
+  `.qsf`/`sys.tcl` line, or whether a SuperStation-specific `sys/` is used. Most likely
+  it's the standard MiSTer target (`5CSEBA6U23I7`), in which case the same `.rbf` also
+  runs on a DE10-Nano; if instead it's a SuperStation-specific `sys/`, you already have
+  it. We set ours to match and build for the SuperStation directly.
+- A DE10-Nano remains **optional** (a handy second test rig), not needed.
+- *Correction:* an earlier draft inferred a DE10-Nano/SuperStation bitstream
+  incompatibility from tech-press part-number specs (`5CSXFC6D6F31I7N` vs
+  `5CSEBA6U23I7`). The working build's hands-on result supersedes that — treat the
+  press part number as the unverified claim, not the proven flow.
 
 ---
 

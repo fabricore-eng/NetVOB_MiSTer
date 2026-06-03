@@ -254,10 +254,12 @@ Detail + decision rationale: [`dev-workflow.md`](dev-workflow.md) §3.1.
 
 ## 6. Hardware facts — **CONFIRMED** (see PLAN §3 for the short version)
 
-- **SuperStation One:** Cyclone V SX `5CSXFC6D6F31I7N`, dual A9 @ 800 MHz, ~110K LE,
-  **128 MB SDRAM**, stock MiSTer, **ADV7125** triple-8-bit (24-bit) analog DAC,
-  built-in NFC/Zaparoo, Wi-Fi/BT, dual PS1 SNAC. Retro Remake / Taki Udon. *"480i"
-  is set by the core's video timing, not the DAC.*
+- **SuperStation One:** Cyclone V SX `5CSXFC6D6F31I7N` *(part per tech-press →
+  PARTIALLY CONFIRMED; the user's working build already compiles/runs cores on the
+  SuperStation, and that build's Quartus DEVICE target is authoritative for our
+  compile)*, dual A9 @ 800 MHz, ~110K LE, **128 MB SDRAM**, stock MiSTer, **ADV7125**
+  triple-8-bit (24-bit) analog DAC, built-in NFC/Zaparoo, Wi-Fi/BT, dual PS1 SNAC.
+  Retro Remake / Taki Udon. *"480i" is set by the core's video timing, not the DAC.*
 - **SuperDock:** DVD-RW (tray), NVMe M.2 2280 (unpopulated), USB-C "PC Mode" — all
   CONFIRMED. Disc loading is per-system "firmware work" (PS1, Sega CD, Saturn
   preliminary). **Optical-drive-as-OS-block-device: UNDOCUMENTED (parked).**

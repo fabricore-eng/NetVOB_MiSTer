@@ -87,11 +87,11 @@ non-issue. Ranked alternatives (DDR ring, `ioctl`+`ioctl_wait`) in
 Full operational playbook (carried over from a sibling MiSTer core, adapted):
 [`docs/dev-workflow.md`](docs/dev-workflow.md). Key facts:
 
-- **⚠️ Device target is unsettled.** DE10-Nano = Cyclone V SE `5CSEBA6U23I7` (the
-  sibling project's target); SuperStation One = Cyclone V SX `5CSXFC6D6F31I7N`
-  (different package). Bitstreams are part/pin-specific, so DE10-Nano `.rbf` won't
-  load as-is — final builds need the SuperStation's board-support `sys/`. Develop on
-  DE10-Nano-class first (toolchain transfers verbatim), port at the end. Confirm in M0.
+- **Build target:** reuse the existing, proven SuperStation build flow from the user's
+  other project (it already compiles and runs cores on the SuperStation — no porting or
+  board-file blocker). Record its Quartus DEVICE target for reproducibility; a DE10-Nano
+  is optional. (An earlier spec-sheet-based incompatibility concern was retracted — see
+  `docs/dev-workflow.md` §0.)
 - **FPGA build:** Quartus Prime Lite **17.0.x** (x86-only); use Docker
   `raetro/quartus:17.0`; launch remote builds **detached** (`setsid nohup … &`);
   ~30 min, single-thread-bound. `TOP_LEVEL_ENTITY sys_top`; `sys.tcl` sets the DEVICE.

@@ -153,11 +153,12 @@ mid-2026. Tracked as a **future** risk, not a current blocker.
   LE, **128 MB SDRAM**, runs **stock MiSTer**. Analog out via **ADV7125** (triple
   8-bit = true 24-bit RGB/component DAC). Built-in **NFC/Zaparoo** reader, Wi-Fi/BT,
   dual PS1 SNAC. Built by Retro Remake (Taki Udon). *480i is a property of the
-  core's video timing driving the DAC, not of the DAC itself.*
-  **⚠️ Build-critical caveat:** this SX part differs from the DE10-Nano's SE
-  `5CSEBA6U23I7`, so bitstreams aren't interchangeable — building for the SuperStation
-  needs its board-support `sys/`. Develop on a DE10-Nano and port, or obtain board
-  files. See [`docs/dev-workflow.md`](docs/dev-workflow.md) §0 and risk #6.
+  core's video timing driving the DAC, not of the DAC itself.* (Tech-press lists the
+  FPGA as `5CSXFC6D6F31I7N`; the **working build's Quartus DEVICE target is
+  authoritative** for our compile.)
+  **Build target:** the other project already compiles MiSTer cores and runs them on
+  the SuperStation, so M0 reuses that proven flow (no porting/board-file blocker); just
+  record its DEVICE target. See [`docs/dev-workflow.md`](docs/dev-workflow.md) §0.
 - **Raspberry Pi 5:** quad Cortex-A76 ~2.4 GHz, BCM2712. **HEVC 4Kp60 hardware
   decode only**; **no** hardware H.264 decode, **no** hardware encode, **no** MPEG-2
   hardware. → **MPEG-2 encode is software** (`ffmpeg mpeg2video`); one SD stream

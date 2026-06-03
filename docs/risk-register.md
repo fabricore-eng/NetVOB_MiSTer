@@ -13,7 +13,7 @@ prior-art "80% done" premise did not survive verification — see
 | 3 | `mpeg2fpga` Xilinx→Cyclone V resource/timing fit | Medium | High | 🟠 |
 | 4 | A/V sync over the network | Medium | High | 🟠 |
 | 5 | Seek across GOP boundaries | Medium | Medium | 🟠 |
-| 6 | Device target / board-support + core-template / CMA / DDR3 | Medium | High | 🟠 |
+| 6 | MiSTer core-template / CMA / DDR3 constraints | Medium | Medium | 🟡 |
 | 7 | Transcode CPU under Plex contention | Medium | Medium | 🟡 |
 | 8 | Plex private-API stability | Medium | Low–Med | 🟡 |
 | 9 | Upstream dependency (mrchrisster / Slamy) | Low–Med | Medium | 🟡 |
@@ -67,19 +67,14 @@ artifacts or wrong field parity.
   PlexSource snaps to `ffmpeg` keyframes. Flush all buffers + decoder I-frame reset on
   seek; resync A/V from first post-seek PTS. **M6**.
 
-### 6. 🟠 Device target / board-support + core-template / CMA / DDR3
-**⚠️ Build-critical:** the SuperStation is Cyclone V SX `5CSXFC6D6F31I7N` (896-pin),
-*not* the DE10-Nano's SE `5CSEBA6U23I7` (672-pin). Bitstreams are part/pin-specific,
-so DE10-Nano `.rbf` won't load as-is and the sibling project's device/`sys.tcl` target
-**does not transfer** — building for the SuperStation needs its board-support `sys/`
-(pins, PLLs, ADV7125 wiring), which is not publicly published. Plus the usual 24 MB
-CMA, shared DDR3, and one-PLL clock discipline, and fitting on the part.
-- **Mitigation:** **develop on a DE10-Nano** (the entire sibling toolchain transfers
-  verbatim; `MiSTer_MPEG2` already targets it) and treat the SuperStation as a late
-  **port** step; obtain board-support from Retro Remake / Taki Udon for the final
-  target. Inherit `MiSTer_MPEG2`'s CMA/DDR3 mapping (`{7'b0011000, addr}` @
+### 6. 🟡 MiSTer core-template / CMA / DDR3 constraints
+24 MB CMA, shared DDR3, clock-domain discipline (all clocks from one PLL), and fitting
+the decoder on the part. *(No device/board-support blocker: the other project already
+compiles cores and runs them on the SuperStation, so we reuse that proven flow — just
+record its Quartus DEVICE target. See [`dev-workflow.md`](dev-workflow.md) §0.)*
+- **Mitigation:** inherit `MiSTer_MPEG2`'s CMA/DDR3 mapping (`{7'b0011000, addr}` @
   `0x30000000`); SD frame stores are small; stay within `DDRAM_*`/`hps_io` conventions;
-  one PLL from the start. Resolve the device decision in **M0**.
+  one PLL from the start.
 
 ### 7. 🟡 Transcode CPU under Plex contention
 Pi 5 has **no hardware encoder**; a 480i MPEG-2 software encode is fine **alone**, but

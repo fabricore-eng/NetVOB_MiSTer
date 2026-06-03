@@ -16,10 +16,10 @@ build outward along the spine. Each milestone has a **goal**, **exit criteria**,
 **Goal:** stand up the build/sim/test environment and reproduce *known* playback so we
 have a working reference and a regression baseline. (See
 [`dev-workflow.md`](dev-workflow.md) for the how.)
-- **⚠️ Settle the device target** (build-critical): confirm the SuperStation's
-  `5CSXFC6D6F31I7N` board-support files (its `sys/`, pins, analog/ADV7125 wiring) vs.
-  developing on a DE10-Nano (`5CSEBA6U23I7`, sibling toolchain transfers verbatim) and
-  porting at the end. Get the board files from Retro Remake / Taki Udon if going direct.
+- **Reuse the existing SuperStation build flow** from the other project (it already
+  compiles and runs cores on the SuperStation — no porting/board-file blocker). Record
+  its Quartus **DEVICE** target for reproducibility. See
+  [`dev-workflow.md`](dev-workflow.md) §0.
 - **Toolchain:** Quartus 17.0.x via Docker `raetro/quartus:17.0`, detached remote
   builds + log dashboard; **Verilator** sim; `ssh mister` + `/dev/MiSTer_cmd`
   (`load_core`/`Mount`/`screenshot`) + a **filmstrip** burst tool.
@@ -33,11 +33,11 @@ have a working reference and a regression baseline. (See
   working config that produced video." Document what builds, what hangs.
 - Reach out to **mrchrisster / Slamy** (upstream) re: current state and collaboration.
 
-**Exit:** Quartus builds a core for the chosen board; CD-i VCD plays on hardware
-(verified by filmstrip); the `mpeg2fpga` conformance sim emits a correct decoded-frame
-PNG; a documented, reproducible `MiSTer_MPEG2` build with notes.
-**Hardware:** SuperStation One (and/or DE10-Nano); SD card; CRT/display. **Risk:**
-device-target/board-support; toolchain/core-template constraints.
+**Exit:** Quartus builds a core for the SuperStation (existing flow); CD-i VCD plays on
+hardware (verified by filmstrip); the `mpeg2fpga` conformance sim emits a correct
+decoded-frame PNG; a documented, reproducible `MiSTer_MPEG2` build with notes.
+**Hardware:** SuperStation One; SD card; CRT/display. **Risk:** toolchain/core-template
+constraints.
 
 ## M1 — Confirmed MPEG-2 video-out, then file → decoder via the ARM (the seam) ⟵ *gating*
 **Goal:** the de-risk gate — prove the FPGA actually **decodes MPEG-2 to correct

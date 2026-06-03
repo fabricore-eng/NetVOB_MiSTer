@@ -33,13 +33,11 @@ never moves and our diffs stay upstream-offer-able. Vendor:
   output; field-exactness is the M7 goal). Replace the hardcoded 27 MHz SD clock with a
   validated 480i modeline.
 
-## ⚠️ Device target (build-critical)
-- DE10-Nano = Cyclone V SE `5CSEBA6U23I7` (672-pin); SuperStation = Cyclone V SX
-  `5CSXFC6D6F31I7N` (896-pin). **Bitstreams are part/pin-specific** — DE10-Nano `.rbf`
-  won't load as-is on the SuperStation; "cores run unmodified" means Retro Remake
-  **recompiles** against a board-specific `sys/`. Develop on DE10-Nano (toolchain
-  transfers verbatim) and/or obtain the SuperStation board files; set `sys.tcl`'s DEVICE
-  accordingly. Resolve in M0.
+## Build target
+Reuse the existing, proven SuperStation build flow from the other project (it already
+compiles and runs cores on the SuperStation). Record its Quartus **DEVICE** target /
+`sys/` for reproducibility and set ours to match. No porting/board-file blocker; a
+DE10-Nano is optional. See [`../docs/dev-workflow.md`](../docs/dev-workflow.md) §0.
 
 ## Sim (the #1 de-risk)
 `mpeg2fpga` is **Verilog**, CD-i is **SystemVerilog** → **Verilator**. Reuse
