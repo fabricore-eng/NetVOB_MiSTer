@@ -162,6 +162,23 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   collision regardless; extend the sim with non-conformant DDR3 modes to test desync; prep a morning
   HW diagnostic (read `uart_debug` rd/rsp/frame counts behind the devlock to localize feed-vs-decode-
   vs-mem) + a candidate `.rbf`.
+- 2026-06-04 (cycle 8 — OVERNIGHT, decode-on-HW candidate fixes + morning plan) — investigated the
+  fork's FIFO build + feed + ADDR_ERR. SIM-PROVEN FINDINGS: (1) Xilinx-FIFO worry WRONG — single-clock
+  FIFOs use the soft `xfifo_sc` (= sim); the 3 DUAL-clock FIFOs use the fork's hand-written Gray-code
+  `xilinx_fifo_dc`, which the sim never ran — BUT the decisive swap experiment proved it decodes
+  **BIT-IDENTICAL** to the proven `generic_fifo_dc` (54 MB exact), so the Gray FIFO is **NOT a
+  functional** black cause (only possible physical/timing). (2) The `mem_shim` **ADDR_ERR same-cycle
+  response collision is a PROVEN data-corruption hazard** (directed `tb_addrerr.v`: unfixed shim
+  overwrites real DDR3 data with synthetic 0); FIXED + sim-validated — but greyramp doesn't naturally
+  trigger it, so it's a real defect, not confirmed as THE field black. (3) Non-conformant DDR3
+  `+drop`/`+dup` reproduce a decode HANG (response desync); reorder/late-start don't. Candidate
+  patches in `core/patches/hw/`: **`mpeg2fpga-memshim-addrerr-fix.patch` (LEAD)**,
+  `mpeg2fpga-fifo-dualclock-use-generic-fifo-dc.patch` (demoted/backup). Morning HW-diagnostic plan:
+  **`docs/hw-decode-diagnostic.md`** (read the fork's `uart_debug` RP/P/FC/T counts → decision tree:
+  feed vs decoder/FIFO vs mem_shim vs video-out). OVERNIGHT BUILD: building the **480i + ADDR_ERR**
+  candidate `.rbf` on the Dell (morning-ready); NOT loaded on mister (off-board constraint). next
+  (morning, with user): load the candidate → read `uart_debug` to localize → CRT-test; if still black,
+  the decision tree picks the next patch (FIFO swap / feed-latch hardening).
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine

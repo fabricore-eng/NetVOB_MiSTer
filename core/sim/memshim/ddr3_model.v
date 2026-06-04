@@ -84,6 +84,33 @@ module ddr3_model (
   integer zero_latency;
   integer do_trace;
 
+  // -------------------------------------------------------------------------
+  // NON-CONFORMANT (fault-injection) modes — the overnight repro knobs.
+  // These deliberately VIOLATE the Avalon-MM read-response contract that
+  // mpeg2fpga's mem controller assumes (exactly one in-order response per
+  // accepted read, in request order). They exist to PROVE whether the
+  // decoder's tag-checker (framestore_response.v:248 $stop, compiled in via
+  // -D__IVERILOG__ => CHECK) catches a desync, i.e. to localize the HW black
+  // to the memory-response path.
+  //
+  //   +ddr_reorder=N    swap the order of responses: hold a ready response and
+  //                     emit the NEXT-ready one first, once every N drains.
+  //                     N=0 disables. (out-of-order responses)
+  //   +ddr_drop=N       silently DROP every Nth read response (the read was
+  //                     accepted + counted in rd_issued, but no readdatavalid
+  //                     is ever emitted). N=0 disables. (lost response)
+  //   +ddr_dup=N        emit a DUPLICATE readdatavalid (same data, extra pulse)
+  //                     every Nth response. N=0 disables. (extra response)
+  //   +ddr_late_after_reset=M  after reset deasserts, SUPPRESS readdatavalid
+  //                     for the first M mem_clk cycles even though reads are
+  //                     accepted (models a bridge that comes up late / a
+  //                     reset-deassert skew on the response strobe). M=0 off.
+  // -------------------------------------------------------------------------
+  integer mode_reorder;
+  integer mode_drop;
+  integer mode_dup;
+  integer late_after_reset;
+
   // LFSR for pseudo-random jitter / waitrequest phase
   reg [31:0] lfsr;
 
@@ -93,15 +120,25 @@ module ddr3_model (
     rd_jitter    = 0;
     zero_latency = 0;
     do_trace     = 0;
+    mode_reorder = 0;
+    mode_drop    = 0;
+    mode_dup     = 0;
+    late_after_reset = 0;
     lfsr         = 32'hACE1_2345;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
     if ($value$plusargs("ddr_rd_jitter=%d", rd_jitter));
     if ($test$plusargs("ddr_zero_latency")) zero_latency = 1;
     if ($test$plusargs("ddr_trace")) do_trace = 1;
+    if ($value$plusargs("ddr_reorder=%d", mode_reorder));
+    if ($value$plusargs("ddr_drop=%d", mode_drop));
+    if ($value$plusargs("ddr_dup=%d", mode_dup));
+    if ($value$plusargs("ddr_late_after_reset=%d", late_after_reset));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
+    $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d",
+             mode_reorder, mode_drop, mode_dup, late_after_reset);
   end
 
   always @(posedge clk) lfsr <= {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
@@ -153,6 +190,15 @@ module ddr3_model (
 
   integer    cur_lat;
 
+  // Non-conformant bookkeeping
+  reg [31:0] drain_count;        // # of drain opportunities (a response became ready)
+  reg [31:0] post_reset_cycles;  // mem_clk cycles since reset deassert
+  reg        dup_pending;        // emit a duplicate of last response next cycle
+  reg [63:0] dup_data;
+  reg [31:0] dropped;
+  reg [31:0] duped;
+  reg [31:0] reordered;
+
   always @(posedge clk) begin
     if (rst) begin
       ddr3_readdatavalid <= 1'b0;
@@ -162,6 +208,13 @@ module ddr3_model (
       wr_issued          <= 0;
       oob_seen           <= 1'b0;
       badwin_seen        <= 1'b0;
+      drain_count        <= 0;
+      post_reset_cycles  <= 0;
+      dup_pending        <= 1'b0;
+      dup_data           <= 64'd0;
+      dropped            <= 0;
+      duped              <= 0;
+      reordered          <= 0;
       for (k = 0; k < PIPE; k = k + 1) begin
         rsp_pending[k]   <= 1'b0;
         rsp_countdown[k] <= 0;
@@ -215,26 +268,82 @@ module ddr3_model (
         end
       end
 
+      // ---- count post-reset cycles (for +ddr_late_after_reset) ----
+      post_reset_cycles <= post_reset_cycles + 1;
+
       // ---- advance pending responses; emit at most one per cycle ----
       // Single-outstanding on HW so 'at most one ready per cycle' is the norm.
+      //
+      // Non-conformant injection happens HERE on the response path:
+      //   late_after_reset : suppress ALL emission for the first M cycles
+      //   dup              : a pending duplicate beats a fresh response
+      //   reorder/drop     : decided when a slot first becomes "ready"
       begin : drain
         integer emitted;
+        integer ready0;            // index of first (in-order) ready slot
+        integer ready1;            // index of second ready slot (for reorder)
+        integer chosen;
         emitted = 0;
+        ready0  = -1;
+        ready1  = -1;
+
+        // 1) tick down all countdowns; collect up to two ready slots in order.
         for (k = 0; k < PIPE; k = k + 1) begin
           if (rsp_pending[k]) begin
             if (rsp_countdown[k] <= 1) begin
-              if (emitted == 0) begin
-                ddr3_readdatavalid <= 1'b1;
-                ddr3_readdata      <= rsp_data[k];
-                rsp_pending[k]     <= 1'b0;
-                rd_responded       <= rd_responded + 1;
-                emitted            = 1;
-                if (do_trace) $display("[ddr3_model %0t] RD respond data=%h (responded=%0d)", $time, rsp_data[k], rd_responded+1);
-              end
-              // else: leave pending; next cycle (model in-order, 1/cycle)
+              if (ready0 < 0)      ready0 = k;
+              else if (ready1 < 0) ready1 = k;
             end else begin
               rsp_countdown[k] <= rsp_countdown[k] - 1;
             end
+          end
+        end
+
+        // 2) emit a pending DUPLICATE first (extra response, contract violation).
+        if (dup_pending) begin
+          ddr3_readdatavalid <= 1'b1;
+          ddr3_readdata      <= dup_data;
+          dup_pending        <= 1'b0;
+          duped              <= duped + 1;
+          emitted            = 1;
+          if (do_trace) $display("[ddr3_model %0t] *** NONCONF dup: extra readdatavalid data=%h (duped=%0d) ***", $time, dup_data, duped+1);
+        end
+
+        // 3) otherwise, normal/non-conformant emission of a ready response.
+        if (!emitted && ready0 >= 0 &&
+            (late_after_reset == 0 || post_reset_cycles >= late_after_reset[31:0])) begin
+          drain_count <= drain_count + 1;
+
+          // DROP: every Nth ready response is retired with NO readdatavalid.
+          if (mode_drop != 0 && ((drain_count + 1) % mode_drop == 0)) begin
+            rsp_pending[ready0] <= 1'b0;     // consume it, but emit nothing
+            dropped             <= dropped + 1;
+            if (do_trace) $display("[ddr3_model %0t] *** NONCONF drop: response data=%h DROPPED (dropped=%0d) ***", $time, rsp_data[ready0], dropped+1);
+          end
+          else begin
+            // REORDER: every Nth time, if a second slot is also ready, emit the
+            // LATER one first (out-of-order response).
+            chosen = ready0;
+            if (mode_reorder != 0 && ready1 >= 0 && ((drain_count + 1) % mode_reorder == 0)) begin
+              chosen    = ready1;
+              reordered <= reordered + 1;
+              if (do_trace) $display("[ddr3_model %0t] *** NONCONF reorder: emitting slot %0d before %0d (reordered=%0d) ***", $time, ready1, ready0, reordered+1);
+            end
+
+            ddr3_readdatavalid  <= 1'b1;
+            ddr3_readdata       <= rsp_data[chosen];
+            rsp_pending[chosen] <= 1'b0;
+            rd_responded        <= rd_responded + 1;
+            emitted             = 1;
+
+            // DUP: arm a duplicate of this response for next cycle.
+            if (mode_dup != 0 && ((drain_count + 1) % mode_dup == 0)) begin
+              dup_pending <= 1'b1;
+              dup_data    <= rsp_data[chosen];
+              if (do_trace) $display("[ddr3_model %0t] *** NONCONF dup: arming duplicate of data=%h ***", $time, rsp_data[chosen]);
+            end
+
+            if (do_trace) $display("[ddr3_model %0t] RD respond data=%h (responded=%0d)", $time, rsp_data[chosen], rd_responded+1);
           end
         end
       end
@@ -248,6 +357,8 @@ module ddr3_model (
     begin
       $display("[ddr3_model] FINAL: rd_issued=%0d rd_responded=%0d wr_issued=%0d oob=%0d badwin=%0d @ %0t",
                rd_issued, rd_responded, wr_issued, oob_seen, badwin_seen, $time);
+      $display("[ddr3_model] NONCONF FINAL: dropped=%0d duped=%0d reordered=%0d (rd_issued-rd_responded=%0d)",
+               dropped, duped, reordered, rd_issued - rd_responded);
     end
   endtask
 

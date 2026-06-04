@@ -39,11 +39,27 @@ STREAM   ?= $(MPEG2)/tools/streams/greyramp.mpg
 
 # Bench infra: soft FIFOs + behavioral dual-clock CDC (NO Xilinx prims).
 # NOTE: we DROP mem_ctl.v (replaced by ddr3_model.v + mem_shim.sv).
+#
+# FIFO_GRAY experiment: set FIFO_GRAY=1 to swap the dual-clock fifo_dc from the
+# proven OpenCores generic_fifo_dc to the FORK's hand-written Gray-code
+# xilinx_fifo_dc (the one that actually synthesizes on HW). This is the decisive
+# [FIFO build] test — does the Gray FIFO break the framestore PNG / desync the
+# decoder? wrappers_gray.v provides fifo_dc rewired to xilinx_fifo_dc; we still
+# need generic_fifo_dc.v out and the fork's xilinx_fifo_dc.v in.
+FIFO_GRAY ?= 0
+ifeq ($(FIFO_GRAY),1)
+BENCH_SRCS := \
+  $(HERE)/wrappers_gray.v \
+  $(abspath ../../MiSTer_MPEG2/rtl/mpeg2)/xilinx_fifo_dc.v \
+  $(BENCH)/generic_fifo_sc_b.v \
+  $(BENCH)/generic_dpram.v
+else
 BENCH_SRCS := \
   $(BENCH)/wrappers.v \
   $(BENCH)/generic_fifo_dc.v \
   $(BENCH)/generic_fifo_sc_b.v \
   $(BENCH)/generic_dpram.v
+endif
 
 # Decoder RTL (the pristine mpeg2fpga list — same as ../Makefile).
 RTL_SRCS := \
@@ -60,7 +76,7 @@ RTL_SRCS := \
 
 # Our harness + the unit under test. ddr3_model.v + tb are Verilog-2001;
 # mem_shim.sv is SystemVerilog (parsed by .sv extension).
-HARNESS_SRCS := $(HERE)/tb_memshim.v $(HERE)/ddr3_model.v
+HARNESS_SRCS := $(HERE)/tb_memshim.v $(HERE)/ddr3_model.v $(HERE)/req_inject.v
 UUT_SRCS     := $(SHIM)/mem_shim.sv
 
 SRCS := $(HARNESS_SRCS) $(BENCH_SRCS) $(RTL_SRCS) $(UUT_SRCS)

@@ -158,17 +158,49 @@ module tb_memshim();
   );
 
   // ---------------------------------------------------------------------------
+  // ADDR_ERR fault injector — transparently sits on the request port (mem_clk)
+  // and can rewrite a decoder READ's address to ADDR_ERR to exercise mem_shim's
+  // synthetic-ADDR_ERR-read branch / the same-cycle response collision. With no
+  // inj_* plusargs it is a pure pass-through (baseline behaviour identical).
+  // ---------------------------------------------------------------------------
+  wire  [1:0] inj_cmd;
+  wire [21:0] inj_addr;
+  wire [63:0] inj_dta;
+  wire        inj_valid;
+  wire        inj_dec_rd_en;
+  wire [31:0] inj_count;
+
+  req_inject req_inject_inst (
+    .clk(mem_clk),
+    .rst_n(rst_n),
+    .in_cmd(mem_req_rd_cmd),
+    .in_addr(mem_req_rd_addr),
+    .in_dta(mem_req_rd_dta),
+    .in_valid(mem_req_rd_valid),
+    .out_cmd(inj_cmd),
+    .out_addr(inj_addr),
+    .out_dta(inj_dta),
+    .out_valid(inj_valid),
+    .shim_rd_en(mem_req_rd_en),
+    .dec_rd_en(inj_dec_rd_en),
+    .ddr3_readdatavalid(ddr3_readdatavalid),
+    .inj_count(inj_count)
+  );
+
+  // ---------------------------------------------------------------------------
   // REAL mem_shim (core/MiSTer_MPEG2/rtl/mem_shim.sv). clk = mem_clk (108 MHz).
+  // Request inputs come through the injector (addr may be ADDR_ERR-rewritten);
+  // everything else is the decoder's signals verbatim.
   // ---------------------------------------------------------------------------
   mem_shim mem_shim_inst (
     .clk(mem_clk),
     .rst_n(rst_n),
     .hard_rst_n(rst_n),
-    .mem_req_rd_cmd(mem_req_rd_cmd),
-    .mem_req_rd_addr(mem_req_rd_addr),
-    .mem_req_rd_dta(mem_req_rd_dta),
+    .mem_req_rd_cmd(inj_cmd),
+    .mem_req_rd_addr(inj_addr),
+    .mem_req_rd_dta(inj_dta),
     .mem_req_rd_en(mem_req_rd_en),
-    .mem_req_rd_valid(mem_req_rd_valid),
+    .mem_req_rd_valid(inj_valid),
     .mem_res_wr_dta(mem_res_wr_dta),
     .mem_res_wr_en(mem_res_wr_en),
     .mem_res_wr_almost_full(mem_res_wr_almost_full),
@@ -207,6 +239,57 @@ module tb_memshim();
     .ddr3_readdatavalid(ddr3_readdatavalid),
     .ddr3_waitrequest(ddr3_waitrequest)
   );
+
+  // ===========================================================================
+  // ADDR_ERR same-cycle COLLISION MONITOR.
+  // The hazard ([feed+ADDR_ERR] analysis): on a cycle where mem_shim's S_IDLE
+  // takes the synthetic-ADDR_ERR-read branch (sets mem_res_wr_en<=1, dta<=0)
+  // AND a real ddr3_readdatavalid lands (line 109/111 want to own the real
+  // response), the non-blocking last-write-wins drops the real response.
+  //
+  // We detect the branch by inspecting mem_shim's request inputs + state:
+  //   - direct branch  : state==0, !saved_valid, inj_valid READ to ADDR_ERR
+  //   - skid  branch   : state==0, saved_valid READ to ADDR_ERR
+  // both gated on !mem_res_wr_almost_full (the branch's own guard). A COLLISION
+  // is that branch firing on the SAME cycle ddr3_readdatavalid is high.
+  // After the fix patch is applied, the branch defers when readdatavalid is
+  // high, so collisions should be detected as "averted" (branch held), not as a
+  // dropped response. We count both raw coincidences and whether the decoder
+  // tag-checker subsequently $stops.
+  // ===========================================================================
+  localparam [21:0] ADDR_ERR_TB = 22'h1EFFFF;
+  localparam [1:0]  CMD_READ_TB = 2'd2;
+
+  wire shim_state0      = (mem_shim_inst.state == 1'b0);
+  wire shim_saved_valid = mem_shim_inst.saved_valid;
+  wire shim_not_full    = !mem_res_wr_almost_full;
+
+  // direct ADDR_ERR-read branch reachable this cycle
+  wire direct_addrerr_rd = shim_state0 && !shim_saved_valid &&
+                           inj_valid && (inj_cmd == CMD_READ_TB) &&
+                           (inj_addr == ADDR_ERR_TB) && shim_not_full;
+  // skid ADDR_ERR-read branch reachable this cycle
+  wire skid_addrerr_rd   = shim_state0 && shim_saved_valid &&
+                           (mem_shim_inst.saved_cmd == CMD_READ_TB) &&
+                           (mem_shim_inst.saved_addr == ADDR_ERR_TB) && shim_not_full;
+  wire addrerr_rd_branch = direct_addrerr_rd || skid_addrerr_rd;
+
+  reg [31:0] collision_count;     // ADDR_ERR-read branch coincides w/ real rdv
+  reg [31:0] addrerr_branch_count;
+  always @(posedge mem_clk) begin
+    if (~rst) begin
+      collision_count      <= 0;
+      addrerr_branch_count <= 0;
+    end else begin
+      if (addrerr_rd_branch) addrerr_branch_count <= addrerr_branch_count + 1;
+      if (addrerr_rd_branch && ddr3_readdatavalid) begin
+        collision_count <= collision_count + 1;
+        $display("[tb COLLISION %0t] ADDR_ERR-read branch (direct=%b skid=%b) COINCIDES with real ddr3_readdatavalid=1 readdata=%h state=%b saved_valid=%b (collision #%0d)",
+                 $time, direct_addrerr_rd, skid_addrerr_rd, ddr3_readdata,
+                 mem_shim_inst.state, mem_shim_inst.saved_valid, collision_count + 1);
+      end
+    end
+  end
 
   // ===========================================================================
   // tv_out PPM dump (verbatim from bench testbench.v) — drives off dot_clk.
@@ -450,6 +533,7 @@ module tb_memshim();
       $display("[tb]   res port: wr_en=%b almost_full=%b dta=%h", mem_res_wr_en, mem_res_wr_almost_full, mem_res_wr_dta);
       $display("[tb]   mem_shim: state(debug)=%h saved_cmd=%0d sdram_busy(wait)=%b sdram_ack=%b", shim_state, shim_saved_cmd, shim_busy, shim_ack);
       $display("[tb]   mem_shim: rd_count=%0d wr_count=%0d rsp_count=%0d", shim_rd_count, shim_wr_count, shim_rsp_count);
+      $display("[tb]   inject:   inj_count=%0d addrerr_branches=%0d collisions=%0d", inj_count, addrerr_branch_count, collision_count);
       $display("[tb]   ddr3 bus: read=%b write=%b waitrequest=%b readdatavalid=%b addr=%h", ddr3_read, ddr3_write, ddr3_waitrequest, ddr3_readdatavalid, ddr3_addr);
       $display("[tb]   framestore_response.state probe: see decoder $display traces above");
       ddr3.report_counts;

@@ -35,7 +35,41 @@ the reported HW black-screen.
 | compiles | yes | `make build` → `obj_dir/Vtb_memshim` (lint exit 0) |
 | runs | yes | `make run` → `run/framestore_*.ppm` + `run/tv_out_*.ppm` |
 | frame-png | yes | `artifacts/memshim_*_frame0_Y.png` (correct greyramp THROUGH mem_shim) |
-| reproduced-black | **NO** | the black-screen did **not** reproduce in this co-sim (see below) |
+| reproduced-black | **partial** | a HANG reproduces under non-conformant DDR3 (`+ddr_drop`/`+ddr_dup`); the ADDR_ERR same-cycle collision is proven to CORRUPT data in a directed test (`tb_addrerr.v`); greyramp itself does not naturally trigger it |
+
+## Overnight additions (fault injection + directed tests + Gray-FIFO experiment)
+
+This session extended the harness to actively try to break decode and to adjudicate
+two specific HW-only suspects. See `docs/hw-decode-diagnostic.md` §3 for the full writeup.
+
+- **Non-conformant DDR3 modes** (`ddr3_model.v`, `+plusargs`, default off ⇒ baseline
+  unchanged): `+ddr_reorder=N`, `+ddr_drop=N`, `+ddr_dup=N`, `+ddr_late_after_reset=M`.
+  - `+ddr_drop` / `+ddr_dup` **REPRODUCE a hang** (framestore stalls; watchdog fires) — a
+    lost/surplus read response permanently desyncs the response stream.
+  - `+ddr_reorder` / `+ddr_late_after_reset` **do NOT reproduce** — single-outstanding design
+    (reorder is a no-op) and tolerant of late memory startup. Honest negatives.
+- **ADDR_ERR injector** (`req_inject.v`): rewrites a decoder READ to ADDR_ERR
+  (`+inj_addrerr_period=N`, `+inj_addrerr_oncollide`). In the full pipeline the same-cycle
+  collision is **not** naturally reachable (data-dependent) — a directed test is required.
+- **Directed ADDR_ERR collision unit test** (`tb_addrerr.v`, drives the real `mem_shim`
+  alone): deterministically lands a real `ddr3_readdatavalid` on the exact cycle `mem_shim`
+  takes the synthetic ADDR_ERR-read branch.
+  - **UNFIXED:** real DDR3 data **OVERWRITTEN with `0`** (`real=0 zero=2`, FAIL).
+  - **FIXED** (`core/patches/hw/mpeg2fpga-memshim-addrerr-fix.patch`): real data **preserved,
+    correct order** (`real=1 zero=1`, PASS).
+  ```sh
+  verilator --binary --timing -sv +incdir+../incdir -D__IVERILOG__ \
+    --top-module tb_addrerr -Mdir obj_addrerr tb_addrerr.v ../../MiSTer_MPEG2/rtl/mem_shim.sv
+  ./obj_addrerr/Vtb_addrerr +scenario=collide          # +dbg for the cycle trace
+  ```
+- **Gray-FIFO experiment** (`wrappers_gray.v` + `make build FIFO_GRAY=1`): swaps the proven
+  bench `generic_fifo_dc` for the FORK's hand-written Gray-code `xilinx_fifo_dc.v` (the FIFO
+  that actually synthesizes on HW). **Frame 0 decodes BIT-IDENTICALLY** to the generic FIFO
+  (54,192,739-byte exact match, 0 desync) ⇒ the Gray FIFO is **functionally correct in sim and
+  NOT a black cause**; any residual risk is purely physical (Quartus STA / CDC metastability).
+  ```sh
+  make build FIFO_GRAY=1 OBJDIR=obj_gray BIN=obj_gray/Vtb_memshim
+  ```
 
 ## Topology (what is actually wired)
 

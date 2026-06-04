@@ -1,0 +1,63 @@
+diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
+index 33f3c2a..4fed167 100644
+--- a/rtl/mem_shim.sv
++++ b/rtl/mem_shim.sv
+@@ -135,11 +135,26 @@ module mem_shim (
+                         end
+                         CMD_READ: begin
+                             if (saved_addr == ADDR_ERR) begin
+-                                // Synthetic 0 response — do not forward to DDR3
+-                                mem_res_wr_dta <= 64'd0;
+-                                mem_res_wr_en  <= 1'b1;
+-                                saved_valid    <= 0;
+-                                mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                // Synthetic 0 response — do not forward to DDR3.
++                                // COLLISION GUARD: if a real DDR3 readdatavalid
++                                // lands this cycle, lines 109/111 already own
++                                // mem_res_wr_en/dta for the REAL response. Do not
++                                // overwrite it with the synthetic 0, and do not
++                                // consume the ADDR_ERR command — hold the skid word
++                                // (saved_valid stays 1, no FIFO pull) so the
++                                // synthetic response is re-issued the next cycle.
++                                // Without this, the same-cycle collision drops the
++                                // real read's data (overwrites it with 0) ->
++                                // corrupt reference -> garbage/black.
++                                if (!ddr3_readdatavalid) begin
++                                    mem_res_wr_dta <= 64'd0;
++                                    mem_res_wr_en  <= 1'b1;
++                                    saved_valid    <= 0;
++                                    mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                end else begin
++                                    saved_valid    <= 1; // hold; retry next cycle
++                                    mem_req_rd_en  <= 0;
++                                end
+                             end else begin
+                                 ram_read      <= 1;
+                                 ram_address   <= {7'b0011000, saved_addr};
+@@ -171,10 +186,22 @@ module mem_shim (
+                         end
+                         CMD_READ: begin
+                             if (mem_req_rd_addr == ADDR_ERR) begin
+-                                // Synthetic 0 response — keep flowing
+-                                mem_res_wr_dta <= 64'd0;
+-                                mem_res_wr_en  <= 1'b1;
+-                                mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                // Synthetic 0 response — keep flowing.
++                                // COLLISION GUARD: if a real DDR3 readdatavalid
++                                // lands this cycle, lines 109/111 already own
++                                // mem_res_wr_en/dta for the REAL response. Do not
++                                // overwrite it with the synthetic 0; stall the
++                                // FIFO read (mem_req_rd_en<=0) so the same ADDR_ERR
++                                // word is re-presented and the synthetic response
++                                // is issued the next cycle. Without this, the
++                                // same-cycle collision drops the real read's data.
++                                if (!ddr3_readdatavalid) begin
++                                    mem_res_wr_dta <= 64'd0;
++                                    mem_res_wr_en  <= 1'b1;
++                                    mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                end else begin
++                                    mem_req_rd_en  <= 0; // stall; retry next cycle
++                                end
+                             end else begin
+                                 ram_read      <= 1;
+                                 ram_address   <= {7'b0011000, mem_req_rd_addr};
