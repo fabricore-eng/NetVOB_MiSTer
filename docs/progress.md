@@ -114,3 +114,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   **240p first** (easiest sync; ~1716 total px/line @27 MHz or 858 @13.5 MHz via `CE_PIXEL`),
   then **480i** (sim NTSC 480i modeline + interlaced `VGA_VS` + 13.5 MHz dot clock). Iterative:
   rebuild (~30 min, shared lock) → CRT check (user-in-the-loop). devlock released.
+- 2026-06-04 (cycle 6 — analog 480i fix, BUILDING) — fully root-caused the CRT scramble (with the
+  573 session's debugging notes): `emu.sv` emitted the WRONG raster — the build defaulted to
+  `MODELINE_NTSC` = **480p PROGRESSIVE @27 MHz** (a 480i YPbPr CRT can't lock), with `CE_PIXEL=1`
+  (27 vs 13.5 MHz BT.601) + `VGA_F1=0` hardcoded + no `video_mixer`. Drafted + **adversarially
+  verified** (workflow) an `emu.sv` rework: `MODELINE_NTSC_INTERL` (720×480i, 858-dot/13.5 MHz line,
+  HALFLINE=428), `CE_PIXEL=ce_pix` (27/2=13.5 MHz), `VGA_F1` ← decoder field parity (`v_pos[0]`/
+  `odd_field`, no decoder port change), `VGA_SCALER=0`, VGA_* re-registered on `ce_pix`. Verdict:
+  sync math SOUND (15.734 kHz exact; proven mpeg2fpga interlace idiom; clean clock domains;
+  lints/compiles) — "uncertain" only on `VGA_F1` field-ORDER (coin-flip → flip on HW if fields tear).
+  Pre-build check passed (`.qsf` has no MODELINE macro → default = NTSC_INTERL). Patch =
+  `core/patches/hw/mpeg2fpga-emu-ntsc480i.patch` (kept OUT of the sim `core/patches/*.patch` glob —
+  it targets `core/MiSTer_MPEG2`, not `core/mpeg2fpga`). Building on the Dell via the shared lock
+  (`quartus-dvd`). next: `cpf`→`.rbf` → load via `.mgl` behind the `mister` devlock → CRT test
+  (confirm stable lock; check/flip F1). HW follow-ups: no NTSC equalizing pulses (some CRTs may roll),
+  27 MHz not ×1000/1001 (0.1% fast), reconcile sim-vs-hw modeline totals (minus-one convention).
+- BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
+  (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
+  ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine
+  works. Captured in session memory.

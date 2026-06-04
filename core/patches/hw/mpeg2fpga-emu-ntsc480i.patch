@@ -1,0 +1,214 @@
+diff --git a/rtl/emu.sv b/rtl/emu.sv
+index aa9bf0d..6c7cafa 100644
+--- a/rtl/emu.sv
++++ b/rtl/emu.sv
+@@ -94,9 +94,9 @@ module emu (
+ assign VIDEO_ARX    = 13'd4;
+ assign VIDEO_ARY    = 13'd3;
+ 
+-assign VGA_F1       = 0;
++// VGA_F1 is driven from the decoder field parity in the video-out block below.
+ assign VGA_SL       = 0;
+-assign VGA_SCALER   = 1; // Enable scaler for universal HDMI compatibility
++assign VGA_SCALER   = 0; // Analog raster passthrough (no scaler) for native 480i -> ADV7125
+ assign VGA_DISABLE  = 0;
+ assign HDMI_FREEZE      = 0;
+ assign HDMI_BLACKOUT    = 0;
+@@ -160,15 +160,27 @@ assign DDRAM_CLK = clk_mem;
+ wire watchdog_rst;
+ wire reset_n = locked & ~RESET;
+ 
+-// 108 MHz / 4 = 27 MHz pixel clock enable for internal modules
+-reg [1:0] ce_cnt;
+-always @(posedge clk_mem) ce_cnt <= ce_cnt + 1'b1;
+-wire ce_pixel = (ce_cnt == 2'b00);
++// ---------------------------------------------------------------------------
++// Pixel clock-enable for NTSC 480i (BT.601)
++// ---------------------------------------------------------------------------
++// NTSC 480i is a 13.5 MHz dot rate (858 dots * 15.734 kHz line rate). We keep
++// CLK_VIDEO = clk_sys = 27 MHz (the MiSTer analog PHY clock) and generate a
++// half-rate clock-enable so the *effective* pixel rate is 13.5 MHz.  This same
++// enable gates BOTH the decoder video pipeline (mpeg2video.dot_ce) and the
++// framework PHY (CE_PIXEL), so exactly one decoder pixel is emitted per enable.
++//
++// ce_pix toggles in the clk_sys (= CLK_VIDEO = dot_clk) domain — no CDC.
++reg ce_div;
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) ce_div <= 1'b0;
++    else          ce_div <= ~ce_div;
++end
++wire ce_pix = ce_div;   // 13.5 MHz enable (27 MHz / 2)
+ 
+-// The MiSTer HDMI/VGA PHY natively clocks at CLK_VIDEO frequency. 
+-// For NTSC 480i/p video, this must be exactly 27.0 MHz.
++// CLK_VIDEO is the analog PHY clock (27 MHz); CE_PIXEL gates it to the 13.5 MHz
++// BT.601 dot rate. VGA_SCALER=0 keeps the raster verbatim out the ADV7125 DAC.
+ assign CLK_VIDEO = clk_sys;  // 27 MHz
+-assign CE_PIXEL  = 1'b1;     // Fully utilized 27 MHz clock
++assign CE_PIXEL  = ce_pix;   // 13.5 MHz effective pixel rate (480i BT.601)
+ 
+ // =========================================================================
+ // HPS IO — OSD menu and file loading
+@@ -307,7 +319,7 @@ wire        shim_mem_en;
+ wire        shim_mem_almost_full;
+ 
+ wire [7:0] core_r, core_g, core_b;
+-wire       core_h_sync, core_v_sync;
++wire       core_h_sync, core_v_sync, core_c_sync;
+ wire [11:0] core_h_pos, core_v_pos;
+ wire [8:0]  core_init_cnt;
+ wire        core_sync_rst;
+@@ -325,8 +337,8 @@ wire [15:0] shim_debug_read_pend_cycles;
+ mpeg2video mpeg2video_inst (
+     .clk        (clk_sys),   // 27 MHz — matches prior-working-config; 4× lower mem request rate
+     .mem_clk    (clk_mem),   // 108 MHz — FIFO: wr=27MHz rd=108MHz, read-faster safe CDC
+-    .dot_clk    (clk_sys),   // 27MHz native dot clock (cleanly drives MiSTer HDMI PHY)
+-    .dot_ce     (1'b1),      // No clock enable needed when using native 27MHz
++    .dot_clk    (clk_sys),   // 27MHz video clock (= CLK_VIDEO); syncgen advances on dot_ce
++    .dot_ce     (ce_pix),    // 13.5 MHz BT.601 dot-rate enable (480i): syncgen counts at 13.5 MHz
+     .rst        (reset_n),
+ 
+     .stream_data  (stream_data),
+@@ -351,7 +363,7 @@ mpeg2video mpeg2video_inst (
+     .pixel_en   (core_pixel_en),
+     .h_sync     (core_h_sync),
+     .v_sync     (core_v_sync),
+-    .c_sync     (),
++    .c_sync     (core_c_sync),
+     .h_pos      (core_h_pos),
+     .v_pos      (core_v_pos),
+ 
+@@ -440,21 +452,56 @@ always @(posedge clk_mem or negedge reset_n) begin
+ end
+ 
+ // =========================================================================
+-// Video Output — direct from MPEG2 core (no fallback mux)
++// Video Output — MPEG2 core raster -> MiSTer analog PHY (NTSC 480i)
+ // =========================================================================
+-// The fallback VGA generator ran on clk_vid (25.175 MHz) but CLK_VIDEO =
+-// clk_mem (108 MHz). Sampling clk_vid signals on clk_mem caused metastable
+-// sync signals that the MiSTer scaler could never lock to → permanent black.
+-// The MPEG2 core's outputs are already on clk_mem (dot_clk=clk_mem), so
+-// wiring them directly is clean. Before a stream is decoded, the core
+-// outputs black (Y=16, Cb=Cr=128), which is fine — "no signal" until play.
+-
+-assign VGA_R  = core_r;
+-assign VGA_G  = core_g;
+-assign VGA_B  = core_b;
+-assign VGA_HS = core_h_sync;
+-assign VGA_VS = core_v_sync;
+-assign VGA_DE = core_pixel_en;
++// The decoder's video pipeline runs on dot_clk = clk_sys = CLK_VIDEO (27 MHz),
++// advancing one pixel per ce_pix (13.5 MHz, the BT.601 480i dot rate). All
++// decoder video outputs (RGB, h/v/c_sync, pixel_en, v_pos) are therefore in the
++// CLK_VIDEO domain — no CDC. We register them on ce_pix so they line up with the
++// CE_PIXEL the analog PHY samples, and derive the interlace field flag VGA_F1
++// from the decoder's field parity.
++//
++// Field parity: syncgen encodes the field in v_pos[0] when interlaced
++// (syncgen.v: v_pos = {v_cntr[10:0], ~odd_field}), so v_pos[0] == ~odd_field.
++// MiSTer convention: VGA_F1 = 1 on the second (odd) field. odd_field == ~v_pos[0],
++// so VGA_F1 = ~core_v_pos[0]. Latched on ce_pix in the CLK_VIDEO domain so it is
++// stable for the whole field the PHY/DAC is emitting.
++//
++// Sync polarity: MiSTer's analog out / video_mixer contract uses ACTIVE-HIGH
++// HS/VS/DE, which is exactly what syncgen produces (h_sync/v_sync asserted high
++// during the pulse; pixel_en high during active video). vga_out.sv (in sys/)
++// re-times these and, for ypbpr, folds sync onto Y — so we pass active-high
++// straight through. core_c_sync is exported for a future composite-sync TV path.
++reg [7:0] vga_r_r, vga_g_r, vga_b_r;
++reg       vga_hs_r, vga_vs_r, vga_de_r, vga_f1_r;
++
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) begin
++        vga_r_r  <= 8'd0;
++        vga_g_r  <= 8'd0;
++        vga_b_r  <= 8'd0;
++        vga_hs_r <= 1'b0;
++        vga_vs_r <= 1'b0;
++        vga_de_r <= 1'b0;
++        vga_f1_r <= 1'b0;
++    end else if (ce_pix) begin
++        vga_r_r  <= core_r;
++        vga_g_r  <= core_g;
++        vga_b_r  <= core_b;
++        vga_hs_r <= core_h_sync;
++        vga_vs_r <= core_v_sync;
++        vga_de_r <= core_pixel_en;
++        vga_f1_r <= ~core_v_pos[0];  // odd_field; 1 = second field
++    end
++end
++
++assign VGA_R  = vga_r_r;
++assign VGA_G  = vga_g_r;
++assign VGA_B  = vga_b_r;
++assign VGA_HS = vga_hs_r;
++assign VGA_VS = vga_vs_r;
++assign VGA_DE = vga_de_r;
++assign VGA_F1 = vga_f1_r;
+ 
+ 
+ uart_debug debug_inst (
+diff --git a/rtl/mpeg2/modeline.v b/rtl/mpeg2/modeline.v
+index 4669b03..f5836f3 100644
+--- a/rtl/mpeg2/modeline.v
++++ b/rtl/mpeg2/modeline.v
+@@ -28,7 +28,9 @@
+ `ifndef MODELINE_VGA
+ `ifndef MODELINE_SVGA
+ `ifndef MODELINE_NTSC
+-`define MODELINE_NTSC 1  // NTSC 720x480@60Hz for 27.0 MHz dot_clk
++`ifndef MODELINE_NTSC_INTERL
++`define MODELINE_NTSC_INTERL 1  // NTSC 720x480i @ 59.94 fields/s, BT.601 13.5 MHz dot rate
++`endif
+ `endif
+ `endif
+ `endif
+@@ -106,6 +108,47 @@
+     VID_MODE       = 3'b000;
+ `endif
+ 
++`ifdef MODELINE_NTSC_INTERL
++
++  /*
++   * modeline: NTSC 480i (720x480 interlaced, ~59.94 fields/s) -- the ADV7125 / CRT target.
++   *
++   * ITU-R BT.601 525-line: 13.5 MHz dot rate, 858 total dots/line (720 active);
++   * 525 total lines/frame = 262.5/field, 480 active = 240/field.  Line rate
++   * 13.5e6/858 = 15.734 kHz; field rate 59.94 Hz; frame rate 29.97 Hz.
++   *
++   * syncgen runs a FIELD-based counter when interlaced, so VERT_RES / VERT_LEN /
++   * VERT_SYNC_* are PER FIELD; HALFLINE is the mid-line dot (= HORZ_LEN/2) where
++   * v_sync starts on odd fields, producing the half-line interlace offset.
++   *
++   * Counter convention (syncgen.v: `h_cntr >= horizontal_length` wrap): the
++   * register value is the X11-modeline TOTAL minus one (same convention as the
++   * progressive MODELINE_NTSC entry just above; 857 -> 858 dots).  Horizontal
++   * geometry reuses the proven progressive NTSC values verbatim.
++   *
++   *   HORZ_RES = 719  -> 720 active dots
++   *   HORZ_LEN = 857  -> 858 total dots (BT.601)
++   *   VERT_RES = 239  -> 240 visible lines / field (480 / 2)
++   *   VERT_LEN = 261  -> 262 lines / field; the .5 of 262.5 is realized by the
++   *                      odd-field half-line (HALFLINE), giving 525 total / frame
++   *   HALFLINE = 428  -> ~ HORZ_LEN/2, mid-line v_sync start on odd fields
++   */
++
++  parameter [11:0]
++    HORZ_RES       = 719,
++    HORZ_SYNC_STRT = 735,
++    HORZ_SYNC_END  = 797,
++    HORZ_LEN       = 857,
++    VERT_RES       = 239,
++    VERT_SYNC_STRT = 243,
++    VERT_SYNC_END  = 246,
++    VERT_LEN       = 261,
++    HALFLINE       = 428;
++
++  parameter [2:0]
++    VID_MODE       = 3'b001;   // {clip_display_size, pixel_repetition, interlaced}
++`endif
++
+ `ifdef MODELINE_SIF
+   // test
+   parameter [11:0]
