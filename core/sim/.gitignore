@@ -1,0 +1,8 @@
+# Verilator build + run scratch (regenerable via `make all`)
+obj_dir/
+run/
+run2/
+stream.dat
+*.ppm
+# keep: decoded_greyramp_frame.png (the verified ladder artifact), incdir/ symlinks
+!decoded_greyramp_frame.png

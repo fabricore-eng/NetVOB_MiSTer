@@ -1,0 +1,1 @@
+../../mpeg2fpga/rtl/mpeg2/resample_codes.v

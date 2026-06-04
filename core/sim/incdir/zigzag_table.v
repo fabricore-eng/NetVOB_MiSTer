@@ -1,0 +1,1 @@
+../../mpeg2fpga/rtl/mpeg2/zigzag_table.v
