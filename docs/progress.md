@@ -50,3 +50,17 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   NAS `/mnt/nas/dvd-dumps/` as the first real DVDDumpSource fixture. blocked: `.env` still
   unfilled (Pi=`timepi`, build box=`dell` now known; SSH key paths + Plex/TMDB pending).
   building: KUNGPOW `dvdbackup` mirror on the Dell (→ NAS move on completion).
+- 2026-06-03 (cycle 3) — **hardware loop fully reachable — gating build/HW track UNBLOCKED**.
+  Discovered + verified working SSH to all three via `~/.ssh/config`: build box **`dell`**
+  (Ubuntu 26.04 x86; **Quartus Prime 17.0.2 Lite** in `raetro/quartus:17.0`, full
+  map/fit/asm/sta), SuperStation **`mister`** (ARMv7 MiSTer Linux 5.15.1, `/dev/MiSTer_cmd`
+  live), Pi 5 **`timepi`** (NAS `/mnt/nas/dvd-dumps` ready). Populated `.env` (hosts +
+  key paths); `verify-session.sh` = **14 ok / 4 warn / 0 blocked** (only Plex/TMDB optional
+  → stub/fallback). Confirmed `MiSTer_MPEG2` build target = **5CSEBA6U23I7** (`.qsf` + prior
+  `build.log`), complete Quartus project + `sys/` → buildable as-is. blocked: nothing
+  required. next (sequenced to avoid Dell contention): (1) on dump-done → move KUNGPOW
+  Dell→Pi NAS, md5-verify both ends, delete Dell copy; (2) **first bitstream** — stage
+  `core/MiSTer_MPEG2` to the Dell + **detached Quartus compile → .rbf**, then `load_core`
+  on `mister` + **filmstrip** (M1a-on-hardware; treat the repo README's "NTSC video output"
+  as UNVERIFIED until the filmstrip proves it — CLAUDE.md says no confirmed video yet);
+  (3) fan out cycle-3 sim/service/ARM depth *during* the 30-min build (interleave, never idle).
