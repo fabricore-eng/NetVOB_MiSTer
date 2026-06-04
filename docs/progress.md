@@ -371,3 +371,23 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   DDR core's DDRAM base; (B) quartus_sta (hub tools/timing_triage.tcl) on the post-fit netlist for the
   DDRAM/mem_shim paths. Fix the address or clock, rebuild, retest. FEED remains solved; this is the
   last gate before decoded pixels.
+- 2026-06-04 (DDRAM gate ROOT-CAUSED: timing closure, NOT the address — proven vs the working 573 core)
+  — resolved the two hypotheses. (A) ADDRESS: the f2sdram bridge (f2sdram_safe_terminator) is a
+  PASSTHROUGH (no framework base translation); DDRAM_ADDR is a 64-bit-WORD address (29b must be word to
+  exceed 512MB), so window-3 word 0x6000000 = byte 0x30000000 = the standard MiSTer FPGA-reserved DDR
+  region. Address is CORRECT — hypothesis A refuted. (B) TIMING: the build's STA is catastrophically
+  failing — h2f_user0_clk Slack -101ns, emu|sys_pll general[1] -91ns (TNS -15337), pll_audio -106ns
+  (TNS -13788). CROSS-CHECK vs the known-good 573 core (works on HW): its STA is CLEAN (worst -2.5ns
+  hdmi; h2f +1.1ns MET; PLL +0.002 MET). The difference: 573 uses ONE edge-aligned PLL (all clocks
+  legitimately related -> close); MY core has MULTIPLE independent PLLs (sys_pll/pll_audio/pll_hdmi)
+  and the framework sys_top.sdc has NO set_clock_groups, so the unrelated domains are analyzed as
+  related -> thousands of false cross-domain violations, AND any REAL clk_mem(108MHz)<->h2f CDC at the
+  f2sdram boundary is buried + never timing-closed. ⇒ the unclosed clk_mem/DDRAM<->HPS crossing is why
+  the DDRAM write handshake wedges on HW (sdram_busy stuck). NEXT (timing closure, off-board + 1
+  rebuild): (1) add set_clock_groups -asynchronous cutting sys_pll vs pll_audio vs pll_hdmi vs h2f vs
+  the 50MHz inputs (a core .sdc), re-run quartus_sta -> the false violations should vanish; (2) inspect
+  the REAL remaining clk_mem/DDRAM/f2sdram paths — if they fail, fix the CDC or LOWER clk_mem (108->
+  ~100MHz or properly synchronize the f2sdram handshake); confirm the mem_shim<->DDRAM crossing is
+  registered/synchronized; (3) rebuild, re-run hw_decode_test.sh -> success = W climbing + P>0 (decoded
+  frames in DDR). pll_audio is unused (no audio in mpeg2fpga) yet shows the worst slack -> likely fully
+  cuttable. FEED still solved; this timing closure is the last gate before decoded pixels on HW.
