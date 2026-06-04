@@ -41,7 +41,12 @@ ssh -o BatchMode=yes mister 'sz=$(wc -c < /media/fat/test.mpg 2>/dev/null || ech
   echo "first4: $(xxd -p -l 4 /media/fat/test.mpg 2>/dev/null) (expect 000001b3 = MPEG-2 seq header)"' 2>&1 | flt
 
 echo "── 3. load_core the .mgl (core + clip to S0) ─────────────────"
-ssh -o BatchMode=yes mister 'test -f /media/fat/mpeg2_test.mgl || printf "%s\n" "<mistergamedescription>" "  <rbf>mpeg2fpga_dvd</rbf>" "  <file delay=\"1\" type=\"s\" index=\"0\" path=\"test.mpg\"/>" "</mistergamedescription>" > /media/fat/mpeg2_test.mgl
+# NOTE (verified on HW 2026-06-04): the .mgl <file path> MUST be ABSOLUTE. A relative
+# path="test.mpg" pulses img_mounted but the framework reports img_size=0 (file not found
+# at the resolved base) -> total_sectors=0 -> empty feed. "/media/fat/test.mpg" resolves
+# correctly -> img_size + total_sectors correct -> streamer feeds the decoder. Always
+# (re)write the .mgl so a stale relative one can't linger.
+ssh -o BatchMode=yes mister 'printf "%s\n" "<mistergamedescription>" "  <rbf>mpeg2fpga_dvd</rbf>" "  <file delay=\"2\" type=\"s\" index=\"0\" path=\"/media/fat/test.mpg\"/>" "</mistergamedescription>" > /media/fat/mpeg2_test.mgl
   timeout 12 bash -c "echo load_core /media/fat/mpeg2_test.mgl > /dev/MiSTer_cmd" && echo "load_core sent"; sleep 8
   echo "CORENAME: $(cat /tmp/CORENAME 2>/dev/null)"; echo "MiSTer alive: $(ps w | grep -q "[M]iSTer /media" && echo yes || echo no)"' 2>&1 | flt
 
