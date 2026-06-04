@@ -217,6 +217,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   diagnostic plan), spine advanced (M3 PGC/cell nav + M4 disc-ID); settling to a quiet hourly
   heartbeat — `mister` HW test is the next inflection (needs the user + CRT). No more new overnight
   workstreams unless something completes/breaks.
+- 2026-06-04 (decode-on-HW LOCALIZED via uart_debug — it's the **FEED**, not mem_shim) — loaded the
+  candidate 480i+ADDR_ERR `.rbf` on `mister` and read the fork's `uart_debug`. **FINDING: the black
+  is a FEED failure** — `mpg_streamer` is INACTIVE with `total_sectors=0` (`T:0 Z:0000 H:0 D:0`), so
+  the decoder gets **no bitstream** → 0 mem reads (`P:0000`) → no video (`V:0`); meanwhile the
+  raster/vsync runs (`FC` advancing) and the mem/decoder subsystem DOES init (writes to `@0x06000006`,
+  `sdram_busy=1` on a clean reload). **So decoder + mem_shim + analog are NOT the blocker — the clip
+  just isn't delivered.** ROOT: the `.mgl <file type="s" index="0" path="test.mpg">` mount does **not
+  pulse `img_mounted[0]`** for the `S0` "Load Video" slot (tried delay 1 & 6); `emu.sv`'s
+  mount→streamer wiring is correct (`start_streaming = img_mounted[0]` rising, `file_size<=img_size`).
+  ⇒ the overnight **mem_shim/ADDR_ERR/FIFO work was the WRONG LAYER** (still-valid latent fixes, not
+  this bug). NEXT: fix the **S0 sd_* mount mechanism** — research Main_MiSTer's mgl/mount handling
+  (correct `.mgl` form, or the binary's `Mount %s as %s on %d slot` cmd syntax) so `img_mounted[0]`
+  fires → then re-test decode. COORDINATION: now board-coordinated with 573 per the updated protocol
+  (their note: mister free till ~19:30Z); acquired/released the devlock, posted findings. EARLIER
+  MISTAKE (corrected): `dell_coord`'s 30-min age-heuristic let me STEAL 573's old-but-ACTIVE devlock,
+  and I over-escalated to the human instead of reading the board — flagged the age-steal for hardening.
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine
