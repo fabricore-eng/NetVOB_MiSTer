@@ -94,3 +94,23 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   histogram matches ffprobe's 6 tracks; insight: the audio sink's byte-runs can't recover
   substream-id without PES boundaries. **No parser bug exposed by real VOBUs.** blocked: none.
   next: `load_core` the `.rbf` on `mister` behind a `devlock` + filmstrip (M1a-HW).
+- 2026-06-04 (cycle 5 — FIRST HARDWARE bring-up on the real SuperStation) — via the shared
+  lock protocol: converted the `.sof`→ a **compressed `.rbf`** (`quartus_cpf -o
+  bitstream_compression=on`, 2.97 MB; the sys/ `.sof→.rbf` POST_FLOW didn't fire on the
+  build — **TODO wire it**), acquired the `dvd` devlock, `load_core`'d it → **`CORENAME`
+  MENU→MPEG2, MiSTer main running our core**. **PROVEN: our build loads + runs on real HW
+  and drives ANALOG video out** (the CRT over component shows output, not black) — first HW
+  bring-up of NetVOB. Found the clip-load path = `CONF_STR "S0,MPG M2V"` (mount to drive
+  slot 0 via the `sd_*` seam); fed the author's `stream-susi.mpg` via a **`.mgl` autoload**
+  (load core + mount to S0). **RESULT: CRT shows a SCRAMBLED raster, UNCHANGED with vs
+  without a clip → the blocker is ANALOG OUTPUT TIMING, not decode.** Root cause: `emu.sv`
+  drives `VGA_*` straight from the mpeg2fpga decoder syncgen at a fixed **27 MHz `CLK_VIDEO`
+  + `CE_PIXEL=1`** with a non-NTSC modeline → not a CRT-lockable NTSC raster. (MiSTer.ini
+  analog cfg is correct: `vga_mode=ypbpr`, `forced_scandoubler=0`, menu syncs at 240p.)
+  Key gotcha: this core drives the analog raster directly (not `FB_*`/scaler), so the MiSTer
+  **`screenshot`/filmstrip is ALWAYS BLACK** for it → HW verification needs the CRT or an
+  analog capture, not screenshots. blocked: none (HW reachable). next = the **M7 analog
+  frontier, pulled forward**: make `emu.sv`/syncgen emit a CRT-lockable NTSC raster — target
+  **240p first** (easiest sync; ~1716 total px/line @27 MHz or 858 @13.5 MHz via `CE_PIXEL`),
+  then **480i** (sim NTSC 480i modeline + interlaced `VGA_VS` + 13.5 MHz dot clock). Iterative:
+  rebuild (~30 min, shared lock) → CRT check (user-in-the-loop). devlock released.
