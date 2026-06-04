@@ -8,9 +8,12 @@ The **verifiable-now** core (per the task brief and ``service-design.md`` §3.1)
   PES packets (``stream_id == 0xBF``) so the wire carries a clean PS, while
   passing **every other pack/PES through losslessly, byte-for-byte**.
 
-Real IFO/PGC/VOBU parsing (``libdvdread``) is **not installed**, so ``browse()``
-enumerates ``.VOB`` files from a folder with a clear TODO. The PS-passthrough +
-nav-strip path is **real and unit-tested**.
+``browse()`` parses the DVD's own IFO navigation metadata (a pure-Python VMGI +
+VTSI parser, **no** ``libdvdread``) to enumerate real *titles* — title sets,
+which VTS each maps to, chapter/angle counts and PGC playback durations — and
+flags the longest as the main feature. If no ``VIDEO_TS.IFO`` is present it
+falls back to listing ``.VOB`` files. The PS-passthrough + nav-strip path is
+**real and unit-tested**.
 
 Library label: ``"DVD Dumps"``, badge ``"field-exact"``.
 
@@ -44,6 +47,13 @@ from service.sources.base.source import (
     NavInfo,
     Source,
     StreamHandle,
+)
+from service.sources.dvddump.ifo import (
+    IFOParseError,
+    parse_vmgi,
+    parse_vtsi,
+    read_ifo,
+    vts_ifo_path,
 )
 
 # Start-code constants (the byte after 00 00 01).
@@ -216,18 +226,105 @@ class DVDDumpSource(Source):
         self.root = root
 
     def browse(self, path: Optional[str] = None) -> list[CatalogEntry]:
-        """Enumerate ``.VOB`` files from the dump folder.
+        """Enumerate real DVD *titles* from the IFO navigation metadata.
 
-        TODO(libdvdread): real title enumeration requires parsing the IFO/PGC/
-        VOBU structure (``libdvdread``) to list *titles* (title sets, angles,
-        durations, chapters) rather than raw files, plus disc-ID metadata
-        lookup (see ``docs/catalog-browse.md`` §5). ``libdvdread`` is not
-        installed in this environment, so for now we list ``.VOB`` files so the
-        library is browsable. This stub never affects the stream path.
+        Reads ``VIDEO_TS.IFO`` (VMGI) to list every title and the VTS it maps
+        to, then each referenced ``VTS_nn_0.IFO`` (VTSI) for the PGC playback
+        duration and chapter count. The longest title is flagged as the main
+        feature (``extra["main_feature"]``). If no ``VIDEO_TS.IFO`` is present
+        (or it cannot be parsed), falls back to listing ``.VOB`` files so the
+        library is still browsable. Neither path ever affects the stream path.
+
+        TODO(metadata): human title naming still needs a disc-ID lookup (see
+        ``docs/catalog-browse.md`` §5) — IFOs carry no human-readable titles, so
+        ``title`` is a structural label (``"Title 1 (main feature)"``).
+        TODO(pgc): multi-PGC title sets report only their first PGC's duration.
         """
         folder = path or self.root
         if not folder or not os.path.isdir(folder):
             return []
+        entries = self._browse_ifo(folder)
+        if entries is not None:
+            return entries
+        return self._browse_vob_fallback(folder)
+
+    def _browse_ifo(self, folder: str) -> Optional[list[CatalogEntry]]:
+        """Real IFO-driven title enumeration. None => no/unparseable VMG IFO."""
+        vmg_path = None
+        for nm in ("VIDEO_TS.IFO", "video_ts.ifo"):
+            cand = os.path.join(folder, nm)
+            if os.path.isfile(cand):
+                vmg_path = cand
+                break
+        if vmg_path is None:
+            return None
+        try:
+            vmgi = parse_vmgi(read_ifo(vmg_path))
+        except (IFOParseError, OSError):
+            return None
+        if not vmgi.is_valid or not vmgi.titles:
+            return None
+
+        # Per-VTS PGC summary, parsed once and cached.
+        vts_cache: dict[int, object] = {}
+
+        def vts_info(vts_nr: int):
+            if vts_nr not in vts_cache:
+                p = vts_ifo_path(folder, vts_nr)
+                info = None
+                if p:
+                    try:
+                        info = parse_vtsi(read_ifo(p))
+                    except (IFOParseError, OSError):
+                        info = None
+                vts_cache[vts_nr] = info
+            return vts_cache[vts_nr]
+
+        # First pass: durations, to pick the longest title as the main feature.
+        durations: list[Optional[float]] = []
+        for t in vmgi.titles:
+            info = vts_info(t.vts_nr)
+            durations.append(getattr(info, "duration_s", None) if info else None)
+        main_idx = -1
+        best = -1.0
+        for i, d in enumerate(durations):
+            if d is not None and d > best:
+                best, main_idx = d, i
+
+        entries: list[CatalogEntry] = []
+        for i, t in enumerate(vmgi.titles):
+            info = vts_info(t.vts_nr)
+            is_main = i == main_idx
+            label = f"Title {t.title_nr}"
+            if is_main:
+                label += " (main feature)"
+            entries.append(
+                CatalogEntry(
+                    id=f"dvddump:VTS_{t.vts_nr:02d}_1",
+                    title=label,
+                    kind="title",
+                    duration_s=durations[i],
+                    poster_url=None,
+                    badge=self.badge,
+                    extra={
+                        "title_nr": t.title_nr,
+                        "vts_nr": t.vts_nr,
+                        "vts_ttn": t.vts_ttn,
+                        "chapters": t.nr_of_chapters,
+                        "angles": t.nr_of_angles,
+                        "main_feature": is_main,
+                        "nr_of_pgcs": getattr(info, "nr_of_pgcs", None)
+                        if info
+                        else None,
+                        "fps": getattr(info, "fps", None) if info else None,
+                        "source": "ifo",
+                    },
+                )
+            )
+        return entries
+
+    def _browse_vob_fallback(self, folder: str) -> list[CatalogEntry]:
+        """List ``.VOB`` files when there is no parseable ``VIDEO_TS.IFO``."""
         entries: list[CatalogEntry] = []
         for fname in sorted(os.listdir(folder)):
             if not fname.upper().endswith(".VOB"):
@@ -239,10 +336,10 @@ class DVDDumpSource(Source):
                     id=f"dvddump:{stem}",
                     title=stem,  # TODO(metadata): disc-ID lookup -> real title
                     kind="title",
-                    duration_s=None,  # TODO(libdvdread): from IFO/PGC
+                    duration_s=None,
                     poster_url=None,
                     badge=self.badge,
-                    extra={"path": full, "stub": True},
+                    extra={"path": full, "source": "vob-fallback", "stub": True},
                 )
             )
         return entries
