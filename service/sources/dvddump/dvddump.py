@@ -39,6 +39,7 @@ DVD nav-packs are ordinary packs whose payload includes ``private_stream_2``
 from __future__ import annotations
 
 import os
+import re
 from typing import Iterator, Optional
 
 from service.sources.base.source import (
@@ -49,11 +50,16 @@ from service.sources.base.source import (
     StreamHandle,
 )
 from service.sources.dvddump.ifo import (
+    SECTOR,
+    CellPlayback,
+    CellSpan,
     IFOParseError,
     parse_vmgi,
     parse_vtsi,
     read_ifo,
+    resolve_cell_spans,
     vts_ifo_path,
+    vts_vob_parts,
 )
 
 # Start-code constants (the byte after 00 00 01).
@@ -208,6 +214,135 @@ class DVDStreamHandle(StreamHandle):
         return max(0, len(self._data) - self._pos)
 
 
+def navinfo_from_cells(cells: list[CellPlayback]) -> NavInfo:
+    """Build a coarse seek index from PGC cell boundaries.
+
+    This is the **cell-granular** index, derived purely from the IFO's cell
+    playback table: each cell start is a guaranteed I-frame/VOBU boundary, so it
+    is a safe field-exact seek landing (transport.md §6). The ``byte_offset`` is
+    the offset into the **nav-stripped** title stream — but we cannot know the
+    post-strip offset without walking, so we record the cell's offset in the
+    *pre-strip* cell address space and let the handle translate. Time is the
+    cumulative cell playback time.
+
+    NOTE: this is coarser than the DSI/time-map VOBU index (one entry per cell,
+    not per ~0.5 s VOBU). The finer time-map parse is a TODO (see
+    ``StreamHandle.nav`` docstring in :class:`DVDCellStreamHandle`).
+    """
+    entries: list[tuple[float, int]] = []
+    t = 0.0
+    raw_off = 0
+    for cell in cells:
+        entries.append((t, raw_off))
+        if cell.playback_time_s is not None:
+            t += cell.playback_time_s
+        raw_off += cell.nr_sectors * SECTOR
+    return NavInfo(entries=entries)
+
+
+class DVDCellStreamHandle(StreamHandle):
+    """Stream a title's PGC cells **in order**, nav-stripped, from VOB files.
+
+    Reads each :class:`CellSpan` lazily (one whole span at a time — spans are
+    sector-aligned and every DVD pack lies wholly within a sector, so stripping
+    a span in isolation is correct), applies :func:`strip_nav_packets`, and
+    serves the clean PS via ``read(n)``. This is the M3 ordered-cell path: the
+    bytes that go on the wire are exactly the title's cells in PGC order with
+    the ``private_stream_2`` PCI/DSI nav packets removed.
+
+    ``nav`` carries the **cell-granular** seek index. Its byte offsets are in the
+    *pre-strip* address space; ``seek`` maps a time to the cell at-or-before it
+    and resets streaming to that cell.
+
+    TODO(time-map): a finer VOBU/GOP index from the DSI packets' time map (per
+    transport.md §6) would give ~0.5 s seek granularity. Parsing DSI is deferred
+    this cycle — the cell index is correct and field-exact, just coarse.
+    """
+
+    def __init__(
+        self,
+        spans: list[CellSpan],
+        *,
+        cells: Optional[list[CellPlayback]] = None,
+        duration_s: Optional[float] = None,
+        nav: Optional[NavInfo] = None,
+        av: Optional[AvInfo] = None,
+    ) -> None:
+        self._spans = spans
+        self._cells = cells or []
+        # Map cell_nr -> index of its first span, for seek().
+        self._cell_first_span: dict[int, int] = {}
+        for i, sp in enumerate(spans):
+            self._cell_first_span.setdefault(sp.cell_nr, i)
+        self._span_idx = 0
+        self._buf = b""  # stripped bytes pending delivery
+        self._buf_pos = 0
+        self.duration_s = duration_s
+        self.nav = nav
+        self.av = av or AvInfo(
+            video="mpeg2", audio="ac3", field_cadence="interlaced"
+        )
+        self._closed = False
+
+    def _fill(self) -> bool:
+        """Load + strip the next span into the pending buffer. False at EOF."""
+        while self._span_idx < len(self._spans):
+            sp = self._spans[self._span_idx]
+            self._span_idx += 1
+            with open(sp.vob_file, "rb") as fh:
+                fh.seek(sp.start)
+                raw = fh.read(sp.length)
+            clean = strip_nav_packets(raw)
+            if clean:
+                self._buf = clean
+                self._buf_pos = 0
+                return True
+        return False
+
+    def read(self, n: int) -> bytes:
+        if self._closed:
+            raise ValueError("read on a closed handle")
+        if n <= 0:
+            return b""
+        out = bytearray()
+        while len(out) < n:
+            if self._buf_pos >= len(self._buf):
+                if not self._fill():
+                    break  # EOF
+            take = min(n - len(out), len(self._buf) - self._buf_pos)
+            out += self._buf[self._buf_pos : self._buf_pos + take]
+            self._buf_pos += take
+        return bytes(out)
+
+    def seek(self, t_seconds: float) -> None:
+        if self._closed:
+            raise ValueError("seek on a closed handle")
+        target_cell_nr: Optional[int] = None
+        if self.nav is not None and self._cells:
+            # nav entries are (time, raw_offset) per cell, in cell order.
+            best_i = -1
+            for i, (ct, _) in enumerate(self.nav.entries):
+                if ct <= t_seconds:
+                    best_i = i
+                else:
+                    break
+            if best_i >= 0 and best_i < len(self._cells):
+                target_cell_nr = self._cells[best_i].cell_nr
+        if target_cell_nr is None and self._spans:
+            target_cell_nr = self._spans[0].cell_nr
+        if target_cell_nr is not None:
+            self._span_idx = self._cell_first_span.get(target_cell_nr, 0)
+        else:
+            self._span_idx = 0
+        self._buf = b""
+        self._buf_pos = 0
+
+    def close(self) -> None:
+        self._closed = True
+        self._spans = []
+        self._buf = b""
+
+
 class DVDDumpSource(Source):
     """Field-exact DVD-dump backend (PS passthrough + nav-pack stripping).
 
@@ -344,16 +479,21 @@ class DVDDumpSource(Source):
             )
         return entries
 
+    # Matches the title ids browse() emits: dvddump:VTS_<nn>_<ttn>.
+    _VTS_ID_RE = re.compile(r"^VTS_(\d+)_(\d+)$", re.IGNORECASE)
+
     def open(self, id: str) -> StreamHandle:
         """Open ``id`` and return a nav-stripped MPEG-2 PS handle.
 
-        Resolves ``dvddump:<stem>`` to ``<stem>.VOB`` under ``root``, reads it,
-        strips ``private_stream_2`` nav packets, and serves the clean PS.
+        Two id forms:
 
-        Real impl TODO: follow IFO/PGC/VOBU navigation to read the selected
-        title's cells in order and build the VOBU/GOP ``NavInfo`` index. Here
-        we treat one ``.VOB`` as the title and strip nav packets — the
-        verifiable-now path.
+        * ``dvddump:VTS_<nn>_<ttn>`` (what ``browse()`` emits) — the **M3
+          ordered-cell path**: parse the VTS IFO's PGC, resolve its cells to
+          per-file byte spans (:func:`cell_spans_for_title`), and stream them
+          **in PGC playback order**, nav-stripped, with a cell-granular
+          :class:`NavInfo` seek index.
+        * ``dvddump:<stem>`` — legacy single-``.VOB`` path: read ``<stem>.VOB``,
+          strip nav packets, serve the clean PS (kept for the VOB fallback).
         """
         if not id.startswith("dvddump:"):
             raise ValueError(f"not a dvddump id: {id!r}")
@@ -362,6 +502,16 @@ class DVDDumpSource(Source):
             raise FileNotFoundError(
                 f"no dump root configured; cannot open {id!r}"
             )
+
+        m = self._VTS_ID_RE.match(stem)
+        if m:
+            vts_nr = int(m.group(1))
+            # Ordered-cell path only when the VTS IFO is present (a real dump).
+            # Without it we cannot know PGC/cell order, so fall through to the
+            # legacy single-VOB path (also what the synthetic VOB tests rely on).
+            if vts_ifo_path(self.root, vts_nr) is not None:
+                return self._open_title(vts_nr)
+
         full = os.path.join(self.root, f"{stem}.VOB")
         if not os.path.isfile(full):
             # Allow exact-case .vob too.
@@ -374,6 +524,54 @@ class DVDDumpSource(Source):
             raw = fh.read()
         clean = strip_nav_packets(raw)
         return self.open_bytes(clean)
+
+    def cell_spans_for_title(
+        self, vts_nr: int
+    ) -> tuple[list[CellPlayback], list[CellSpan]]:
+        """Resolve a VTS title to its ordered (cells, per-file byte spans).
+
+        Parses ``VTS_<nn>_0.IFO``'s first PGC, then maps each cell's
+        VTS-relative sector range onto the on-disk ``VTS_<nn>_1.VOB`` .. set.
+        Returns the cells (PGC order) and the flat span list ``open()`` streams.
+        Raises ``FileNotFoundError`` / ``IFOParseError`` on missing IFO/VOBs.
+        """
+        if not self.root:
+            raise FileNotFoundError("no dump root configured")
+        ifo_path = vts_ifo_path(self.root, vts_nr)
+        if ifo_path is None:
+            raise FileNotFoundError(
+                f"no VTS_{vts_nr:02d}_0.IFO under {self.root!r}"
+            )
+        vtsi = parse_vtsi(read_ifo(ifo_path))
+        if not vtsi.is_valid or vtsi.pgc is None or not vtsi.pgc.cells:
+            raise IFOParseError(
+                f"VTS {vts_nr} has no parseable PGC cells"
+            )
+        parts = vts_vob_parts(self.root, vts_nr)
+        if not parts:
+            raise FileNotFoundError(
+                f"no VTS_{vts_nr:02d}_1.VOB title VOBs under {self.root!r}"
+            )
+        spans = resolve_cell_spans(vtsi.pgc.cells, parts)
+        return vtsi.pgc.cells, spans
+
+    def _open_title(self, vts_nr: int) -> DVDCellStreamHandle:
+        cells, spans = self.cell_spans_for_title(vts_nr)
+        ifo_path = vts_ifo_path(self.root, vts_nr)
+        vtsi = parse_vtsi(read_ifo(ifo_path)) if ifo_path else None
+        nav = navinfo_from_cells(cells)
+        av = AvInfo(
+            video="mpeg2",
+            audio="ac3",
+            field_cadence="interlaced",
+        )
+        return DVDCellStreamHandle(
+            spans,
+            cells=cells,
+            duration_s=getattr(vtsi, "duration_s", None),
+            nav=nav,
+            av=av,
+        )
 
     def open_bytes(
         self,

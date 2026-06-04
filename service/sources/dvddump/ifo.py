@@ -53,11 +53,39 @@ VTS_PGCIT (at ``vts_pgcit_sector * 2048``):
         +0x00 u8   entry_id
         +0x04 u32  pgc_start_byte (relative to start of VTS_PGCIT)
 
-PGC (at ``pgcit_byte + pgc_start_byte``):
+PGC (at ``pgcit_byte + pgc_start_byte``), the ``pgc_t`` of ``dvdread``:
   +0x02 u8   nr_of_programs
   +0x03 u8   nr_of_cells
   +0x04 u32  playback_time (dvd_time_t: BCD hour, min, sec, frame; the frame
              byte's top 2 bits select the frame rate: 0b01=25, 0b11=29.97)
+  +0xE4 u16  pgc_command_tbl_offset (relative to start of PGC)
+  +0xE6 u16  program_map_offset     (relative to start of PGC)
+  +0xE8 u16  cell_playback_offset   (relative to start of PGC)
+  +0xEA u16  cell_position_offset   (relative to start of PGC)
+
+Program map (at ``pgc + program_map_offset``):
+  nr_of_programs bytes; each byte = the 1-based cell number that program enters.
+
+Cell playback info table / C_PBKIT (at ``pgc + cell_playback_offset``),
+  ``cell_playback_t`` — 24 bytes each, ``nr_of_cells`` entries:
+  +0x00 u8   category byte 0: block_mode(2) | block_type(2) | seamless_play(1)
+             | interleaved(1) | stc_discontinuity(1) | seamless_angle(1)
+  +0x01 u8   category byte 1: playback flags (restricted, cell_type, ...)
+  +0x02 u8   still_time
+  +0x03 u8   cell_cmd_nr
+  +0x04 u32  cell playback_time (dvd_time_t)
+  +0x08 u32  first_sector            (VOBU start sector of the cell)
+  +0x0C u32  first_ilvu_end_sector
+  +0x10 u32  last_vobu_start_sector
+  +0x14 u32  last_sector             (last sector of the cell, inclusive)
+  Cell sectors are RELATIVE to the start of the VTS title VOB *set* — the
+  concatenation of ``VTS_nn_1.VOB`` .. ``VTS_nn_9.VOB`` (the menu VOB
+  ``VTS_nn_0.VOB`` is NOT part of this address space).
+
+Cell position info table (at ``pgc + cell_position_offset``), ``cell_position_t``
+  — 4 bytes each, ``nr_of_cells`` entries:
+  +0x00 u16  vob_id (VOB identifier the cell lives in)
+  +0x03 u8   cell_id
 """
 
 from __future__ import annotations
@@ -151,6 +179,61 @@ class VMGI:
 
 
 @dataclass
+class CellPlayback:
+    """One cell from a PGC's cell playback info table (``C_PBKIT``).
+
+    Sectors are relative to the start of the VTS title VOB *set* (the
+    concatenation of ``VTS_nn_1.VOB`` .. ``VTS_nn_9.VOB``). ``first_sector`` and
+    ``last_sector`` are inclusive, so the cell occupies sectors
+    ``[first_sector, last_sector]`` => byte range
+    ``[first_sector*2048, (last_sector+1)*2048)`` in that address space.
+    """
+
+    cell_nr: int  # 1-based index within the PGC's cell table
+    category0: int  # category byte 0 (block_mode/block_type/seamless/...)
+    category1: int  # category byte 1 (playback flags)
+    playback_time_s: Optional[float]
+    first_sector: int
+    last_vobu_start_sector: int
+    last_sector: int
+    vob_id: Optional[int] = None  # from the cell position info table
+    cell_id: Optional[int] = None
+
+    @property
+    def nr_sectors(self) -> int:
+        """Inclusive sector count of the cell."""
+        return self.last_sector - self.first_sector + 1
+
+    # Category byte 0 bitfields (per dvdread cell_playback_t).
+    @property
+    def block_mode(self) -> int:
+        return (self.category0 >> 6) & 0x3
+
+    @property
+    def block_type(self) -> int:
+        return (self.category0 >> 4) & 0x3
+
+    @property
+    def interleaved(self) -> bool:
+        return bool((self.category0 >> 1) & 0x1)
+
+
+@dataclass
+class PGC:
+    """A parsed Program Chain — programs over an ordered list of cells."""
+
+    pgc_nr: int  # 1-based index of this PGC in the VTS_PGCIT
+    nr_of_programs: int
+    nr_of_cells: int
+    duration_s: Optional[float] = None
+    fps: Optional[float] = None
+    # program_map[i] = 1-based cell number that program (i+1) enters.
+    program_map: list[int] = field(default_factory=list)
+    # Cells in PGC playback order (== table order for a linear, single-angle PGC).
+    cells: list[CellPlayback] = field(default_factory=list)
+
+
+@dataclass
 class VTSI:
     """Parsed Video Title Set information (``VTS_nn_0.IFO``)."""
 
@@ -161,6 +244,8 @@ class VTSI:
     fps: Optional[float] = None
     nr_of_programs: Optional[int] = None
     nr_of_cells: Optional[int] = None
+    # Fully parsed first PGC (program map + cell playback table), when reachable.
+    pgc: Optional[PGC] = None
 
     @property
     def is_valid(self) -> bool:
@@ -212,12 +297,91 @@ def parse_vmgi(buf: bytes) -> VMGI:
     return vmgi
 
 
+def parse_pgc(buf: bytes, pgc: int, pgc_nr: int) -> PGC:
+    """Parse one PGC at absolute byte offset ``pgc`` into a :class:`PGC`.
+
+    Reads the program map (program -> entry cell) and the cell playback info
+    table (``C_PBKIT``: per-cell category + first/last sector), plus the cell
+    position info table (vob_id/cell_id) when present. The cell list is in PGC
+    playback order, which for a linear single-angle PGC equals table order.
+    """
+    # The basic PGC header (counts + playback time) needs 8 bytes; the offset
+    # table that points at the program map / cell tables lives at +0xE4..+0xEC.
+    # A real disc always has it; minimal/synthetic PGCs may stop at +8, in which
+    # case we return counts/duration with empty maps rather than erroring.
+    if pgc + 8 > len(buf):
+        raise IFOParseError(f"PGC at byte {pgc} past end ({len(buf)} bytes)")
+    nr_programs = _u8(buf, pgc + 2)
+    nr_cells = _u8(buf, pgc + 3)
+    duration_s, fps = decode_dvd_time(buf[pgc + 4 : pgc + 8])
+
+    out = PGC(
+        pgc_nr=pgc_nr,
+        nr_of_programs=nr_programs,
+        nr_of_cells=nr_cells,
+        duration_s=duration_s,
+        fps=fps,
+    )
+
+    if pgc + 0xEC > len(buf):
+        return out  # no offset table available; counts/duration only
+
+    program_map_off = _u16(buf, pgc + 0xE6)
+    cell_pbk_off = _u16(buf, pgc + 0xE8)
+    cell_pos_off = _u16(buf, pgc + 0xEA)
+
+    # Program map: nr_programs bytes, each the 1-based entry cell number.
+    if program_map_off:
+        pmap = pgc + program_map_off
+        if pmap + nr_programs > len(buf):
+            raise IFOParseError(f"program map at {pmap} past end")
+        out.program_map = [_u8(buf, pmap + i) for i in range(nr_programs)]
+
+    # Cell position info table (vob_id/cell_id), parsed first so we can attach
+    # it to each cell below. 4 bytes per cell.
+    positions: list[tuple[int, int]] = []
+    if cell_pos_off:
+        cpos = pgc + cell_pos_off
+        if cpos + nr_cells * 4 > len(buf):
+            raise IFOParseError(f"cell position table at {cpos} past end")
+        for i in range(nr_cells):
+            e = cpos + i * 4
+            positions.append((_u16(buf, e), _u8(buf, e + 3)))
+
+    # Cell playback info table (C_PBKIT): 24 bytes per cell.
+    if cell_pbk_off:
+        cpbk = pgc + cell_pbk_off
+        if cpbk + nr_cells * 24 > len(buf):
+            raise IFOParseError(f"cell playback table at {cpbk} past end")
+        for i in range(nr_cells):
+            e = cpbk + i * 24
+            ptime_s, _ = decode_dvd_time(buf[e + 4 : e + 8])
+            vob_id = positions[i][0] if i < len(positions) else None
+            cell_id = positions[i][1] if i < len(positions) else None
+            out.cells.append(
+                CellPlayback(
+                    cell_nr=i + 1,
+                    category0=_u8(buf, e + 0),
+                    category1=_u8(buf, e + 1),
+                    playback_time_s=ptime_s,
+                    first_sector=_u32(buf, e + 0x08),
+                    last_vobu_start_sector=_u32(buf, e + 0x10),
+                    last_sector=_u32(buf, e + 0x14),
+                    vob_id=vob_id,
+                    cell_id=cell_id,
+                )
+            )
+    return out
+
+
 def parse_vtsi(buf: bytes) -> VTSI:
     """Parse a ``VTS_nn_0.IFO`` byte buffer into a :class:`VTSI`.
 
-    Reads the first PGC's playback time / program / cell counts. Multi-PGC
-    title sets are not fully walked (TODO); the first PGC is the feature PGC
-    for the common one-title-per-VTS layout this targets.
+    Reads the first PGC's playback time / program / cell counts AND fully parses
+    that PGC's program map + cell playback table (see :func:`parse_pgc`), which
+    drives ordered cell streaming in ``open()``. Multi-PGC title sets expose
+    only their first PGC here (TODO: walk all PGCI_SRP entries); the first PGC is
+    the feature PGC for the common one-title-per-VTS layout this targets.
     """
     if len(buf) < 0xD0:
         raise IFOParseError(f"VTSI too small: {len(buf)} bytes")
@@ -243,15 +407,127 @@ def parse_vtsi(buf: bytes) -> VTSI:
     # First PGCI_SRP entry -> its PGC.
     srp = pgcit + 8
     pgc_start_byte = _u32(buf, srp + 4)
-    pgc = pgcit + pgc_start_byte
-    if pgc + 8 > len(buf):
-        raise IFOParseError(f"PGC at byte {pgc} past end ({len(buf)} bytes)")
-    out.nr_of_programs = _u8(buf, pgc + 2)
-    out.nr_of_cells = _u8(buf, pgc + 3)
-    duration_s, fps = decode_dvd_time(buf[pgc + 4 : pgc + 8])
-    out.duration_s = duration_s
-    out.fps = fps
+    pgc_byte = pgcit + pgc_start_byte
+    pgc = parse_pgc(buf, pgc_byte, pgc_nr=1)
+    out.pgc = pgc
+    out.nr_of_programs = pgc.nr_of_programs
+    out.nr_of_cells = pgc.nr_of_cells
+    out.duration_s = pgc.duration_s
+    out.fps = pgc.fps
     return out
+
+
+# A DVD title VOB file (VTS_nn_1.VOB ..) is capped at 1 GB. The cell address
+# space is the byte-concatenation of those files in order; a global sector maps
+# into a specific file by integer division, EXCEPT the cap is in *bytes* not a
+# fixed sector count — so we resolve against the actual on-disk file sizes.
+ONE_GB = 1024 * 1024 * 1024
+MAX_VOB_PART = 9  # VTS_nn_1.VOB .. VTS_nn_9.VOB
+
+
+@dataclass
+class CellSpan:
+    """A contiguous byte range of one VOB file to stream for a cell.
+
+    A cell can straddle a 1 GB VOB-file boundary, so one cell may yield more
+    than one :class:`CellSpan` (one per file it touches). ``start``/``end`` are
+    byte offsets within ``vob_file`` with ``end`` exclusive.
+    """
+
+    vob_file: str  # absolute path to the VTS_nn_k.VOB
+    start: int  # byte offset within the file (inclusive)
+    end: int  # byte offset within the file (exclusive)
+    cell_nr: int  # 1-based PGC cell number this span belongs to
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+def vts_vob_parts(video_ts_dir: str, vts_nr: int) -> list[str]:
+    """Return existing ``VTS_nn_1.VOB`` .. ``VTS_nn_9.VOB`` paths, in order.
+
+    Handles upper/lower-case naming. Stops at the first missing part number so
+    the returned list is the contiguous VOB set that forms the cell address
+    space. Returns ``[]`` if no title VOB is present.
+    """
+    parts: list[str] = []
+    for k in range(1, MAX_VOB_PART + 1):
+        found = None
+        for nm in (f"VTS_{vts_nr:02d}_{k}.VOB", f"vts_{vts_nr:02d}_{k}.vob"):
+            p = os.path.join(video_ts_dir, nm)
+            if os.path.isfile(p):
+                found = p
+                break
+        if found is None:
+            break
+        parts.append(found)
+    return parts
+
+
+def resolve_cell_spans(
+    cells: list["CellPlayback"],
+    vob_parts: list[str],
+    *,
+    part_sizes: Optional[list[int]] = None,
+) -> list[CellSpan]:
+    """Map PGC cells (VTS-relative sectors) to per-file byte spans, in order.
+
+    ``vob_parts`` is the ordered VTS title VOB set (see :func:`vts_vob_parts`).
+    The cell address space is the byte-concatenation of those files. A cell that
+    crosses a file boundary is split into one :class:`CellSpan` per file.
+
+    ``part_sizes`` overrides the on-disk file sizes (used by synthetic tests so
+    no real files are needed); otherwise sizes are read via ``os.path.getsize``.
+    Raises :class:`IFOParseError` if a cell's sectors fall outside the available
+    VOB set (e.g. a truncated local *slice* of the dump).
+    """
+    if not vob_parts:
+        raise IFOParseError("no VTS title VOB files to resolve cells against")
+    if part_sizes is None:
+        part_sizes = [os.path.getsize(p) for p in vob_parts]
+    if len(part_sizes) != len(vob_parts):
+        raise IFOParseError("part_sizes length != vob_parts length")
+
+    # Cumulative byte offset at which each part begins in the address space.
+    starts: list[int] = []
+    acc = 0
+    for sz in part_sizes:
+        starts.append(acc)
+        acc += sz
+    total = acc
+
+    spans: list[CellSpan] = []
+    for cell in cells:
+        cell_begin = cell.first_sector * SECTOR
+        cell_end = (cell.last_sector + 1) * SECTOR  # exclusive
+        if cell_begin >= total or cell_end > total:
+            raise IFOParseError(
+                f"cell {cell.cell_nr} bytes [{cell_begin},{cell_end}) exceed "
+                f"VOB set size {total} (truncated dump?)"
+            )
+        # Walk the cell across however many parts it spans.
+        pos = cell_begin
+        for idx, p in enumerate(vob_parts):
+            p_begin = starts[idx]
+            p_end = starts[idx] + part_sizes[idx]
+            if pos >= cell_end:
+                break
+            if pos >= p_end or cell_end <= p_begin:
+                continue
+            seg_begin = max(pos, p_begin)
+            seg_end = min(cell_end, p_end)
+            if seg_end > seg_begin:
+                spans.append(
+                    CellSpan(
+                        vob_file=p,
+                        start=seg_begin - p_begin,
+                        end=seg_end - p_begin,
+                        cell_nr=cell.cell_nr,
+                    )
+                )
+                pos = seg_end
+    return spans
 
 
 def read_ifo(path: str) -> bytes:

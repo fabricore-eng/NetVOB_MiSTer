@@ -179,6 +179,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   candidate `.rbf` on the Dell (morning-ready); NOT loaded on mister (off-board constraint). next
   (morning, with user): load the candidate → read `uart_debug` to localize → CRT-test; if still black,
   the decision tree picks the next patch (FIFO swap / feed-latch hardening).
+- 2026-06-04 (cycle 9 — OVERNIGHT spine, off-board while the gate build is blocked) — deepened
+  DVDDumpSource toward **M3**: full **PGC parser** (`ifo.py parse_pgc`: PGC offset table, program
+  map, cell playback info `C_PBKIT`, cell position table) + `resolve_cell_spans` (cells →
+  `(vob_file,start,end)` spans, splits at the 1 GB VOB-file boundary, raises on a truncated dump) +
+  **`DVDCellStreamHandle`** (`open()` streams cells in PGC order with nav-strip + cell-granular
+  `NavInfo` + `seek(t)→cell`). VALIDATED on the **real KUNGPOW IFOs** (independently re-parsed by a
+  verify agent): VMGI 11 title sets / 16 titles; VTS_10 main feature = 1 PGC / 29 programs / 33 cells
+  tiling contiguously to **3.98 GB** / 81:25 @ 29.97. **79 tests** (68 + 11; new ones synthetic +
+  skip-guarded real-IFO cell-order check), all green; fixture-absent → skipped=7 (clean-clone safe);
+  no copyrighted bytes committed. Flagged limits: cell-level seek (finer VOBU/DSI time-map = TODO),
+  first-PGC-only (multi-PGC/multi-angle = TODO). GATE: the 480i+ADDR_ERR candidate `.rbf` is still
+  build-blocked behind 573's long build (57+ min on the shared Dell); watcher patiently waiting — no
+  lock-fighting. next: build the candidate when the box frees; morning HW localize via `uart_debug`.
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine

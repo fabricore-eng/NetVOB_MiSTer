@@ -11,11 +11,14 @@ import struct
 import unittest
 
 from service.sources.dvddump.ifo import (
+    CellSpan,
     IFOParseError,
     SECTOR,
     decode_dvd_time,
+    parse_pgc,
     parse_vmgi,
     parse_vtsi,
+    resolve_cell_spans,
 )
 
 
@@ -92,6 +95,87 @@ def build_vtsi(playback_time: bytes, *, nr_programs=1, nr_cells=1, nr_pgci=1,
     pgc[3] = nr_cells
     pgc[4:8] = playback_time
     pgcit += pgc
+
+    buf = bytearray(mat)
+    base = pgcit_sector * SECTOR
+    if len(buf) < base + len(pgcit):
+        buf += bytes(base + len(pgcit) - len(buf))
+    buf[base : base + len(pgcit)] = pgcit
+    return bytes(buf)
+
+
+def build_pgc(cells, program_map, *, playback_time=b"\x00\x10\x00\x40"):
+    """Craft a full PGC: header + offset table + program map + C_PBKIT + C_POSIT.
+
+    ``cells`` is a list of dicts with keys: cat0, cat1, pbtime(4 bytes),
+    first_sector, last_vobu_start, last_sector, vob_id, cell_id.
+    ``program_map`` is a list of 1-based entry cell numbers.
+
+    Layout (offsets relative to PGC start):
+      0x00..0xE3  header (counts at +2/+3, playback_time at +4)
+      0xE4        offset table: cmd, program_map, cell_pbk, cell_pos (u16 each)
+      0xEC        program map (1 byte per program)
+      then        C_PBKIT (24 bytes per cell)
+      then        C_POSIT (4 bytes per cell)
+    """
+    nr_programs = len(program_map)
+    nr_cells = len(cells)
+    pgc = bytearray(0xEC)
+    pgc[2] = nr_programs
+    pgc[3] = nr_cells
+    pgc[4:8] = playback_time
+
+    program_map_off = 0xEC
+    cell_pbk_off = program_map_off + nr_programs
+    cell_pos_off = cell_pbk_off + nr_cells * 24
+
+    # offset table at 0xE4 (cmd at 0xE4 left 0; the parser ignores it)
+    pgc[0xE4:0xE6] = _u16(0)
+    pgc[0xE6:0xE8] = _u16(program_map_off)
+    pgc[0xE8:0xEA] = _u16(cell_pbk_off)
+    pgc[0xEA:0xEC] = _u16(cell_pos_off)
+
+    # program map
+    pgc += bytes(program_map)
+
+    # C_PBKIT
+    for c in cells:
+        e = bytearray(24)
+        e[0] = c.get("cat0", 0x00)
+        e[1] = c.get("cat1", 0x00)
+        e[4:8] = c.get("pbtime", b"\x00\x00\x05\x40")  # 5 s @ 25fps default
+        e[0x08:0x0C] = _u32(c["first_sector"])
+        e[0x10:0x14] = _u32(c.get("last_vobu_start", c["last_sector"]))
+        e[0x14:0x18] = _u32(c["last_sector"])
+        pgc += e
+
+    # C_POSIT
+    for c in cells:
+        e = bytearray(4)
+        e[0:2] = _u16(c.get("vob_id", 1))
+        e[3] = c.get("cell_id", 1)
+        pgc += e
+
+    return bytes(pgc)
+
+
+def build_vtsi_full(pgc_bytes, *, pgcit_sector=2):
+    """Craft a VTSI with one PGCI_SRP pointing at ``pgc_bytes`` (a full PGC)."""
+    mat = bytearray(SECTOR)
+    mat[0:12] = b"DVDVIDEO-VTS"
+    mat[0xCC:0xD0] = _u32(pgcit_sector)
+
+    nr_pgci = 1
+    pgc_start_byte = 8 + nr_pgci * 8
+    pgcit = bytearray()
+    pgcit += _u16(nr_pgci)
+    pgcit += b"\x00\x00"
+    pgcit += _u32(0)
+    srp = bytearray(8)
+    srp[0] = 0x81
+    srp[4:8] = _u32(pgc_start_byte)
+    pgcit += srp
+    pgcit += pgc_bytes
 
     buf = bytearray(mat)
     base = pgcit_sector * SECTOR
@@ -194,6 +278,135 @@ class VtsiTest(unittest.TestCase):
         vtsi = parse_vtsi(bytes(buf))
         self.assertEqual(vtsi.nr_of_pgcs, 0)
         self.assertIsNone(vtsi.duration_s)
+
+
+class PgcCellOrderTest(unittest.TestCase):
+    """Craft a PGC with a known program map + cell table; assert EXACT order."""
+
+    def _three_cell_pgc(self):
+        # 3 contiguous cells, programs entering cells 1 and 3 (program 2 starts
+        # mid-stream at cell 3, so cell 2 is a continuation of program 1).
+        cells = [
+            {"first_sector": 0, "last_sector": 9, "vob_id": 1, "cell_id": 1,
+             "cat0": 0x02},
+            {"first_sector": 10, "last_sector": 24, "vob_id": 1, "cell_id": 2,
+             "cat0": 0x08},
+            {"first_sector": 25, "last_sector": 39, "vob_id": 2, "cell_id": 1,
+             "cat0": 0x0A},
+        ]
+        return build_pgc(cells, program_map=[1, 3])
+
+    def test_parse_pgc_program_map_and_cell_order_exact(self):
+        pgc_bytes = self._three_cell_pgc()
+        # Parse it standalone at offset 0.
+        pgc = parse_pgc(pgc_bytes, 0, pgc_nr=1)
+        self.assertEqual(pgc.nr_of_programs, 2)
+        self.assertEqual(pgc.nr_of_cells, 3)
+        self.assertEqual(pgc.program_map, [1, 3])
+        # Cells come back in table order == PGC playback order.
+        self.assertEqual([c.cell_nr for c in pgc.cells], [1, 2, 3])
+        self.assertEqual(
+            [(c.first_sector, c.last_sector) for c in pgc.cells],
+            [(0, 9), (10, 24), (25, 39)],
+        )
+        # vob_id/cell_id attached from the cell position table.
+        self.assertEqual(
+            [(c.vob_id, c.cell_id) for c in pgc.cells],
+            [(1, 1), (1, 2), (2, 1)],
+        )
+        # category-byte bitfields decode (cell 3 cat0=0x0A => interleaved bit).
+        self.assertEqual(pgc.cells[0].category0, 0x02)
+        self.assertTrue(pgc.cells[2].interleaved)  # 0x0A bit1 set
+        self.assertFalse(pgc.cells[1].interleaved)  # 0x08 bit1 clear
+
+    def test_parse_vtsi_full_exposes_pgc_cells(self):
+        buf = build_vtsi_full(self._three_cell_pgc())
+        vtsi = parse_vtsi(buf)
+        self.assertTrue(vtsi.is_valid)
+        self.assertEqual(vtsi.nr_of_pgcs, 1)
+        self.assertEqual(vtsi.nr_of_programs, 2)
+        self.assertEqual(vtsi.nr_of_cells, 3)
+        self.assertIsNotNone(vtsi.pgc)
+        self.assertEqual([c.cell_nr for c in vtsi.pgc.cells], [1, 2, 3])
+
+    def test_minimal_pgc_without_offset_table_degrades(self):
+        # A PGC truncated to its first 8 bytes (no offset table) parses to
+        # counts/duration with empty maps rather than raising.
+        pgc = parse_pgc(b"\x00\x00\x05\x07" + b"\x00\x10\x00\x40", 0, pgc_nr=1)
+        self.assertEqual(pgc.nr_of_programs, 5)
+        self.assertEqual(pgc.nr_of_cells, 7)
+        self.assertEqual(pgc.program_map, [])
+        self.assertEqual(pgc.cells, [])
+
+
+class ResolveCellSpansTest(unittest.TestCase):
+    """Map cell sector ranges to per-file byte spans (synthetic, no real VOBs)."""
+
+    def test_single_part_one_span_per_cell(self):
+        pgc = parse_pgc(
+            build_pgc(
+                [
+                    {"first_sector": 0, "last_sector": 9, "cell_id": 1},
+                    {"first_sector": 10, "last_sector": 19, "cell_id": 2},
+                ],
+                program_map=[1, 2],
+            ),
+            0,
+            1,
+        )
+        parts = ["/x/VTS_01_1.VOB"]
+        sizes = [20 * SECTOR]  # one part holds all 20 sectors
+        spans = resolve_cell_spans(pgc.cells, parts, part_sizes=sizes)
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(
+            [(s.vob_file, s.start, s.end, s.cell_nr) for s in spans],
+            [
+                ("/x/VTS_01_1.VOB", 0, 10 * SECTOR, 1),
+                ("/x/VTS_01_1.VOB", 10 * SECTOR, 20 * SECTOR, 2),
+            ],
+        )
+
+    def test_cell_straddling_part_boundary_splits(self):
+        # One cell [0..19]; part 0 is 12 sectors, so the cell splits 12 / 8.
+        pgc = parse_pgc(
+            build_pgc(
+                [{"first_sector": 0, "last_sector": 19, "cell_id": 1}],
+                program_map=[1],
+            ),
+            0,
+            1,
+        )
+        parts = ["/x/VTS_01_1.VOB", "/x/VTS_01_2.VOB"]
+        sizes = [12 * SECTOR, 8 * SECTOR]
+        spans = resolve_cell_spans(pgc.cells, parts, part_sizes=sizes)
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(
+            spans[0], CellSpan("/x/VTS_01_1.VOB", 0, 12 * SECTOR, 1)
+        )
+        self.assertEqual(
+            spans[1], CellSpan("/x/VTS_01_2.VOB", 0, 8 * SECTOR, 1)
+        )
+        # The two spans reconstruct the cell's full byte length.
+        self.assertEqual(sum(s.length for s in spans), 20 * SECTOR)
+
+    def test_cell_past_available_vob_set_raises(self):
+        pgc = parse_pgc(
+            build_pgc(
+                [{"first_sector": 0, "last_sector": 99, "cell_id": 1}],
+                program_map=[1],
+            ),
+            0,
+            1,
+        )
+        # Only 10 sectors available but the cell needs 100 (truncated dump).
+        with self.assertRaises(IFOParseError):
+            resolve_cell_spans(
+                pgc.cells, ["/x/VTS_01_1.VOB"], part_sizes=[10 * SECTOR]
+            )
+
+    def test_empty_vob_set_raises(self):
+        with self.assertRaises(IFOParseError):
+            resolve_cell_spans([], [])
 
 
 if __name__ == "__main__":

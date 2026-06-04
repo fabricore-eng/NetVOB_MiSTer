@@ -32,6 +32,7 @@ from service.sources.dvddump.ifo import (
     read_ifo,
     vts_ifo_path,
 )
+from service.sources.dvddump.dvddump import navinfo_from_cells
 
 REAL_DIR = os.environ.get(
     "NETVOB_REAL_DVD_DIR", "/tmp/kungpow_slice/VIDEO_TS"
@@ -83,6 +84,48 @@ class RealIfoTest(unittest.TestCase):
         self.assertEqual(mains[0].extra["vts_nr"], 10)
         self.assertEqual(mains[0].extra["chapters"], 29)
         self.assertGreater(mains[0].duration_s, 4800)
+
+    def test_main_feature_pgc_cell_order_exact(self):
+        # The real VTS_10 main feature: 1 PGC, 29 programs, 33 cells. Assert the
+        # full PGC parse + exact cell playback order/sectors from the real IFO.
+        vtsi = parse_vtsi(read_ifo(vts_ifo_path(REAL_DIR, 10)))
+        self.assertEqual(vtsi.nr_of_pgcs, 1)
+        self.assertIsNotNone(vtsi.pgc)
+        pgc = vtsi.pgc
+        self.assertEqual(pgc.nr_of_programs, 29)
+        self.assertEqual(pgc.nr_of_cells, 33)
+        self.assertEqual(len(pgc.cells), 33)
+        # Program map: 29 entry cells, the documented KUNGPOW sequence.
+        self.assertEqual(
+            pgc.program_map,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 20,
+             21, 22, 24, 25, 26, 28, 29, 30, 31, 32, 33],
+        )
+        # Cells come back 1..33 in playback order.
+        self.assertEqual([c.cell_nr for c in pgc.cells], list(range(1, 34)))
+        # Cells tile the title sector space contiguously with no gaps.
+        prev_end = -1
+        for c in pgc.cells:
+            self.assertEqual(c.first_sector, prev_end + 1)
+            self.assertGreaterEqual(c.last_sector, c.first_sector)
+            prev_end = c.last_sector
+        # First/last cell sectors (exact values from the real IFO).
+        self.assertEqual(pgc.cells[0].first_sector, 0)
+        self.assertEqual(pgc.cells[0].last_sector, 144523)
+        self.assertEqual(pgc.cells[-1].first_sector, 1943246)
+        self.assertEqual(pgc.cells[-1].last_sector, 1943250)
+        # vob_id/cell_id of the first few cells (from the cell position table).
+        self.assertEqual(
+            [(c.vob_id, c.cell_id) for c in pgc.cells[:3]],
+            [(1, 1), (2, 1), (2, 2)],
+        )
+        # Cell-granular nav index: 33 entries, monotonically increasing time,
+        # spanning ~the whole feature (last cell starts ~81 min in).
+        nav = navinfo_from_cells(pgc.cells)
+        self.assertEqual(len(nav.entries), 33)
+        times = [t for t, _ in nav.entries]
+        self.assertEqual(times, sorted(times))
+        self.assertGreater(times[-1], 4800)
 
 
 @unittest.skipUnless(

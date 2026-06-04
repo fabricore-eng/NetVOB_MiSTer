@@ -36,12 +36,19 @@ service/
 | Control protocol round-trip + media session preamble | **real, tested** |
 | Streamer pre-buffer / pacing / pause / seek / stop | **real, tested** |
 | DVDDumpSource **PS passthrough + 0xBF nav-pack stripping** | **real, tested** (lossless, byte-for-byte) |
-| DVDDumpSource `browse()` (IFO/PGC/VOBU titles, disc-ID metadata) | **stub** — enumerates `*.VOB`; `TODO(libdvdread)` |
+| DVDDumpSource `browse()` (IFO titles + main-feature flag) | **real, tested** — pure-Python VMGI/VTSI parse; `TODO(metadata)` disc-ID naming |
+| DVDDumpSource `open(VTS_nn_x)` **ordered PGC cell streaming** | **real, tested** — VTS IFO → PGC program map + cell playback table (`C_PBKIT`) → ordered `(vob_file, byte-range)` spans, nav-stripped; cell-granular `NavInfo` seek index. `TODO(time-map)` DSI/VOBU index |
 | PlexSource (catalog + ffmpeg transcode) | **stub** — `browse()`=`[]`, `open()` raises; no `PLEX_URL`/`PLEX_TOKEN` |
 
 The DVD nav-strip is the verifiable-now spine: a VOB *is* an MPEG-2 Program
 Stream, so `open()` strips the DVD `private_stream_2` (`stream_id 0xBF`,
 PCI/DSI nav) PES packets and passes **every other pack/PES through losslessly**.
+For a real dump, `open("dvddump:VTS_nn_x")` parses the VTS IFO's PGC (program
+map + cell playback table) and streams the title's cells **in PGC playback
+order**, mapping each cell's VTS-relative sector range onto the on-disk
+`VTS_nn_1.VOB` .. set (splitting cells that straddle the 1 GB VOB-file boundary)
+— the lossless, field-exact PS the wire needs. The cell starts double as a
+coarse `NavInfo` seek index; a finer DSI/VOBU time-map index is a `TODO`.
 
 ## Run / test
 

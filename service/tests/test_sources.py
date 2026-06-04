@@ -7,8 +7,14 @@ import tempfile
 import unittest
 
 from service.sources.base.source import NavInfo, Source
-from service.sources.dvddump.dvddump import DVDDumpSource
+from service.sources.dvddump.dvddump import (
+    DVDCellStreamHandle,
+    DVDDumpSource,
+    navinfo_from_cells,
+)
+from service.sources.dvddump.ifo import SECTOR, CellPlayback, CellSpan
 from service.sources.plex.plex import PlexSource
+from service.tests.test_ifo import build_pgc, build_vtsi_full
 
 
 PREFIX = b"\x00\x00\x01"
@@ -16,6 +22,28 @@ PREFIX = b"\x00\x00\x01"
 
 def _pes(sid, payload):
     return PREFIX + bytes([sid]) + len(payload).to_bytes(2, "big") + payload
+
+
+def _pack(payload):
+    """A minimal MPEG-2 pack header (14 bytes, no stuffing) + the payload."""
+    hdr = bytearray(PREFIX + b"\xba" + bytes(10))
+    hdr[4] = 0x44  # top 2 bits 0b01 => MPEG-2 pack form
+    hdr[13] = 0x00  # pack_stuffing_length = 0
+    return bytes(hdr) + payload
+
+
+def _sector(*pes_units):
+    """Build a 2048-byte sector: a pack header + the PES units, zero-padded.
+
+    Pads with a padding-stream (0xBE) PES so the whole 2048 bytes is valid PS
+    that the walker tiles exactly (DVD packs are sector-sized).
+    """
+    body = _pack(b"") + b"".join(pes_units)
+    pad_needed = SECTOR - len(body) - 6  # 6-byte PES header for the padding
+    assert pad_needed >= 0, "sector overflow in test fixture"
+    body += _pes(0xBE, b"\x00" * pad_needed)
+    assert len(body) == SECTOR, len(body)
+    return body
 
 
 class DVDDumpSourceTest(unittest.TestCase):
@@ -89,6 +117,101 @@ class DVDDumpSourceTest(unittest.TestCase):
         self.assertFalse(DVDDumpSource().health()["configured"])
         with tempfile.TemporaryDirectory() as d:
             self.assertTrue(DVDDumpSource(root=d).health()["configured"])
+
+
+class DVDCellStreamTest(unittest.TestCase):
+    """Ordered-cell streaming + nav-strip + seek on SYNTHETIC sector data."""
+
+    def _three_cell_vob(self):
+        # Three sectors, each its own cell. Each sector carries a video PES with
+        # a distinct marker plus a 0xBF nav packet that MUST be stripped.
+        s0 = _sector(_pes(0xE0, b"CELL0-VID"), _pes(0xBF, b"NAV0"))
+        s1 = _sector(_pes(0xE0, b"CELL1-VID"), _pes(0xBF, b"NAV1"))
+        s2 = _sector(_pes(0xE0, b"CELL2-VID"), _pes(0xBF, b"NAV2"))
+        return s0, s1, s2
+
+    def test_streams_cells_in_order_stripping_nav(self):
+        with tempfile.TemporaryDirectory() as d:
+            s0, s1, s2 = self._three_cell_vob()
+            vob = os.path.join(d, "VTS_05_1.VOB")
+            with open(vob, "wb") as f:
+                f.write(s0 + s1 + s2)
+            cells = [
+                CellPlayback(1, 0x02, 0, 5.0, 0, 0, 0, vob_id=1, cell_id=1),
+                CellPlayback(2, 0x08, 0, 5.0, 1, 1, 1, vob_id=1, cell_id=2),
+                CellPlayback(3, 0x0A, 0, 5.0, 2, 2, 2, vob_id=2, cell_id=1),
+            ]
+            spans = [
+                CellSpan(vob, c.first_sector * SECTOR,
+                         (c.last_sector + 1) * SECTOR, c.cell_nr)
+                for c in cells
+            ]
+            h = DVDCellStreamHandle(spans, cells=cells,
+                                    nav=navinfo_from_cells(cells))
+            out = bytearray()
+            while True:
+                chunk = h.read(100)
+                if not chunk:
+                    break
+                out += chunk
+            # Video markers appear in cell order; no NAV bytes survive.
+            self.assertIn(b"CELL0-VID", out)
+            i0 = out.index(b"CELL0-VID")
+            i1 = out.index(b"CELL1-VID")
+            i2 = out.index(b"CELL2-VID")
+            self.assertLess(i0, i1)
+            self.assertLess(i1, i2)
+            self.assertNotIn(b"NAV0", out)
+            self.assertNotIn(b"NAV1", out)
+            self.assertNotIn(b"NAV2", out)
+
+    def test_seek_resumes_at_cell_boundary(self):
+        with tempfile.TemporaryDirectory() as d:
+            s0, s1, s2 = self._three_cell_vob()
+            vob = os.path.join(d, "VTS_05_1.VOB")
+            with open(vob, "wb") as f:
+                f.write(s0 + s1 + s2)
+            cells = [
+                CellPlayback(1, 0x02, 0, 5.0, 0, 0, 0),
+                CellPlayback(2, 0x08, 0, 5.0, 1, 1, 1),
+                CellPlayback(3, 0x0A, 0, 5.0, 2, 2, 2),
+            ]
+            spans = [
+                CellSpan(vob, c.first_sector * SECTOR,
+                         (c.last_sector + 1) * SECTOR, c.cell_nr)
+                for c in cells
+            ]
+            nav = navinfo_from_cells(cells)
+            # cell start times: 0.0, 5.0, 10.0
+            self.assertEqual([t for t, _ in nav.entries], [0.0, 5.0, 10.0])
+            h = DVDCellStreamHandle(spans, cells=cells, nav=nav)
+            h.seek(7.0)  # nearest preceding -> cell 2 (t=5.0)
+            out = h.read(10_000)
+            self.assertNotIn(b"CELL0-VID", out)  # cell 1 skipped
+            self.assertIn(b"CELL1-VID", out)
+            self.assertIn(b"CELL2-VID", out)
+
+    def test_open_dispatches_to_cell_path_when_ifo_present(self):
+        # A VTS id with a matching VTS_nn_0.IFO drives the ordered-cell path
+        # (assembled from a crafted IFO + single-sector VOB).
+        with tempfile.TemporaryDirectory() as d:
+            # One cell, one sector.
+            sector = _sector(_pes(0xE0, b"FEATURE"), _pes(0xBF, b"NAVX"))
+            with open(os.path.join(d, "VTS_07_1.VOB"), "wb") as f:
+                f.write(sector)
+            pgc = build_pgc(
+                [{"first_sector": 0, "last_sector": 0, "cell_id": 1}],
+                program_map=[1],
+            )
+            with open(os.path.join(d, "VTS_07_0.IFO"), "wb") as f:
+                f.write(build_vtsi_full(pgc))
+            # browse-style VMG not needed for open(); call open() directly.
+            src = DVDDumpSource(root=d)
+            h = src.open("dvddump:VTS_07_1")
+            self.assertIsInstance(h, DVDCellStreamHandle)
+            out = h.read(10_000)
+            self.assertIn(b"FEATURE", out)
+            self.assertNotIn(b"NAVX", out)
 
 
 class PlexSourceStubTest(unittest.TestCase):
