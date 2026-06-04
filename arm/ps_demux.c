@@ -73,12 +73,20 @@ static int sid_is_skip_section(uint8_t sid)
 void ps_demux_init(ps_demux *d, ps_video_es_sink sink, void *user)
 {
     memset(d, 0, sizeof(*d));
-    d->state          = PS_ST_START_CODE;
-    d->sink           = sink;
-    d->sink_user      = user;
-    d->last_video_pts = PS_PTS_NONE;
-    d->last_video_dts = PS_PTS_NONE;
-    d->last_audio_pts = PS_PTS_NONE;
+    d->state           = PS_ST_START_CODE;
+    d->sink            = sink;
+    d->sink_user       = user;
+    d->audio_sink      = NULL;
+    d->audio_sink_user = NULL;
+    d->last_video_pts  = PS_PTS_NONE;
+    d->last_video_dts  = PS_PTS_NONE;
+    d->last_audio_pts  = PS_PTS_NONE;
+}
+
+void ps_demux_set_audio_sink(ps_demux *d, ps_audio_es_sink sink, void *user)
+{
+    d->audio_sink      = sink;
+    d->audio_sink_user = user;
 }
 
 const ps_stats *ps_demux_stats(const ps_demux *d) { return &d->stats; }
@@ -91,6 +99,7 @@ static void begin_unit(ps_demux *d, uint8_t sid)
 {
     d->stream_id     = sid;
     d->is_video      = 0;
+    d->is_audio      = 0;
     d->pkt_unbounded = 0;
 
     if (sid == PS_SID_PACK) {
@@ -125,8 +134,10 @@ static void begin_unit(ps_demux *d, uint8_t sid)
             d->is_video = 1;
             d->stats.video_pes++;
         } else if (sid_is_mpeg_audio(sid)) {
+            d->is_audio = 1;
             d->stats.audio_pes_mpeg++;
         } else { /* private_stream_1 */
+            d->is_audio = 1;
             d->stats.audio_pes_private1++;
         }
         d->len_have = 0;
@@ -150,6 +161,15 @@ static void emit_video(ps_demux *d, const uint8_t *p, size_t n)
 {
     d->stats.video_es_bytes += n;
     if (d->sink && n) d->sink(p, n, d->sink_user);
+}
+
+/* Emit a run of audio ES payload (or just account it if no audio sink). The
+ * originating stream_id is forwarded so the consumer can fan out by track. */
+static void emit_audio(ps_demux *d, const uint8_t *p, size_t n)
+{
+    d->stats.audio_es_bytes += n;
+    if (d->audio_sink && n)
+        d->audio_sink(d->stream_id, p, n, d->audio_sink_user);
 }
 
 /*
@@ -337,7 +357,10 @@ size_t ps_demux_feed(ps_demux *d, const uint8_t *data, size_t len)
                 /* Bounded payload: emit exactly pkt_remaining bytes. */
                 size_t avail = len - i;
                 size_t take  = d->pkt_remaining < avail ? d->pkt_remaining : avail;
-                if (d->is_video && take) emit_video(d, &data[i], take);
+                if (take) {
+                    if (d->is_video)      emit_video(d, &data[i], take);
+                    else if (d->is_audio) emit_audio(d, &data[i], take);
+                }
                 i += take;
                 d->pkt_remaining -= (uint32_t)take;
                 if (d->pkt_remaining == 0) d->state = PS_ST_START_CODE;

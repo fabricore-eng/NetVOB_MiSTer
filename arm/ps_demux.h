@@ -3,8 +3,12 @@
  *
  * Splits a PS byte stream into:
  *   - video elementary stream (ES) bytes  -> destined for the sd_* seam
- *   - audio PES recognition/counting       -> MPEG audio (0xC0-0xDF) + AC-3 etc.
- *                                              via private_stream_1 (0xBD)
+ *   - audio elementary stream (ES) bytes  -> destined for an audio sink for the
+ *                                            future AC-3/MP2 -> PCM decode path
+ *                                            (MPEG audio 0xC0-0xDF, and AC-3/DTS/
+ *                                            LPCM via private_stream_1 0xBD).
+ *                                            If no audio sink is installed, audio
+ *                                            is still recognized/counted as before.
  *
  * It extracts PTS/DTS from PES headers for PTS bookkeeping, and discards
  * non-payload structure: pack headers (0xBA), system headers (0xBB),
@@ -57,6 +61,21 @@ extern "C" {
  */
 typedef void (*ps_video_es_sink)(const uint8_t *data, size_t len, void *user);
 
+/*
+ * Sink for emitted audio ES bytes. Called with consecutive runs of audio
+ * elementary-stream payload (PES payload with the PES header stripped), tagged
+ * with the originating `stream_id` so the consumer can fan out by codec/track:
+ *   - 0xC0-0xDF  MPEG audio (MP2/MP1)             -> MP2 decode
+ *   - 0xBD       private_stream_1                  -> AC-3 / DTS / LPCM
+ * (For private_stream_1, the leading substream-id / frame-count bytes are part
+ * of the payload as delivered; the AC-3/MP2 decode stage strips them — this
+ * demuxer stays codec-agnostic and routes the raw PES payload byte-exactly.)
+ * The pointer is valid only for the call duration; copy to retain. `user` is
+ * the opaque value from ps_demux_set_audio_sink.
+ */
+typedef void (*ps_audio_es_sink)(uint8_t stream_id, const uint8_t *data,
+                                 size_t len, void *user);
+
 /* Internal parser phases (exposed only so the struct can be stack-allocated). */
 typedef enum {
     PS_ST_START_CODE = 0, /* hunting/aligning to a 00 00 01 xx start code   */
@@ -78,6 +97,7 @@ typedef struct {
     uint64_t nav_private2;       /* 0xBF nav private_stream_2 dropped        */
     uint64_t other_pes;          /* recognized but unhandled stream_ids      */
     uint64_t video_es_bytes;     /* total video ES payload bytes emitted     */
+    uint64_t audio_es_bytes;     /* total audio ES payload bytes emitted     */
 } ps_stats;
 
 /*
@@ -93,7 +113,8 @@ typedef struct {
 
     /* Current PES/section context. */
     uint8_t  stream_id;       /* stream_id of the unit being parsed          */
-    int      is_video;        /* current unit routes payload to the ES sink  */
+    int      is_video;        /* current unit routes payload to the video sink*/
+    int      is_audio;        /* current unit routes payload to the audio sink*/
     uint32_t pkt_remaining;   /* bytes left in current length-bounded region */
     int      pkt_unbounded;   /* PES packet_length==0 (video may be unbounded)*/
 
@@ -127,11 +148,20 @@ typedef struct {
     ps_video_es_sink sink;
     void            *sink_user;
 
+    ps_audio_es_sink audio_sink;
+    void            *audio_sink_user;
+
     ps_stats stats;
 } ps_demux;
 
-/* Initialise a demuxer. `sink` may be NULL (video ES then only counted). */
+/* Initialise a demuxer. `sink` may be NULL (video ES then only counted). The
+ * audio sink defaults to NULL (audio counted but not routed); install one with
+ * ps_demux_set_audio_sink() if you want the audio ES payload. */
 void ps_demux_init(ps_demux *d, ps_video_es_sink sink, void *user);
+
+/* Install (or clear, with NULL) the audio ES sink. May be called any time after
+ * init; affects audio PES parsed afterwards. */
+void ps_demux_set_audio_sink(ps_demux *d, ps_audio_es_sink sink, void *user);
 
 /* Feed `len` bytes. Safe to call repeatedly with any chunking. Returns the
  * number of bytes consumed (always == len; the parser never stalls). */
