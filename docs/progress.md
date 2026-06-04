@@ -237,3 +237,28 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine
   works. Captured in session memory.
+- 2026-06-04 (FEED gate de-risked off-board + PS→ES resolved + UX north-star folded in) — three
+  off-board advances while 573 held the dell build lock + mister device (no on-board work this cycle):
+  **(1) FEED root-cause lead + fix staged.** Per the hub's new image-mount LESSONS (added by 573) +
+  573's note, `img_size=0` almost always = FILE-NOT-FOUND — and `hw_decode_test.sh` copied the `.rbf`
+  but **never staged a `test.mpg`**, so the `.mgl` mounted a path that didn't resolve → `img_size=0` →
+  `total_sectors=0` → black. Built `tools/testclips/make_test480i.sh` (reproducible NTSC 480i MP@ML
+  *elementary* clip, 720x480, TFF, full I/P/B GOP, ~2MB) and **verified it decodes in our Verilator
+  harness at native 720x480 with real picture content** (testsrc2 timecode/sweep/checkerboard). Hardened
+  `hw_decode_test.sh`: step 2b now stages the clip → `mister:/media/fat/test.mpg`, checks size+seq-header
+  BEFORE load, and the interpretation block reads the gate from `uart_debug` ALONE (Z=total_sectors as a
+  file-found oracle) and splits file-not-found vs mount-pulse via a manual-OSD-mount fallback. If this is
+  file-not-found, the existing candidate `.rbf` needs **no rebuild**. **(2) PS→ES question resolved.**
+  The `mpeg2fpga` VLD (`vld.v STATE_NEXT_START_CODE`) consumes a *video elementary stream* (handles only
+  0x000001 video codes, not pack/PES); `mpg_streamer` feeds mounted sectors byte-for-byte with NO demux.
+  `docs/transport.md`+`service-design.md` already decide the **ARM demuxes PS→video-ES into the sd_* seam**
+  — so the decoder gets ES, and an ES test clip is architecturally exact (not a shortcut). Real DVD VOBs
+  are PS → the PS→ES demux is the ARM's job (M2), flagged. **(3) UX north-star.** User steer: the core
+  just plays video; controller = remote; UI = an *alternate-history DVD player* that natively browses
+  Plex/network libraries. Flipped `catalog-browse.md` §3 to **OSD-first browse** (go/no-go on whether the
+  stock OSD can navigate libraries), demoted the custom UI to a later **retro Plex-style** phase, added §8
+  (transport/overlay/DVD-menus, honestly scoping subpicture as a NEW path); `milestones.md` M4/M6 updated
+  + new **M8** experience tier; `PLAN.md` row updated; session memory written. NEXT (needs device free):
+  run `tools/build/hw_decode_test.sh` when the `mister` devlock frees (573 cycling till past ~19:30Z) →
+  the staged clip confirms feed→decode via uart_debug (no CRT needed for the decode gate; CRT only for the
+  final analog field/color check). All on `feat-decoder-bringup`; `main`+`mister` untouched this cycle.
