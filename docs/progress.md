@@ -192,6 +192,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   first-PGC-only (multi-PGC/multi-angle = TODO). GATE: the 480i+ADDR_ERR candidate `.rbf` is still
   build-blocked behind 573's long build (57+ min on the shared Dell); watcher patiently waiting — no
   lock-fighting. next: build the candidate when the box frees; morning HW localize via `uart_debug`.
+- 2026-06-04 (cycle 10 — OVERNIGHT, candidate .rbf BUILT + morning-ready) — the 480i+ADDR_ERR
+  candidate compiled cleanly on the Dell (0 errors, ~22.5 min) once 573's long build freed the box;
+  converted to a compressed loadable `.rbf`: **`dell:~/NetVOB_MiSTer/core/MiSTer_MPEG2/output_files/
+  mpeg2fpga_dvd_480i_addrerr.rbf`** (2.99 MB). Provenance confirmed: `emu.sv`+`modeline.v` (480i) +
+  `mem_shim.sv` (ADDR_ERR fix) in the build tree. **GATE OVERNIGHT-PREP COMPLETE.** ►► MORNING TURNKEY
+  STEPS: (1) `dell_coord.sh devlock mister acquire dvd`; (2) copy that `.rbf` → `mister:/media/fat/
+  mpeg2fpga_dvd.rbf`; (3) `load_core` the `.mgl` (mounts a clip to S0) — clip at `/media/fat/test.mpg`
+  (currently a 720×480 NTSC bars ES); (4) follow **`docs/hw-decode-diagnostic.md`**: read `uart_debug`
+  (115200 8N1 on UART_TXD; try `/dev/ttyS1` over ssh, else USB-TTL, else the LED fallback) → the
+  RP/P/FC/streamer counts localize the black to feed / decoder / mem_shim / video-out → pick the next
+  patch (ADDR_ERR already in this build; FIFO-swap + feed-latch are staged backups in
+  `core/patches/hw/`). Expectation: best case stable picture; else a stable raster that localizes the
+  stage. mister untouched overnight (off-board constraint honored).
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine
