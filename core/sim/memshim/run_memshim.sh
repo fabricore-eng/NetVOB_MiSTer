@@ -29,7 +29,7 @@ rm -rf "$RUNDIR"; mkdir -p "$RUNDIR"
 cp -f "${HERE}/stream.dat" "$RUNDIR/"
 
 echo "plusargs: ${PLUSARGS[*]:-<none>}"
-( cd "$RUNDIR" && exec "$BIN" "${PLUSARGS[@]}" > run.log 2>&1 ) &
+( cd "$RUNDIR" && exec "$BIN" ${PLUSARGS[@]+"${PLUSARGS[@]}"} > run.log 2>&1 ) &
 PID=$!
 echo "$PID" > "${RUNDIR}/sim.pid"
 echo "sim PID $PID in $RUNDIR — waiting for >=${MIN_FRAMES} framestore frames OR stall (cap ${MAX_WAIT}s)..."

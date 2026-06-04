@@ -1,0 +1,73 @@
+diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
+index 33f3c2a..0eb2c5a 100644
+--- a/rtl/mem_shim.sv
++++ b/rtl/mem_shim.sv
+@@ -80,6 +80,14 @@ module mem_shim (
+ 
+     reg state;
+ 
++    // Single-outstanding-read serialization (HW fix 2026-06-04): after a read is
++    // ACCEPTED, do not issue the next command until its readdatavalid returns. The
++    // 2-state FSM otherwise advances on acceptance (not response), so it could issue a
++    // WRITE on top of an outstanding READ -> on real HW the HPS f2sdram wedges
++    // (waitrequest stuck) and a lost/misordered response permanently desyncs the
++    // response stream (observed: uart P=84 reads vs RP=83 responses, then hang).
++    reg read_pending;
++
+     // Skid buffer — captures the FIFO word that appears 1 cycle after rd_en is
+     // deasserted (standard mode FIFO 1-cycle latency).
+     reg        saved_valid;
+@@ -90,6 +98,7 @@ module mem_shim (
+     always @(posedge clk) begin
+         if (!rst_n) begin
+             state          <= 0;
++            read_pending   <= 0;
+             ram_read       <= 0;
+             ram_write      <= 0;
+             ram_address    <= 0;
+@@ -109,6 +118,9 @@ module mem_shim (
+             mem_res_wr_en <= ddr3_readdatavalid;
+             if (ddr3_readdatavalid)
+                 mem_res_wr_dta <= ddr3_readdata;
++            // The outstanding read's response arrived -> release the serialization hold.
++            if (ddr3_readdatavalid)
++                read_pending <= 0;
+ 
+             // -----------------------------------------------------------------
+             // Command Path FSM
+@@ -117,7 +129,13 @@ module mem_shim (
+                 // =============================================================
+                 // S_IDLE: Process next command (skid buffer has priority)
+                 // =============================================================
+-                if (saved_valid && !mem_res_wr_almost_full) begin
++                if (read_pending) begin
++                    // Serialize: an issued read has not yet returned its data. Hold off
++                    // issuing the next command AND don't pull from the request FIFO
++                    // (so no command is lost) until readdatavalid releases read_pending.
++                    mem_req_rd_en <= 1'b0;
++                end
++                else if (saved_valid && !mem_res_wr_almost_full) begin
+                     case (saved_cmd)
+                         CMD_WRITE: begin
+                             if (saved_addr == ADDR_ERR) begin
+@@ -195,10 +213,19 @@ module mem_shim (
+                 // S_WAIT: Hold ram_read/write until bridge accepts
+                 // =============================================================
+                 if (!ddr3_waitrequest) begin
++                    // A read just got accepted -> it now owes one readdatavalid. Block
++                    // the next command until that response returns (single-outstanding),
++                    // and do NOT pull the next FIFO word yet (read_pending S_IDLE branch
++                    // keeps rd_en low). For a write (no response) resume pulling normally.
++                    if (ram_read) begin
++                        read_pending  <= 1'b1;
++                        mem_req_rd_en <= 1'b0;
++                    end else begin
++                        mem_req_rd_en <= !mem_res_wr_almost_full;
++                    end
+                     ram_read      <= 0;
+                     ram_write     <= 0;
+                     state         <= 0;
+-                    mem_req_rd_en <= !mem_res_wr_almost_full;
+                 end
+ 
+                 // Skid buffer capture: FIFO outputs a word 1 cycle after rd_en
