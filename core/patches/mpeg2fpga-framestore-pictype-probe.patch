@@ -1,0 +1,38 @@
+diff --git a/bench/iverilog/mem_ctl.v b/bench/iverilog/mem_ctl.v
+index 38c9297..91e97bc 100644
+--- a/bench/iverilog/mem_ctl.v
++++ b/bench/iverilog/mem_ctl.v
+@@ -172,6 +172,7 @@ module mem_ctl(
+   wire [13:0]display_vertical_size;
+   wire  [1:0]picture_structure;
+   wire  [1:0]chroma_format;
++  wire  [2:0]picture_coding_type;
+   wire       update_picture_buffers;
+   wire [12:0]macroblock_address;
+ 
+@@ -181,6 +182,7 @@ module mem_ctl(
+   assign display_vertical_size   = testbench.mpeg2.vld.display_vertical_size;
+   assign picture_structure       = testbench.mpeg2.vld.picture_structure;
+   assign chroma_format           = testbench.mpeg2.vld.chroma_format;
++  assign picture_coding_type     = testbench.mpeg2.vld.picture_coding_type;
+   assign update_picture_buffers  = testbench.mpeg2.update_picture_buffers;
+   assign macroblock_address      = testbench.mpeg2.macroblock_address;
+ 
+@@ -266,7 +268,16 @@ module mem_ctl(
+             $fwrite(fp, "# picture_structure frame picture\n");
+           else
+             $fwrite(fp, "# picture_structure field picture\n");
+-    
++
++          /* picture_coding_type: confirms whether I/P/B (inter-prediction) decoded. */
++          case (picture_coding_type)
++            I_TYPE:  begin $fwrite(fp, "# picture_coding_type I\n"); $display("%m\tframestore dump: picture_coding_type I (frame %0d)", frame_number); end
++            P_TYPE:  begin $fwrite(fp, "# picture_coding_type P\n"); $display("%m\tframestore dump: picture_coding_type P (frame %0d)", frame_number); end
++            B_TYPE:  begin $fwrite(fp, "# picture_coding_type B\n"); $display("%m\tframestore dump: picture_coding_type B (frame %0d)", frame_number); end
++            D_TYPE:  begin $fwrite(fp, "# picture_coding_type D\n"); $display("%m\tframestore dump: picture_coding_type D (frame %0d)", frame_number); end
++            default: begin $fwrite(fp, "# picture_coding_type %0d\n", picture_coding_type); $display("%m\tframestore dump: picture_coding_type %0d (frame %0d)", picture_coding_type, frame_number); end
++          endcase
++
+           if (chroma_format == CHROMA420)
+             $fwrite(fp, "# chroma_format 4:2:0\n");
+           else 

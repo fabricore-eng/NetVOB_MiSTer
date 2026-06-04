@@ -1,8 +1,10 @@
-# Verilator build + run scratch (regenerable via `make all`)
+# Verilator build + run scratch (regenerable via `make all` / the README recipes)
 obj_dir/
-run/
-run2/
+# any run* scratch dir: run/ run2/ run_ntsc/ run_repro/ run_motion/ ...
+run*/
 stream.dat
 *.ppm
-# keep: decoded_greyramp_frame.png (the verified ladder artifact), incdir/ symlinks
+*.gray
+# keep: decoded_greyramp_frame.png (the verified ladder artifact), incdir/ symlinks,
+# and the tracked helper scripts (framestore_extract.py, psnr.py, *.sh, Makefile).
 !decoded_greyramp_frame.png

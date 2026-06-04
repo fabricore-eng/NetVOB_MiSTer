@@ -1,0 +1,61 @@
+diff --git a/rtl/mpeg2/modeline.v b/rtl/mpeg2/modeline.v
+index eb7dab6..93f7e3f 100644
+--- a/rtl/mpeg2/modeline.v
++++ b/rtl/mpeg2/modeline.v
+@@ -25,6 +25,7 @@
+ `ifndef MODELINE_PAL_INTERL
+ `ifndef MODELINE_PAL_PROGR
+ `ifndef MODELINE_HDTV_INTERL
++`ifndef MODELINE_NTSC_INTERL
+ `ifndef MODELINE_VGA
+ `define MODELINE_SVGA 1
+ `endif
+@@ -33,6 +34,7 @@
+ `endif
+ `endif
+ `endif
++`endif
+ 
+ // XXX check values
+ 
+@@ -166,4 +168,40 @@
+     VID_MODE       = 3'b001;
+ `endif
+ 
++`ifdef MODELINE_NTSC_INTERL
++  // NTSC 480i  (720x480 interlaced, ~59.94 fields/s) -- the ADV7125 / CRT target.
++  //
++  // ITU-R BT.601 525-line: pixel (dot) clock 13.5 MHz, 858 total dots per line,
++  // 720 active; 525 total lines per frame (262.5 per field), 480 active (240 per
++  // field). Line rate 13.5e6/858 = 15.734 kHz; field rate 15734.27/262.5 =
++  // 59.94 Hz; frame rate 29.97 Hz. (dotclock.v must be set to ~13.5 MHz for the
++  // analog timing to be exact; the raster GEOMETRY proven here is clock-agnostic.)
++  //
++  // Modeled on MODELINE_PAL_INTERL (the cycle-1-proven interlaced entry): the
++  // syncgen runs a field-based counter, so VERT_RES / VERT_LEN / VERT_SYNC_* are
++  // PER FIELD, and HALFLINE is the mid-line dot where v_sync starts on odd fields
++  // (= HORZ_LEN/2) to create the half-line offset between fields.
++  //
++  //   HORZ_RES = 720 active dots (PAL entry uses the active count directly).
++  //   HORZ_LEN = 858 total dots (BT.601).  H sync ~4.7us @13.5MHz ~= 63 dots;
++  //              front porch ~1.5us ~= 19 dots -> sync_strt 736, sync_end 799.
++  //   VERT_RES = 240 visible lines / field (480 / 2).
++  //   VERT_LEN = 262 lines / field (525/2 = 262.5; .5 handled by HALFLINE).
++  //   VERT_SYNC_STRT/END = res+4 .. res+7 (NTSC vsync after a short front porch),
++  //              following PAL's res+3..res+5 pattern.
++  parameter [11:0]
++    HORZ_RES       = 720,
++    HORZ_SYNC_STRT = 736,
++    HORZ_SYNC_END  = 799,
++    HORZ_LEN       = 858,
++    VERT_RES       = 240,
++    VERT_SYNC_STRT = 244,
++    VERT_SYNC_END  = 247,
++    VERT_LEN       = 262,
++    HALFLINE       = 429;
++
++  parameter [2:0]
++    VID_MODE       = 3'b001;   // {clip_display_size, pixel_repetition, interlaced}
++`endif
++
+ /* not truncated */

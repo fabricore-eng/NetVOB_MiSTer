@@ -40,11 +40,17 @@ INCDIR   := $(abspath ./incdir)
 OBJDIR   := obj_dir
 BIN      := $(OBJDIR)/Vtestbench
 
-# Re-appliable submodule patch (the durable artifact; the gitlink stays pinned).
+# Re-appliable submodule patches (the durable artifact; the gitlink stays pinned).
 # A FRESH submodule checkout is pristine at the pin, so the build auto-applies
-# this before linting/compiling. Without it Verilator dies on a duplicate `fp`
-# declaration in bench/iverilog/mem_ctl.v. See core/patches/README.md.
-PATCH    := $(abspath ../patches/mpeg2fpga-verilator-bench-fixes.patch)
+# EVERY core/patches/*.patch before linting/compiling. The `patch` target loops
+# over them with idempotent reverse-check/apply/skip logic so a fresh checkout
+# applies all of them and re-running is a no-op. Patches are applied in sorted
+# order (shell glob); name them so any inter-patch ordering is lexicographic.
+# Without these Verilator dies on a duplicate `fp` decl in mem_ctl.v (bench-fix),
+# and the framestore PPM/log would lack picture_coding_type (pictype-probe).
+# See core/patches/README.md.
+PATCHDIR := $(abspath ../patches)
+PATCHES  := $(sort $(wildcard $(PATCHDIR)/*.patch))
 
 # Output raster modeline (see header). greyramp.mpg => PAL interlaced.
 MODELINE ?= MODELINE_PAL_INTERL
@@ -87,16 +93,22 @@ VFLAGS := --timing --language 1364-2001 \
 
 all: png
 
-# Idempotent: apply the bench fix iff a clean checkout needs it; skip if already
-# applied; fail loudly if the patch is stale (e.g. after a submodule pin bump).
+# Idempotent: for EACH core/patches/*.patch, apply iff a clean checkout needs it;
+# skip if already applied; fail loudly if a patch is stale (e.g. after a submodule
+# pin bump). Patches are applied in sorted order so a multi-patch chain that edits
+# the same file (e.g. bench-fix then pictype-probe, both touch mem_ctl.v) applies
+# in the order the later patch's context was generated against.
 patch:
-	@if git -C $(MPEG2) apply --reverse --check $(PATCH) 2>/dev/null; then \
-	  echo "[patch] mpeg2fpga bench fix already applied"; \
-	elif git -C $(MPEG2) apply --check $(PATCH) 2>/dev/null; then \
-	  git -C $(MPEG2) apply $(PATCH) && echo "[patch] applied mpeg2fpga bench fix"; \
-	else \
-	  echo "[patch] ERROR: $(PATCH) neither applies cleanly nor is already applied — check submodule state/pin"; exit 1; \
-	fi
+	@for p in $(PATCHES); do \
+	  name=$$(basename $$p); \
+	  if git -C $(MPEG2) apply --reverse --check $$p 2>/dev/null; then \
+	    echo "[patch] $$name already applied"; \
+	  elif git -C $(MPEG2) apply --check $$p 2>/dev/null; then \
+	    git -C $(MPEG2) apply $$p && echo "[patch] applied $$name"; \
+	  else \
+	    echo "[patch] ERROR: $$name neither applies cleanly nor is already applied — check submodule state/pin"; exit 1; \
+	  fi; \
+	done
 
 lint: patch
 	verilator --lint-only $(VFLAGS) $(SRCS)
@@ -121,4 +133,5 @@ png: run
 	@echo "wrote run/tv_out_0001.png"; file run/tv_out_0001.png
 
 clean:
-	rm -rf $(OBJDIR) run run2 stream.dat
+	rm -rf $(OBJDIR) run* stream.dat
+	@echo "[clean] kept artifacts/ (durable evidence PNGs)"
