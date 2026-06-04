@@ -77,3 +77,20 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   Build config: `DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2`.
   blocked: none. next: `load_core` the `.rbf` on `mister` behind a `devlock` + filmstrip (M1a-HW),
   via the shared protocol. (cycle-3 local sim/real-data workflow still running — integrate next.)
+- 2026-06-03 (cycle 3 results — landed during the build window, all reproduced) — **decoder-sim
+  depth**: FIELD PARITY confirmed (correct top/bottom weave 22 dB vs swapped 3.8 dB = 18 dB gap;
+  per-field 30.4 vs 3.9 dB) — field-exact order validated in sim; **I/P/B decoded through the
+  NTSC 480i interlaced path**; GOP soak clean (21-GOP/240-frame clip, no leak/drift,
+  wall-clock-bounded). PSNR honestly **stays 28.67 dB** — IDCT-flavor hypothesis **REFUTED**
+  (ffmpeg int/simple/default near-identical); residual = the 2007 fixed-point datapath vs ffmpeg
+  as a class (bounded max|Δ|=18, −2 LSB DC → `yuv2rgb.v` suspect), a conformant-decoder
+  difference, not a bug. HW note: `syncgen` odd_field is phase-offset one field from BT.601
+  content parity → the ADV7125 field-ID must lock to the *emitted* field (HW bring-up item).
+  **DVDDumpSource lossless path VALIDATED ON REAL DVD DATA**: walked the full 30 MB KUNGPOW
+  VTS_10_1 slice, 0 parse errors, stripped exactly 154 `0xBF` nav packets losslessly → ffprobe
+  confirms valid MPEG-2 PS (mpeg2video 720×480 + 6× AC-3); real IFO parser (`ifo.py`) enumerates
+  titles for `browse()`; 68 tests (skip-guarded). **ARM real pipeline** (ringbuf→demux→feeder) on
+  the real slice: video ES **byte-identical to ffmpeg**, 0 FIFO/ring overruns, AC-3 substream
+  histogram matches ffprobe's 6 tracks; insight: the audio sink's byte-runs can't recover
+  substream-id without PES boundaries. **No parser bug exposed by real VOBUs.** blocked: none.
+  next: `load_core` the `.rbf` on `mister` behind a `devlock` + filmstrip (M1a-HW).
