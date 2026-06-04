@@ -16,9 +16,10 @@ TESTS := \
 	$(BUILD)/test_ps_demux \
 	$(BUILD)/test_ps_demux_audio \
 	$(BUILD)/test_ringbuf \
-	$(BUILD)/test_feeder
+	$(BUILD)/test_feeder \
+	$(BUILD)/test_realpipe
 
-.PHONY: all test clean
+.PHONY: all test realpipe clean
 
 all: $(TESTS)
 
@@ -40,11 +41,28 @@ $(BUILD)/test_ringbuf: ringbuf.c ringbuf.h tests/test_ringbuf.c | $(BUILD)
 $(BUILD)/test_feeder: feeder.c feeder.h ringbuf.c ringbuf.h tests/test_feeder.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ feeder.c ringbuf.c tests/test_feeder.c
 
+# real-pipeline test: links the realpipe engine (tools/realpipe.c, WITHOUT
+# REALPIPE_MAIN) + the three components. Part 1 (synthetic) always runs; part 2
+# (real fixture) SKIPS cleanly if the local VOB is absent — so a clean clone / CI
+# passes with no test data. Override the fixture path with NETVOB_REAL_VOB.
+$(BUILD)/test_realpipe: tools/realpipe.c tools/realpipe.h ps_demux.c ps_demux.h \
+                        ringbuf.c ringbuf.h feeder.c feeder.h tests/test_realpipe.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ tools/realpipe.c ps_demux.c ringbuf.c feeder.c tests/test_realpipe.c
+
+# Developer harness (NOT part of `test`): standalone CLI that runs the pipeline
+# on a VOB path you supply and prints the full report. Build with:
+#   make -C arm realpipe   then   ./build/realpipe <stream.vob> [out.es]
+realpipe: $(BUILD)/realpipe
+$(BUILD)/realpipe: tools/realpipe.c tools/realpipe.h ps_demux.c ps_demux.h \
+                   ringbuf.c ringbuf.h feeder.c feeder.h | $(BUILD)
+	$(CC) $(CFLAGS) -DREALPIPE_MAIN -o $@ tools/realpipe.c ps_demux.c ringbuf.c feeder.c
+
 test: $(TESTS)
 	@echo "== test_ps_demux ==";       ./$(BUILD)/test_ps_demux
 	@echo "== test_ps_demux_audio =="; ./$(BUILD)/test_ps_demux_audio
 	@echo "== test_ringbuf ==";        ./$(BUILD)/test_ringbuf
 	@echo "== test_feeder ==";         ./$(BUILD)/test_feeder
+	@echo "== test_realpipe ==";       ./$(BUILD)/test_realpipe
 	@echo "== ALL ARM HOST TESTS PASSED =="
 
 clean:
