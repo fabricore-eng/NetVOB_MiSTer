@@ -39,5 +39,12 @@ filmstrips/
 *.m2v
 tools/media/
 
+# tools/ generated artifacts (scripts are durable; their output is not)
+tools/**/out/
+tools/**/*.png
+tools/**/*.mpg
+tools/**/*.vob
+tools/**/*.m2v
+
 # OS
 .DS_Store
