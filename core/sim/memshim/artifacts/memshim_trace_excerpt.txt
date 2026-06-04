@@ -1,0 +1,38 @@
+=== ddr3_model trace excerpt (run with +ddr_rd_latency=8 +ddr_wait_period=4 +ddr_trace) ===
+[ddr3_model] rd_latency=8 wait_period=4 rd_jitter=0 zero_latency=0
+%Warning: stream.dat:622221: $readmem file ended before specified final address (IEEE 1800-2023 21.4)
+...
+[ddr3_model 1046000] WR accept addr=061efff4 word=1efff4 dta=8080808080808080
+[ddr3_model 1083000] WR accept addr=061efff5 word=1efff5 dta=8080808080808080
+[ddr3_model 1120000] WR accept addr=061efff6 word=1efff6 dta=8080808080808080
+[ddr3_model 1158000] WR accept addr=061efff7 word=1efff7 dta=8080808080808080
+[ddr3_model 1195000] WR accept addr=061efff8 word=1efff8 dta=8080808080808080
+[ddr3_model 1232000] WR accept addr=061efff9 word=1efff9 dta=8080808080808080
+[ddr3_model 1269000] WR accept addr=061efffa word=1efffa dta=8080808080808080
+[ddr3_model 1306000] WR accept addr=061efffb word=1efffb dta=8080808080808080
+[ddr3_model 1343000] WR accept addr=061efffc word=1efffc dta=8080808080808080
+[ddr3_model 1380000] WR accept addr=061efffd word=1efffd dta=8080808080808080
+[ddr3_model 1417000] WR accept addr=061efffe word=1efffe dta=8080808080808080
+[ddr3_model 20381000] WR accept addr=061c0000 word=1c0000 dta=000001b32d024023
+[ddr3_model 20492000] RD accept addr=061c0000 word=1c0000 lat=8 (issued=1)
+[ddr3_model 20566000] RD respond data=000001b32d024023 (responded=1)
+[ddr3_model 20678000] WR accept addr=061c0001 word=1c0001 dta=0c352380000001b5
+[ddr3_model 20789000] RD accept addr=061c0001 word=1c0001 lat=8 (issued=2)
+[ddr3_model 20863000] RD respond data=0c352380000001b5 (responded=2)
+[ddr3_model 20974000] WR accept addr=061c0002 word=1c0002 dta=1482000100000000
+[ddr3_model 21085000] RD accept addr=061c0002 word=1c0002 lat=8 (issued=3)
+[ddr3_model 21159000] RD respond data=1482000100000000 (responded=3)
+[ddr3_model 21270000] WR accept addr=061c0003 word=1c0003 dta=01b5230505050b02
+[ddr3_model 21381000] RD accept addr=061c0003 word=1c0003 lat=8 (issued=4)
+[ddr3_model 21455000] RD respond data=01b5230505050b02 (responded=4)
+[ddr3_model 21567000] WR accept addr=061c0004 word=1c0004 dta=1200000001b24d50
+[ddr3_model 21678000] RD accept addr=061c0004 word=1c0004 lat=8 (issued=5)
+[ddr3_model 21752000] RD respond data=1200000001b24d50 (responded=5)
+[ddr3_model 21863000] WR accept addr=061c0005 word=1c0005 dta=45472d3220546573
+[ddr3_model 21974000] RD accept addr=061c0005 word=1c0005 lat=8 (issued=6)
+[ddr3_model 22048000] RD respond data=45472d3220546573 (responded=6)
+[ddr3_model 22159000] WR accept addr=061c0006 word=1c0006 dta=742053657175656e
+...
+[ddr3_model 150169000] RD respond data=b356566ac30d9eb3 (responded=64)
+[ddr3_model 150281000] RD respond data=565acd5861b3d666 (responded=65)
+[ddr3_model 150392000] RD respond data=5accc30d9ab3d64a (responded=66)

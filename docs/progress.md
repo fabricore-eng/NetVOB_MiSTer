@@ -145,6 +145,23 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   confirmation. devlock released; `VGA_F1` field-order moot until there's a picture. **NET TODAY:
   decoder de-risked in sim; full toolchain + hub coordination; KUNGPOW dumped; first HW load; analog
   480i timing fixed on HW. Remaining: confirmed decoded video on HW (the gate).**
+- 2026-06-04 (cycle 7 — OVERNIGHT, mem_shim sim repro = NEGATIVE/narrowing) — built a
+  mem_shim-in-the-loop Verilator harness (`core/sim/memshim/`: decoder + the real `mem_shim.sv` + a
+  behavioral f2sdram/DDR3 Avalon model with multi-cycle waitrequest + N-cycle `readdatavalid` +
+  jitter; greyramp feed; clk_sys 27 / clk_mem 108). **RESULT: decode-through-`mem_shim` is CORRECT** —
+  clean greyramp Y-ramp, byte-identical zero-latency vs harsh-but-**conformant** DDR3 (verified PNG).
+  The HW black did NOT reproduce → refutes the conformant tag-desync/address hypotheses; narrows the
+  bug to: (a) NON-conformant bridge behavior (reorder/drop/dup `readdatavalid`); (b) the concrete
+  **ADDR_ERR same-cycle response collision** in `mem_shim.sv` (lines 109 vs 139/176 both write
+  `mem_res_wr_en` → a real `readdatavalid` colliding with a synthetic ADDR_ERR drops the real response
+  → tag-FIFO misroute → black; greyramp never hits ADDR_ERR so untested); or (c) the **fork's
+  Xilinx-FIFO build** (sim used bench soft FIFOs). Also unresolved: is the black a DECODE failure or a
+  FEED failure (mpg_streamer/mount delivering no bitstream)? — not yet distinguished; decisive test is
+  HW debug counters / the fork's `uart_debug`. `mem_shim.sv` unedited (gitlink pinned). next (overnight,
+  off-board): investigate the FIFO build + the mpg_streamer→decoder feed wiring; fix the ADDR_ERR
+  collision regardless; extend the sim with non-conformant DDR3 modes to test desync; prep a morning
+  HW diagnostic (read `uart_debug` rd/rsp/frame counts behind the devlock to localize feed-vs-decode-
+  vs-mem) + a candidate `.rbf`.
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine

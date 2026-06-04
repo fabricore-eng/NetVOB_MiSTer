@@ -1,0 +1,11 @@
+# Verilator build + run scratch (regenerable via `make all` / README recipes)
+obj_dir/
+run*/
+stream.dat
+# large PPM/gray decode dumps live under run*/ (already ignored) but guard anyway:
+*.ppm
+*.gray
+# keep: the harness sources, scripts, README, and the durable evidence PNGs in artifacts/
+!artifacts/
+!artifacts/*.png
+!artifacts/*.txt
