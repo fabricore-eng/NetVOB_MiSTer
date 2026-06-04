@@ -27,7 +27,12 @@ flt(){ grep -vE 'post-quantum|store now|openssh|vulnerable|server may'; }
 
 echo "── 1. acquire mister devlock (dvd) ───────────────────────────"
 "$HUB/tools/dell_coord.sh" devlock mister acquire dvd 2>&1 | flt || { echo "mister is locked by the other session — try later"; exit 1; }
-trap '"$HUB/tools/dell_coord.sh" devlock mister release dvd 2>&1 | flt' EXIT  # always release
+# On exit: return the board to the MENU before releasing. The mpeg2 test core hangs on the
+# DDR bug and its watchdog resets the decoder ~every 4s, which re-triggers the MiSTer
+# resolution OSD over and over on the TV. Loading the menu stops that so we don't leave a
+# flickering board for the other session / the human. (verified annoyance 2026-06-04)
+cleanup(){ ssh -o BatchMode=yes mister 'echo "load_core /media/fat/menu.rbf" > /dev/MiSTer_cmd' 2>&1 | flt; "$HUB/tools/dell_coord.sh" devlock mister release dvd 2>&1 | flt; }
+trap cleanup EXIT
 
 echo "── 2. copy candidate .rbf  Dell -> mister:/media/fat ─────────"
 ssh -o BatchMode=yes dell "cat $RBF_DELL" | ssh -o BatchMode=yes mister 'cat > /media/fat/mpeg2fpga_dvd.rbf; ls -la /media/fat/mpeg2fpga_dvd.rbf' 2>&1 | flt
