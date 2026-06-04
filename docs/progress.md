@@ -287,3 +287,15 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   ensure a compressed `.rbf` (`quartus_cpf -o bitstream_compression=on` if POST_FLOW left only a .sof),
   acquire the FREE mister devlock, re-run `hw_decode_test.sh` against the new rbf, read uart_debug —
   expect Z>0 (mount fires); FC-advancing-with-reads = decode-on-HW SOLVED.
+- 2026-06-04 (OBSERVATION → M7 finding: framework OSD is half-height + shifted-up on the CRT) — user
+  reports the stock MiSTer OSD menu renders ~half as tall as usual and shifted toward the top. Verified
+  the core's OWN 480i timing is textbook-correct (modeline.v MODELINE_NTSC_INTERL: VERT_RES=239 →
+  240 active lines/field, VERT_LEN=261 → 262/field + HALFLINE=428 odd-field half-line → 525/frame,
+  VID_MODE=3'b001 interlaced). So this is NOT the core modeline. Diagnosis: the framework OSD overlay
+  (sys_top/osd.sv, composited over the raw VGA_* with VGA_SCALER=0) assumes PROGRESSIVE video and
+  mis-positions over our interlaced (VGA_F1-toggling) raster — a known wrinkle for raw-analog-interlace
+  cores. Upshot: (a) the OSD appearing interlace-distorted actually CONFIRMS the 480i interlaced output
+  is live; (b) the decoded VIDEO uses the correct core modeline directly, so its geometry should be full
+  480i regardless of the OSD overlay. ACTION: tracked as M7 (480i polish) — judge real video geometry
+  directly once decode lights up (after the CONF_STR mount fix), then decide if the OSD-over-interlace
+  overlay needs a sys_top tweak. Not blocking the decode gate.
