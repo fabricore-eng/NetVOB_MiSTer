@@ -262,3 +262,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   run `tools/build/hw_decode_test.sh` when the `mister` devlock frees (573 cycling till past ~19:30Z) →
   the staged clip confirms feed→decode via uart_debug (no CRT needed for the decode gate; CRT only for the
   final analog field/color check). All on `feat-decoder-bringup`; `main`+`mister` untouched this cycle.
+- 2026-06-04 (HW retest → file-not-found RULED OUT → root cause = malformed CONF_STR S-slot; fix
+  staged) — re-ran `hw_decode_test.sh` with the golden clip now staged. test.mpg CONFIRMED on board
+  (1995850 bytes, hdr 000001b3) yet `uart_debug` still `Z:0000 T:0 J:0000 P:0000` → **NOT
+  file-not-found; it's a MOUNT-PULSE failure** (`img_mounted[0]`/`img_size` never register for the S0
+  `.mgl` mount). Decoder/raster/sdram init fine (`L:1 A:1 FC` advancing `U:1`, writes @06000003). No
+  standalone `mount` FIFO verb exists (binary only takes `load_core`/MGL), so the manual-mount split
+  can't be done hands-off. **ROOT CAUSE (authoritative):** the CONF_STR slot was `"S0,MPG M2V,Load
+  Video;"` — but MiSTer docs define `{Ext}` as a **concatenated list of 3-char extensions, NO
+  separators** (`BINGEN`=BIN+GEN; `S0,CUECHD,...`). The **space** makes the 7-char field misparse into
+  {MPG, " M2", V} → corrupt slot-0 filter → the `.mgl`/OSD mount to S0 doesn't cleanly register. Present
+  in BOTH current and the (unverified) "prior-working-config". **FIX:** `"S0,MPGM2V,Load Video;"` —
+  applied to the Mac submodule tree + the dell build tree (exactly candidate 480i+ADDR_ERR **+** this one
+  line) + captured as `core/patches/hw/mpeg2fpga-confstr-sslot-ext-fix.patch`. NEXT: when the dell build
+  lock frees (573 building till ~20:15Z), launch `dell_build.sh` with **NO ref** (build the dirty working
+  tree) → ~3MB compressed `.rbf` → re-run `hw_decode_test.sh` → expect `Z>0` then `FC`-decode. Device +
+  build both shared with 573 — coordinate via hub lock+board.

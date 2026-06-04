@@ -1,0 +1,29 @@
+From: NetVOB_MiSTer feat-decoder-bringup
+Subject: [PATCH] emu.sv: fix malformed S0 CONF_STR extension list ("MPG M2V" -> "MPGM2V")
+
+The MiSTer config-string {Ext} field is a CONCATENATED list of 3-character
+extensions with NO separators (official docs: "BINGEN" = BIN + GEN; example
+"S0,CUECHD,Insert CD;"). The fork shipped "S0,MPG M2V,Load Video;" with a SPACE,
+which is malformed: the 7-char field isn't a multiple of 3, so the Main binary
+chunks it as {"MPG", " M2", "V.."} — a corrupt slot-0 extension filter.
+
+Symptom this fixes (verified on hardware): a `.mgl` `<file type="s" index="0"
+path="test.mpg">` mount of a CONFIRMED-present, valid 1.99 MB MPEG-2 ES never
+registers img_mounted[0]/img_size — mpg_streamer reports total_sectors=0 (uart_debug
+Z:0000 T:0), so the decoder gets no bitstream and the screen is black, even though
+the decoder/mem_shim/analog all initialize correctly. File-not-found was ruled out
+by staging the clip and re-confirming Z=0.
+
+Fix: "S0,MPGM2V,Load Video;" — slot 0 accepts .MPG and .M2V (both valid 3-char
+extensions for our elementary-stream test clips), correctly formatted.
+
+--- a/rtl/emu.sv
++++ b/rtl/emu.sv
+@@ -187,7 +187,7 @@
+ parameter CONF_STR = {
+     "MPEG2;;",
+-    "S0,MPG M2V,Load Video;",
++    "S0,MPGM2V,Load Video;",
+     "O1,Aspect Ratio,4:3,16:9;",
+     "O[10],Direct Video,Off,On;",
+     "R0,Reset;",
