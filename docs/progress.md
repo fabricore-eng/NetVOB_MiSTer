@@ -205,6 +205,18 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   patch (ADDR_ERR already in this build; FIFO-swap + feed-latch are staged backups in
   `core/patches/hw/`). Expectation: best case stable picture; else a stable raster that localizes the
   stage. mister untouched overnight (off-board constraint honored).
+- 2026-06-04 (cycle 11 — OVERNIGHT spine, M4 disc-ID) — added `tools/discid/` (stdlib, isolated):
+  `disc_fingerprint()` = stable SHA-256 (`netvob-discid-v1`) over the IFOs (sorted/order-independent,
+  ignores VOB payload so sliced dumps still fingerprint stably) + `resolve_title()` chain
+  **sidecar > cache > folder (+TMDB-by-name, gated on `TMDB_API_KEY`, never crashes without it)**; CLI
+  `python3 -m tools.discid <VIDEO_TS>`. Validated on the real KUNGPOW IFOs (independently verified):
+  fingerprint `7142b469…` (deterministic + byte-sensitive); no-key resolver → folder fallback →
+  cached. 19 tests (synthetic + skip-guarded real), green; `cache.json` gitignored; no copyrighted
+  bytes; no regressions outside `tools/discid/`. blocker: TMDB live path unverified (no key yet — user
+  will provide; stub-tested only). **OVERNIGHT WIND-DOWN:** gate fully prepped (candidate `.rbf` +
+  diagnostic plan), spine advanced (M3 PGC/cell nav + M4 disc-ID); settling to a quiet hourly
+  heartbeat — `mister` HW test is the next inflection (needs the user + CRT). No more new overnight
+  workstreams unless something completes/breaks.
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine

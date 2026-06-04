@@ -46,6 +46,10 @@ tools/**/*.mpg
 tools/**/*.vob
 tools/**/*.m2v
 
+# discid resolver: local metadata cache (per-machine, keyed by disc fingerprint)
+tools/discid/cache.json
+tools/discid/cache.json.tmp
+
 # OS
 .DS_Store
 
