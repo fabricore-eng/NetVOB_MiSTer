@@ -1,0 +1,22 @@
+# NetVOB_MiSTer provider service — runtime dependencies
+#
+# The verifiable-now core (Source ABC, catalog aggregator, control protocol,
+# streamer, DVD PS-passthrough + nav-pack stripping) is implemented with the
+# Python 3.14 STANDARD LIBRARY ONLY. There are NO third-party runtime deps yet,
+# so `pip install -r requirements.txt` is a no-op and the unittest suite runs
+# with a bare interpreter.
+#
+# Tests: stdlib `unittest` only.
+#
+# ---------------------------------------------------------------------------
+# Deps that WILL be pinned here as the stubbed paths get implemented
+# (intentionally NOT installed/required now — keeping the core install-free):
+#
+#   pydvdid >= 1.1, < 2          # DVD disc-ID fingerprint (catalog-browse §5)
+#   PlexAPI >= 4.15, < 5         # Plex catalog + parts (sources/plex)
+#
+# Plus external, non-pip system tools used by future paths (document, don't pin):
+#   - ffmpeg            (PlexSource transcode -> 480i MPEG-2 PS, `-f vob`)
+#   - libdvdread/dvdnav (DVDDumpSource real IFO/PGC/VOBU title enumeration)
+#
+# Until those paths land, this file stays effectively empty by design.
