@@ -57,6 +57,61 @@ PNGs (survive `make clean`) live in **`artifacts/`**.
   permitted difference), **not** a decode bug. Evidence:
   `artifacts/motion_I_psnr_diff_x4.png` (amplified abs-diff).
 
+### Cycle 3: end-to-end interlace (field parity), B-frames through 480i, PSNR-tighten, GOP soak
+
+Cycle 3 closed four loops the prior cycles left open. Added a **tv_out field-parity
+probe** (`core/patches/mpeg2fpga-tvout-field-parity-probe.patch`) and a field
+reassembly tool (`reassemble_fields.py`). All headline numbers below were
+**reproduced** (a fresh decode reproduces the parity verdict and the 28.67 dB
+byte-for-byte).
+
+- **A. Field order / parity verified end-to-end (`field_order_ok = TRUE`).** The
+  NTSC 480i path emits one field per `tv_out` PPM. Two consecutive fields
+  reassemble into a 480-line top-field-first frame whose Y matches an ffmpeg
+  interlaced-decode reference of the SAME stream at **22.0 dB**, while the
+  WRONG (swapped-parity) interleave scores **3.8 dB** — an **18 dB gap that
+  unambiguously confirms correct top/bottom parity**. The per-field
+  discrimination is even sharper: a field-distinct clip puts the decoder's
+  TOP-content field at **30.4 dB vs ffmpeg `field=top`** and **3.9 dB vs
+  `field=bottom`** (≈26 dB separation, reproduced). Key finding: the syncgen
+  `odd_field` raster bit is **phase-offset by one field** from BT.601 content
+  parity in this bench, so the calibrated mapping is **`field_parity 1` = TOP
+  content (even source rows), `field_parity 0` = BOTTOM**. (The luma plane is
+  *not* vertically interpolated by `resample` — `resample_addrgen.v` sets
+  `disp_delta_y = disp_y` for `STATE_WR_Y_*` — so each field's Y is a clean copy
+  of the source field's lines, which is why the parity PSNR test is decisive.)
+  Evidence: `artifacts/interlace_reassembled_frame.png`,
+  `artifacts/interlace_parity_correct_vs_wrong.png`.
+- **B. I AND P AND B all decode through the NTSC 480i interlaced path
+  (`b_through_ntsc = TRUE`).** Cycle 2's 480i clip was I+P only. A regenerated
+  720x480 **interlaced** clip with B-frames (`-bf 2 -flags +ilme+ildct -top 1`,
+  `field_order=tt`, `top_field_first=1`) decodes through
+  `MODELINE_NTSC_INTERL` with the framestore showing **I, P, AND B**
+  (`picture_coding_type` = B,B,I,P,P in decode order) and real alternating-parity
+  field output (`field_parity` toggles 1,0,1,0,…), no hang/corruption. Evidence:
+  `artifacts/ntsc480i_bframe_filmstrip.png`.
+- **C. PSNR-tighten: the IDCT-flavor hypothesis is REFUTED; best
+  `psnr_tightened_db = 28.67`, does NOT cross 30.** Re-PSNR'd the progressive
+  I-frame against ffmpeg references decoded with `-idct int` AND `-idct simple`
+  (the low-precision hypothesis). **All three IDCT flavors give 28.67 dB** —
+  because ffmpeg's `int`/`simple`/default IDCTs are themselves near-identical
+  (`default` vs `int` MSE = 0.0037; `default` vs `simple` MSE = 0.0000), they
+  cannot explain or close the gap. The residual is therefore the mpeg2fpga 2007
+  **fixed-point datapath** vs ffmpeg *as a class*, not an IDCT-precision flavor.
+  Characterized: bounded (max|Δ|=18, 100% within ±16), a small **−2.05 LSB DC
+  offset** (DC-correcting recovers only to 28.88 dB), and **zero spatial shift is
+  optimal** (any ±1 px shift is worse), so alignment is correct. Benign rounding,
+  not a decode bug — but honestly **below the 30 dB bar**.
+- **D. GOP soak: no drift / hang / leak.** A 3.99 MB ES (just under the 4 MiB
+  prep cap; 240 frames, 21 GOPs, I+P+B) decodes steadily. Framestore dumps are
+  **uniform size** (no memory growth/leak), `run.log` is clean (only the benign
+  `$readmem ended before final address` — stream.dat is shorter than the 4 MiB
+  array), the last dump (a B-frame deep in the stream) is well-formed (separators
+  verified), and **content advances** across dumps (frame0 Y MSE 268/293 between
+  spread dumps — no frozen/stuck frame). The run is wall-clock-bounded (the `-O0`
+  + behavioral-RAM sim is slow), not stream- or stability-bounded. Evidence:
+  `artifacts/gop_soak_filmstrip.png`.
+
 ## Quick start
 
 ```sh
@@ -92,20 +147,77 @@ python3 psnr.py run/yplanes/fs0001_frame0_Y.gray /tmp/ref.gray 720 480
 python3 ../../tools/filmstrip/filmstrip.py run/yplanes -n 3 --label -o run/strip.png
 ```
 
-### Recipe B — NTSC 480i (the ADV7125 target raster)
+### Recipe B — NTSC 480i with B-frames (the ADV7125 target raster)
 
 ```sh
-# Build with the new NTSC 480i modeline, decode the interlaced 480i clip:
-ffmpeg -i tools/clips/out/test480i.mpg -c:v copy -f mpeg2video /tmp/test480i.m2v
+# 1. Make a 720x480 INTERLACED clip WITH B-frames (I+P+B through the 480i path).
+#    +ilme+ildct = interlaced ME + interlaced DCT; -top 1 = top-field-first.
+ffmpeg -y -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=2" \
+  -pix_fmt yuv420p -c:v mpeg2video -b:v 6000k -g 15 -bf 2 \
+  -flags +ilme+ildct -top 1 -alternate_scan 1 -f vob /tmp/motion480i.mpg
+ffmpeg -y -i /tmp/motion480i.mpg -c:v copy -f mpeg2video /tmp/motion480i.m2v
+ffprobe -v error -select_streams v:0 -show_entries stream=field_order /tmp/motion480i.m2v  # -> tt
+# 2. Build with the NTSC 480i modeline + field-parity probe, decode:
 make build MODELINE=MODELINE_NTSC_INTERL
-rm -f stream.dat && ./prep_stream.sh /tmp/test480i.m2v
-./run_sim.sh run_ntsc 10 240
-# Each tv_out_*.ppm is ONE FIELD; header reports the live NTSC geometry:
-head -5 run_ntsc/tv_out_0003.ppm
-#   horizontal resolution 720 ... length 858   (BT.601 total dots)
-#   vertical   resolution 240 ... length 262   (per field; 2 fields = 480 lines)
-#   interlaced 1 halfline 429
-ffmpeg -y -i run_ntsc/tv_out_0003.ppm run_ntsc/field.png   # -> full 24-bit color field
+rm -f stream.dat && ./prep_stream.sh /tmp/motion480i.m2v
+./run_sim.sh run_ntsc_bf 12 240
+# 3. Confirm I AND P AND B decoded through the interlaced path:
+grep -h picture_coding_type run_ntsc_bf/framestore_*.ppm   # -> B,B,I,P,P (decode order)
+# 4. Each tv_out_*.ppm is ONE FIELD; header reports geometry + field parity:
+grep -E "interlaced|field_parity" run_ntsc_bf/tv_out_0006.ppm
+#   interlaced 1 halfline 429        (BT.601: 720x240/field, 858 total dots)
+#   field_parity 1                   (1 = TOP content, 0 = BOTTOM — calibrated)
+ffmpeg -y -i run_ntsc_bf/tv_out_0006.ppm field.png         # -> full 24-bit color field
+```
+
+### Recipe A2 — field-order / parity reassembly + PSNR (end-to-end interlace)
+
+```sh
+# tv_out fields are emitted one-per-PPM; reassemble two opposite-parity fields
+# into a 480-line frame and PSNR vs an ffmpeg interlaced-decode reference.
+# (Run Recipe B first to produce run_ntsc_bf/.)
+# CALIBRATED mapping: field_parity 1 = TOP (rows 0,2,4..), field_parity 0 = BOTTOM.
+python3 reassemble_fields.py run_ntsc_bf/tv_out_0001.ppm run_ntsc_bf/tv_out_0002.ppm /tmp/frame.gray
+ffmpeg -y -i /tmp/motion480i.m2v -pix_fmt gray -f rawvideo /tmp/ref480i.gray   # full interlaced ref
+python3 psnr.py /tmp/frame.gray /tmp/ref480i.gray 720 480                       # correct-parity weave
+
+# DECISIVE per-field parity test (use a field-DISTINCT clip so top != bottom):
+#   even rows = ramp, odd rows = inverse ramp -> ffmpeg field=top/bottom differ by ~28k MSE.
+# Extract decoder field as 720x240 gray, PSNR vs ffmpeg field=top AND field=bottom:
+ffmpeg -y -i CLIP.m2v -vf "field=top,format=gray"    -f rawvideo /tmp/ft_top.gray
+ffmpeg -y -i CLIP.m2v -vf "field=bottom,format=gray" -f rawvideo /tmp/ft_bot.gray
+#   parity-1 decoder field -> ~30 dB vs TOP, ~4 dB vs BOTTOM  => parity 1 IS the TOP field
+```
+
+### Recipe C — PSNR-tighten (test the IDCT-flavor hypothesis)
+
+```sh
+# Decode the progressive motion clip (Recipe A), extract the settled I-frame Y plane.
+# NOTE the I-frame lands in framestore buffer 0 by the SECOND framestore dump
+# (framestore_0001.ppm), not the first (framestore_0000 is mid-write, all 4 buffers
+# still duplicated). PSNR vs ffmpeg refs decoded with LOW-PRECISION IDCTs:
+ffmpeg -y -i /tmp/motion480p.m2v               -pix_fmt gray -f rawvideo /tmp/ref_default.gray
+ffmpeg -y -idct int    -i /tmp/motion480p.m2v  -pix_fmt gray -f rawvideo /tmp/ref_int.gray
+ffmpeg -y -idct simple -i /tmp/motion480p.m2v  -pix_fmt gray -f rawvideo /tmp/ref_simple.gray
+python3 framestore_extract.py run_prog/framestore_0001.ppm run_prog/yp --prefix x
+for r in default int simple; do python3 psnr.py run_prog/yp/x_frame0_Y.gray /tmp/ref_$r.gray 720 480; done
+#   -> 28.67 dB for ALL THREE. ffmpeg's int/simple/default IDCTs are ~identical
+#      (mutual MSE < 0.004), so the IDCT-flavor hypothesis is REFUTED; the gap is
+#      the mpeg2fpga fixed-point datapath, not which IDCT ffmpeg picked.
+```
+
+### Recipe D — GOP soak (stability across many GOPs)
+
+```sh
+# A long clip just under the 4 MiB prep cap; confirm no drift/hang/leak.
+ffmpeg -y -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=8" \
+  -pix_fmt yuv420p -c:v mpeg2video -b:v 4000k -g 12 -bf 2 -f vob /tmp/soak.mpg
+ffmpeg -y -i /tmp/soak.mpg -c:v copy -f mpeg2video /tmp/soak.m2v   # ~3.99 MB, 240 frames, 21 GOPs
+rm -f stream.dat && ./prep_stream.sh /tmp/soak.m2v
+./run_sim.sh run_soak 40 480                      # wall-clock-bounded; -O0 sim is slow
+grep -h picture_coding_type run_soak/framestore_*.ppm | sort | uniq -c   # multiple I = multiple GOPs
+ls -la run_soak/framestore_*.ppm                  # uniform size => no leak/growth
+grep -iE "error|stop|undefined" run_soak/run.log  # clean (the $readmem note is benign)
 ```
 
 ## What it drives
@@ -193,6 +305,17 @@ re-running is a no-op. Current set:
   `framestore_*.ppm` header (and a `$display`), so a run *proves which picture
   types decoded* (I vs P vs B = inter-prediction), not just that pixels appeared.
 - `mpeg2fpga-ntsc-480i-modeline.patch` — adds `MODELINE_NTSC_INTERL` (see Inputs).
+- `mpeg2fpga-tvout-field-parity-probe.patch` (cycle 3) — adds `# field_parity N`
+  to each `tv_out_*.ppm` header, probing the syncgen `odd_field` raster bit so
+  interlace reassembly knows each field's parity. The comment carries the
+  EMPIRICAL calibration (parity 1 = TOP content, parity 0 = BOTTOM — the raster
+  bit is phase-offset one field from BT.601 content parity in this bench).
+
+All four patches apply cleanly in sorted order from a pristine pin and re-run as a
+no-op (verified: `git stash` the working tree → `make patch` reconstructs the same
+state). The patch glob is lexicographic; these four are mutually independent
+except the bench-fix and pictype-probe both edit `mem_ctl.v` (the bench-fix sorts
+first by name, matching the order its context was generated).
 
 ## Notes / caveats
 
@@ -234,9 +357,15 @@ re-running is a no-op. Current set:
   caught loudly). Used for the filmstrip and for PSNR.
 - `psnr.py` — Y-plane PSNR(dB) of a decoder `.gray` plane vs an ffmpeg
   raw-gray reference, scanning a window of reference frames for best alignment.
+- `reassemble_fields.py` (cycle 3) — weave two opposite-parity `tv_out` field
+  PPMs into one 480-line top-field-first frame (`.ppm`/`.gray`/`.png`), using the
+  calibrated `field_parity` mapping. Crops each field's active region, places its
+  lines at their true frame rows; refuses same-parity pairs. Stdlib only.
 - `incdir/` — symlinks to the `\`include`-only header files (see blocker #2).
 - `artifacts/` — durable evidence PNGs (tracked; survive `make clean`):
-  cycle-2 motion I/P/B frames + filmstrip, the PSNR diff image, and the NTSC
-  480i color field + filmstrip.
+  cycle-2 motion I/P/B frames + filmstrip, the PSNR diff image, the NTSC 480i
+  color field + filmstrip; **cycle-3** `interlace_reassembled_frame.png`,
+  `interlace_parity_correct_vs_wrong.png` (22.0 vs 3.8 dB),
+  `ntsc480i_bframe_filmstrip.png` (I/P/B through 480i), `gop_soak_filmstrip.png`.
 - `run*/` — scratch output (gitignored / `make clean`-ed): PPMs, PNGs, `.gray`,
   `run.log`. Each recipe/run uses its own `run`, `run_ntsc`, `run_repro`, …

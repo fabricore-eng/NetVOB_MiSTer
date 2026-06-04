@@ -1,0 +1,47 @@
+diff --git a/bench/iverilog/testbench.v b/bench/iverilog/testbench.v
+index 83d3546..accd1b2 100644
+--- a/bench/iverilog/testbench.v
++++ b/bench/iverilog/testbench.v
+@@ -259,9 +259,10 @@ module testbench();
+   wire [11:0]dot_vertical_length;
+   wire       dot_interlaced;
+   wire [11:0]syncgen_horizontal_halfline;
++  wire       dot_odd_field;        // field parity probe: 0=even (top) field, 1=odd (bottom) field
+ 
+   /*
+-   * Note: these assignments have to be modified if synthesis assigns other names to these nets. 
++   * Note: these assignments have to be modified if synthesis assigns other names to these nets.
+    * Use commands such as "find signals -r *name*" at the simulator prompt to find suitable candidates.
+    */
+ 
+@@ -275,6 +276,7 @@ module testbench();
+   assign dot_vertical_sync_end         = testbench.mpeg2.syncgen_intf.dot_vertical_sync_end;
+   assign dot_vertical_length           = testbench.mpeg2.syncgen_intf.dot_vertical_length;
+   assign dot_interlaced                = testbench.mpeg2.syncgen_intf.dot_interlaced;
++  assign dot_odd_field                 = testbench.mpeg2.syncgen_intf.sync_gen.odd_field;
+ 
+   always @(posedge dot_clk)
+     begin
+@@ -329,6 +331,22 @@ module testbench();
+               $fwrite(fp, "# horizontal resolution %0d sync_start %0d sync_end %0d length %0d\n", syncgen_horizontal_resolution, syncgen_horizontal_sync_start, syncgen_horizontal_sync_end, syncgen_horizontal_length);
+               $fwrite(fp, "# vertical resolution %0d sync_start %0d sync_end %0d length %0d\n", dot_vertical_resolution, dot_vertical_sync_start, dot_vertical_sync_end, dot_vertical_length);
+               $fwrite(fp, "# interlaced %0d halfline %0d\n", dot_interlaced, syncgen_horizontal_halfline);
++              // Raster field-parity flag for interlace reassembly: this is the
++              // sync generator's free-running odd_field bit (syncgen.v), i.e. WHICH
++              // geometric field the analog raster is painting -- NOT directly which
++              // decoded field's lines. odd_field toggles at each field start
++              // (h_cntr==v_cntr==0) and is stable by the first visible pixel.
++              //
++              // EMPIRICALLY CALIBRATED (core/sim, field-discriminating clip
++              // /tmp/fieldtest.m2v vs ffmpeg field=top/bottom, ~26 dB separation,
++              // reproduced): in THIS bench the raster odd_field is phase-offset by
++              // one field from the BT.601 content parity, so:
++              //   field_parity 1  carries the BT.601 TOP    field (source rows 0,2,4,...)
++              //   field_parity 0  carries the BT.601 BOTTOM field (source rows 1,3,5,...)
++              // reassemble_fields.py keys on this calibrated mapping. (The absolute
++              // phase is a free-running-counter artifact; on HW the ADV7125 field
++              // ID must be locked to the decoder field, see README Recipe A.)
++              $fwrite(fp, "# field_parity %0d\n", dot_odd_field);
+               img_count = img_count + 1;
+               $fwrite(fp, "%5d %5d 255\n", syncgen_horizontal_length + 1, dot_vertical_length + 1);
+             end
