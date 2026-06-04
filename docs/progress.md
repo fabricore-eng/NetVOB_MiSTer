@@ -391,3 +391,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   registered/synchronized; (3) rebuild, re-run hw_decode_test.sh -> success = W climbing + P>0 (decoded
   frames in DDR). pll_audio is unused (no audio in mpeg2fpga) yet shows the worst slack -> likely fully
   cuttable. FEED still solved; this timing closure is the last gate before decoded pixels on HW.
+- 2026-06-04 (COURSE-CORRECTION: the timing "failure" is a benign constraint ARTIFACT, not the cause;
+  new lead = f2sdram_safe_terminator) — drilled into the worst clk_mem path with quartus_sta
+  (tools/build/sta_clk_check.tcl): clk_mem(108)→clk_mem intra slack -91.8ns BUT
+  arrival=104.5ns, required=12.7ns, **num_logic_levels=1**. One logic level cannot really take 104ns
+  (real 1-level delay ~1-3ns) ⇒ the -91.8ns is a CLOCK-RELATIONSHIP/CONSTRAINT artifact, NOT real
+  routing — the f2sdram path's logic is trivial and fine at 108MHz. So LOWERING clk_mem would NOT help;
+  timing is a RED HERRING. Both prior hypotheses now refuted (address = correct 0x30000000 MiSTer FPGA
+  region; timing = benign artifact). NEW LEAD: the failing node is
+  sysmem|f2sdram_safe_terminator_ram1|write_terminating -> HPS f2sdram. The safe_terminator is the
+  MiSTer module that ABSORBS/terminates f2sdram transactions during reset (so the HPS bridge doesn't
+  lock). If it is stuck in terminating mode (its reset/enable never deasserts, or it never sees the HPS
+  f2sdram bridge ready), writes get absorbed/blocked and DDRAM_BUSY sticks after a few -> EXACTLY the
+  W:0003-then-wedge symptom. NEXT: read sys/f2sdram_safe_terminator.sv (when does write_terminating
+  assert? what's its reset/exit condition? is ram1_reset/reset_out stuck?), check whether the HPS
+  f2sdram bridge is enabled/ready on this build, and compare the reset wiring to a known-good HPS-DDR
+  MiSTer core. The fix is likely in the f2sdram reset/enable or bridge bring-up, NOT timing or address.
