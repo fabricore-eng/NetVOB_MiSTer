@@ -351,3 +351,23 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   core/sim/memshim/ Verilator harness to split mem_shim LOGIC (does the write path complete vs a
   ddr3_model?) from the HW f2sdram bridge (enable/clocking/reset/base-addr at clk_mem 108MHz). If sim
   passes, the bug is HW f2sdram config; if sim stalls the same way, it's mem_shim logic.
+- 2026-06-04 (decoder↔DDR3 gate localized to the DDRAM write path; mem_shim logic exonerated) — deep
+  analysis of the post-feed stall: (1) the memshim Verilator harness already PROVED mem_shim decodes
+  greyramp correctly through the REAL mem_shim against a conformant ddr3_model (byte-identical w/
+  realistic waitrequest/latency) — so mem_shim LOGIC is fine; (2) decoded M:D = packed {cmd=WRITE,
+  saved=0, state=1} (NOT raw state 13) — mem_shim is correctly WAITING in state 1 for ddr3_waitrequest
+  to drop on a write; (3) the core uses the STANDARD MiSTer DDRAM_* port (DDRAM_CLK=clk_mem=108MHz,
+  ddr3_burstcnt=1 always — no burst violation); (4) DDRAM_BUSY (=ddr3_waitrequest, uart U) sticks HIGH
+  after exactly W:0003 writes = the framework DDR controller accepted ~3 (a small FIFO) then wedged =
+  writes NOT draining to physical HPS DDR3. (5) mem_shim hardcodes the address window:
+  ram_address = {7'b0011000, addr} -> bits[28:25]=0011 = "window 3 = 0x30000000" (uart @:06000003 =
+  byte 0x30000018). sysmem.sv is a CUSTOM sysmem_lite (ram1/ram2/vbuf clients, f2h_sdram0/1 + address
+  slave->master bridges); emu DDRAM_* -> sys_top ram_address -> sysmem ram1 -> f2h. TWO LIVE
+  HYPOTHESES: (A) the hardcoded window-3 0x30000000 base is wrong/unbacked for this f2h mapping (writes
+  go nowhere -> FIFO fills -> BUSY sticks); (B) the build FLAGGED unmet timing ("Design doesn't meet
+  its timing requirements", "not fully constrained") -> at 108MHz DDRAM_CLK the handshake may glitch.
+  NEXT: (A) read sys_dual_sdram.tcl full address map + how sysmem_lite maps ram1 address to physical
+  (does window-3/0x30000000 actually exist here?), compare to upstream MiSTer sysmem_lite / a known-good
+  DDR core's DDRAM base; (B) quartus_sta (hub tools/timing_triage.tcl) on the post-fit netlist for the
+  DDRAM/mem_shim paths. Fix the address or clock, rebuild, retest. FEED remains solved; this is the
+  last gate before decoded pixels.
