@@ -102,7 +102,7 @@ quarantined in the service.
 | **Service core** | Pi 5 | Owns the wire; one PS-over-TCP protocol; pre-buffer; control channel | New |
 | **NetVOB ingest app** | HPS (ARM) | TCP recv → PS demux → video ES into `sd_*` seam; audio decode → I2S; A/V sync; playback control | New, modeled on MiSTer `Main` sector-service code |
 | **MPEG-2 decoder core** | FPGA | Decode video ES → 24-bit RGB raster, vblank-latched | **Fork of `MiSTer_MPEG2`** (wraps BSD `mpeg2fpga`) |
-| **Catalog/browse UI** | HPS (+ optionally Console Mode) | Two separate library lists, badging, selection (incl. NFC/Zaparoo) | New. See [`docs/catalog-browse.md`](docs/catalog-browse.md) |
+| **Catalog/browse UI** | **MiSTer OSD first**, then HPS framebuffer | Browse two separate libraries, badging, selection (incl. NFC/Zaparoo). **The core just plays video; the controller is the remote.** Ship in the OSD (go/no-go), then a **retro "alternate-history DVD player" Plex-style** UI + DVD-player transport/overlays/menus | New. See [`docs/catalog-browse.md`](docs/catalog-browse.md) (§3 phases, §8 playback) |
 
 ### 1.3 Key interfaces
 

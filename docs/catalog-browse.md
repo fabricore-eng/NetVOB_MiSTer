@@ -4,6 +4,15 @@ Goal: on the console, list the **two libraries separately**, make the quality
 trade-off obvious (badging), allow selection by list nav **and NFC/Zaparoo**, and
 give the dump library a *usable* set of titles despite VOBs carrying no metadata.
 
+> **Design north-star (user, 2026-06-04): NetVOB *is* an alternate-history DVD player.**
+> Imagine a set-top DVD player from a parallel timeline that natively browsed Plex and
+> network libraries. The **core just plays video**; everything the user touches — browse,
+> selection, transport, on-screen overlays, even disc menus — is framed as that device's
+> UI. Concretely that means **two delivery phases that share one aesthetic**: (1) ship
+> browse through the **MiSTer OSD** first (zero custom UI), then (2) build the
+> **retro-DVD-player Plex-style** front-end + the playback experience in [§8](#8-playback-experience--the-dvd-player). The
+> controller is the remote; the screen behaves like a physical player, not a desktop app.
+
 ---
 
 ## 1. Two separate libraries (never merged)
@@ -36,23 +45,49 @@ transcoded down to 480i.
 
 ## 3. Where the front-end lives
 
-Three viable homes, in increasing integration effort:
+**Product decision (user, 2026-06-04): do it all in the MiSTer OSD first.** The core
+**just plays video**; browsing the sources/libraries/titles is a **MiSTer-OSD** job and
+the **controller drives playback** (see §8). The earlier "build a custom HPS framebuffer
+UI first" recommendation is **demoted** to the richer, later phase — we try the
+zero-custom-UI OSD path first and only build a bespoke browser if the OSD genuinely
+can't carry the experience.
 
-1. **HPS-side browse app drawing to the core framebuffer (RECOMMENDED).** A small
-   userspace UI on the console that talks to the Pi service's **control channel**
-   (`browse`/`play`/…) and renders lists. This mirrors how the SuperStation's
-   "Console Mode" already layers a UI on top of MiSTer, and avoids cramming a dynamic,
-   network-backed catalog into the static MiSTer OSD.
-2. **MiSTer OSD via `CONF_STR`.** The stock core menu is **static text built from the
-   core's config string** — fine for settings, poor for a live, network-sourced,
-   poster-bearing catalog. Use it for *options* (which library, sync mode), not the
-   catalog.
-3. **SuperStation "Console Mode" integration.** Best end-user polish (it's the
-   native launcher) but couples us to that frontend; treat as a later nicety, behind
-   the same control-channel API so it's swappable.
+Three homes, now **phased** (MVP → polish):
 
-**Decision:** build (1) against the control-channel API; keep (2) for core options;
-leave (3) as an optional skin. All three consume the *same* `browse()` data.
+1. **MiSTer OSD — the MVP browser (DO THIS FIRST, *if it can navigate libraries*).**
+   Surface the catalog *through the framework's own UI* so there's no custom front-end
+   to build. This phase is **gated on a go/no-go** (validate early in M4): *can the stock
+   OSD actually navigate a nested, multi-library catalog?*
+   - **OSD file-browser over a console-side catalog view (recommended mechanism).** The
+     stock "Load *" picker already browses a directory tree on `/media/fat`. Expose the
+     Pi catalog to the console as a **(virtual/synced) folder tree** — *folder per
+     source/library* (`DVD Dumps/`, `Plex/`), *entry per title* — so the existing picker
+     navigates it with **zero custom RTL/UI**. Selecting an entry triggers the
+     mount/`play{source,id}` over the control channel.
+   - **`CONF_STR` options** carry settings (which library default, sync mode, aspect),
+     not the catalog itself.
+   - **Honest constraint (the go/no-go):** the stock OSD/file-picker is a **text list —
+     no posters, limited dynamic content.** Titles + folder hierarchy render fine; rich
+     metadata/art does not; large libraries need folder nesting/paging. **If** that
+     carries "navigate libraries → pick a title → it plays," it's the MVP (badges from §2
+     degrade to a text tag, e.g. `The Matrix [field-exact]`). **If** the OSD can't do
+     even basic library navigation acceptably, we skip straight to phase 2.
+2. **The "alternate-history DVD player" browser — the experience phase (THE VISION).**
+   A console-side framebuffer UI (control-channel `browse`/`play`) that renders
+   **postered, badged, Plex-style** lists the OSD can't — but styled as **what a DVD
+   player from a parallel timeline would show if it had natively browsed Plex and network
+   libraries.** Not a generic flat modern grid: the **retro DVD-player idiom** —
+   chunky highlight bars, that early-2000s set-top on-screen aesthetic, CRT-native
+   (480i-safe fonts, title-safe margins, gentle motion), posters/art where we have them
+   (§5). It's the same `browse()` data as the OSD MVP; this is the polish target once
+   the spine plays. **This UI and the playback experience (§8) are one product** — see
+   the design north-star below.
+3. **SuperStation "Console Mode" integration.** Best end-user polish (native launcher)
+   but couples us to that frontend; optional skin, behind the same control-channel API.
+
+**Decision:** ship browse on (1) the **OSD** first; upgrade to (2) the framebuffer
+browser for posters/art; keep (3) as an optional skin. All consume the *same*
+`browse()` data, so the front-end is swappable without touching the sources.
 
 ## 4. Selection — list nav + NFC/Zaparoo
 
@@ -124,3 +159,52 @@ to a tag"), capturing the current `{source, id}`.
 
 Entries include `badge`, `title`, `poster_url?`, `duration_s?` so the UI can render
 lists, chips, and (where present) posters uniformly across both libraries.
+
+## 8. Playback experience — the DVD player
+
+Once a title is selected, **the core just decodes and displays video**; the playback
+*experience* (transport, overlays, disc menus) is driven by the **controller as a DVD
+remote** + small overlay UI, faithful to the alternate-history-DVD-player north-star.
+Sequenced cheapest→richest so each rung ships independently:
+
+### 8a. Transport controls (controller = remote) — *first, both sources*
+- Map the pad to player transport: **play/pause**, **stop**, **seek** (scrub ±), **chapter
+  prev/next**, **fast-fwd/rew** (where the source supports it). Buttons become
+  control-channel messages (`pause`/`resume`/`seek{t}`/`stop`, plus `chapter{±1}`); see
+  §7. Latency-sensitive actions (pause) may also be handled console/ARM-side so they feel
+  instant, with the Pi told after.
+- Chapters/seek map onto **VOBU/GOP boundaries** for the dump source and onto the
+  transcode timeline for Plex (lands on M6's GOP-aligned seek).
+
+### 8b. On-screen transport overlay (DVD-player status bar) — *with 8a → richer later*
+- The feel: press a button → a **translucent status bar / chapter+time readout** appears
+  over the video and auto-hides — like a physical player's OSD.
+- **MVP:** reuse the **MiSTer OSD** (it already composites a translucent layer over video)
+  to show transport state with minimal work.
+- **Authentic version (later):** a small **core-side overlay plane** composited over the
+  decoded raster (à la CD-i's plane-mux), so the bar/animation match the retro idiom and
+  aren't constrained to the boxy MiSTer OSD. This is a modest RTL add (one text/graphics
+  layer + alpha) — schedule alongside the phase-2 browser.
+
+### 8c. DVD features & menus — *the big one; DVD-Dumps source only; LATER*
+"All the things a DVD player has" (root/title menus, **subtitle/audio/angle** selection,
+chapter menus, resume) is a **substantial, separately-scoped feature** — flag honestly,
+don't assume it's free:
+- A DVD's menus are **menu VOBs (MPEG-2 video) + subpicture (RLE-coded highlight
+  overlays) + navigation commands (the DVD "virtual machine" in the IFO/PGCI)**. Playing
+  a disc's real menus = implementing **dvdnav-style navigation**: the **Pi runs the DVD
+  VM** (`libdvdnav`) — menu PGCs, button highlight state, nav-command jumps — and streams
+  the **menu video through the *same* MPEG-2 decoder**; controller D-pad/Enter map to DVD
+  button up/down/left/right/activate over the control channel; the Pi's VM resolves them.
+- **New decode/overlay path (the real cost):** **subpicture (SPU) decode + alpha
+  compositing** is *not* in `mpeg2fpga`. Decode the RLE SPU (ARM-side) → small RGBA
+  highlight → composite into the **core overlay plane** from 8b. (Burning subpicture into
+  the video on the Pi is the easy hack but **breaks field-exact passthrough** — so do it
+  as an overlay, not a burn-in.)
+- **Scope boundary:** real DVD menus apply to **DVD Dumps only.** Plex/web sources have no
+  disc menus → they get the §8a/§8b **synthetic** transport UI (and the phase-2 browser
+  *is* their "menu"). Subtitle/audio-track *selection* still applies to both where the
+  stream carries them.
+- **Phasing:** 8a (transport) and 8b-MVP land in/around **M6**; the core overlay plane,
+  subpicture, and full disc-menu VM are a **post-M7 experience milestone** — large enough
+  to rescope on its own, gated behind the spine working end-to-end.

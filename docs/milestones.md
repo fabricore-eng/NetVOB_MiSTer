@@ -90,14 +90,19 @@ correctness; field-cadence (partial; finished M7).
 **Goal:** make it usable without a keyboard.
 - Catalog aggregator with **two separate libraries**; **badging**; control-channel
   `browse`.
-- **HPS-side browse UI** rendering lists; selection → `play`.
+- **Browse in the MiSTer OSD first** — *gated on an early go/no-go*: can the stock OSD/
+  file-picker navigate a nested, multi-library catalog (sources as folders, titles as
+  entries) acceptably? If yes, that's the **zero-custom-UI MVP** browser; if the OSD
+  can't carry basic library navigation, fall through to the phase-2 browser (M8). See
+  [`catalog-browse.md`](catalog-browse.md) §3.
 - **Disc-ID metadata** for dumps (fingerprint → lookup → TMDB; sidecar/folder
   fallbacks; local cache).
 - **NFC/Zaparoo:** tag → `{source, id}` → `play`. Confirm Zaparoo launch surface.
 
-**Exit:** browse "DVD Dumps" as named, (ideally postered) titles; tap an NFC tag to
-launch one. **Hardware:** + NFC tags. **Risk:** Zaparoo integration specifics; UI on
-console; disc-ID match quality.
+**Exit:** browse "DVD Dumps" as named titles **in the OSD** (or, if the go/no-go fails,
+the minimal phase-2 list) and pick one to play; tap an NFC tag to launch one.
+**Hardware:** + NFC tags. **Risk:** **OSD library-navigation feasibility (the go/no-go)**;
+Zaparoo integration; disc-ID match quality.
 
 ## M5 — PlexSource as the second library
 **Goal:** add the transcoded library.
@@ -111,16 +116,22 @@ console; disc-ID match quality.
 contention.
 
 ## M6 — Playback controls + seek + A/V-sync hardening
-**Goal:** real playback UX + lip-sync.
+**Goal:** real playback UX + lip-sync — the **controller becomes the DVD remote**.
+- **Controller→transport mapping** (`catalog-browse.md` §8a): play/pause, stop, seek
+  (scrub), chapter prev/next → control-channel messages; latency-sensitive actions may
+  be handled console/ARM-side for instant feel.
 - `pause`/`resume`/`seek{t}`; **GOP/VOBU-aligned seek** with buffer flush + decoder
   I-frame reset (both sources).
+- **Transport overlay (MVP):** show play-state/chapter/time as a DVD-player-style status
+  bar via the **MiSTer OSD** (the authentic core-overlay-plane version is M8, §8b).
 - **Audio on the ARM:** AC-3/MP2 decode → PCM → I2S; **slave audio to the video
   presentation clock** via PTS (resample slew + post-seek resync). Settle the video
   clock reference (core-exposed vblank/frame counter).
 
-**Exit:** seek lands cleanly on a keyframe with correct field parity; audio stays in
-lip-sync through play/seek/underrun on both libraries. **Hardware:** as M5. **Risk:**
-A/V sync over network; seek across GOP; possible small RTL add for a vblank tick.
+**Exit:** the pad drives play/pause/seek/chapter; seek lands cleanly on a keyframe with
+correct field parity; a transport readout shows on screen; audio stays in lip-sync
+through play/seek/underrun on both libraries. **Hardware:** as M5. **Risk:** A/V sync over
+network; seek across GOP; possible small RTL add for a vblank tick.
 
 ## M7 — 480i / 24-bit / field-cadence polish (true field-exact)
 **Goal:** the headline quality bar.
@@ -138,6 +149,27 @@ PlexSource looks correct at 480i. **Hardware:** SuperStation + CRT + (ideally) a
 capture/scope for field-timing verification. **Risk:** field-cadence preservation
 (#3); modeline/DAC timing.
 
+## M8 — The alternate-history DVD-player experience (post-spine, the polish vision)
+**Goal:** the headline *feel* — NetVOB as a DVD player from a parallel timeline that
+natively browsed Plex/network libraries. Everything here rides on a **working spine
+(M1–M7)** and is large enough to rescope independently. See
+[`catalog-browse.md`](catalog-browse.md) §3 (phase 2) + §8.
+- **Retro-DVD-player Plex-style browser:** console-side framebuffer UI on the
+  control-channel `browse` data — postered/badged lists in the early-2000s set-top
+  on-screen idiom, CRT-native (480i-safe fonts, title-safe margins). Replaces/upgrades
+  the M4 OSD browser.
+- **Core overlay plane:** a small text/graphics layer composited over the decoded raster
+  (à la CD-i plane-mux) for authentic translucent transport bars + UI (vs. the boxy OSD).
+- **DVD features & menus (DVD-Dumps only):** dvdnav-style navigation — Pi runs the DVD
+  VM (`libdvdnav`: menu PGCs, button highlight, nav commands), menu video through the
+  *same* decoder; **subpicture (RLE) decode + alpha composite** into the overlay plane;
+  controller → DVD button nav. Subtitle/audio/angle selection where streams carry them.
+
+**Exit:** browse a postered retro UI, drive a real DVD's menus with the controller, and
+see DVD-player-style overlays — all CRT-native. **Hardware:** SuperStation + CRT + pad.
+**Risk:** subpicture decode/overlay is a **new path** (not in `mpeg2fpga`); DVD VM
+fidelity; overlay-plane RTL fit on a near-full design.
+
 ---
 
 ## Future tier (OUT OF SCOPE now — design admits them)
@@ -152,5 +184,10 @@ capture/scope for field-timing verification. **Risk:** field-cadence preservatio
   the project rescopes (see risk #1 contingencies). Tackle it first and hard.
 - M2–M3 depend on M1; M4 depends on M3 (needs something to list); M5 depends on M4's
   catalog UI; M6 depends on M3/M5 (real streams); M7 hardens what M1–M6 produced.
+- **M4 ships browse in the MiSTer OSD first** (go/no-go on whether the OSD can navigate
+  libraries); **M8** is the post-spine experience tier (retro framebuffer browser + core
+  overlay plane + DVD menus/subpicture) and depends on the **whole** spine (M1–M7). If
+  the M4 OSD go/no-go fails, the *minimal* browser slips earlier from M8, but the rich
+  experience stays post-spine.
 - Audio (D2) physically lands in **M6**, but stub the audio ES split in **M2** so the
   PS demux is audio-aware from the start.
