@@ -278,3 +278,12 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   lock frees (573 building till ~20:15Z), launch `dell_build.sh` with **NO ref** (build the dirty working
   tree) → ~3MB compressed `.rbf` → re-run `hw_decode_test.sh` → expect `Z>0` then `FC`-decode. Device +
   build both shared with 573 — coordinate via hub lock+board.
+- 2026-06-04 (CONF_STR-fix build LAUNCHED on dell) — the wait-for-free watcher grabbed the box the
+  moment 573 freed it (attempt 5) and launched the dvd build DETACHED at 20:06:52Z (container
+  quartus-dvd; hub now permits up to 2 concurrent builds @ --cpus=2). Confirmed it is compiling the
+  working tree WITH the fix (`grep` on dell shows `S0,MPGM2V`) = candidate 480i+ADDR_ERR + the one-line
+  CONF_STR change. Fit risk minimal (string-constant edit on an already-fitting design). A
+  completion watcher (task bhtndyy3q) polls dell:/tmp/dellbuild-dvd.log and wakes me on DONE → then:
+  ensure a compressed `.rbf` (`quartus_cpf -o bitstream_compression=on` if POST_FLOW left only a .sof),
+  acquire the FREE mister devlock, re-run `hw_decode_test.sh` against the new rbf, read uart_debug —
+  expect Z>0 (mount fires); FC-advancing-with-reads = decode-on-HW SOLVED.
