@@ -93,6 +93,14 @@ non-issue. Ranked alternatives (DDR ring, `ioctl`+`ioctl_wait`) in
 Full operational playbook (carried over from a sibling MiSTer core, adapted):
 [`docs/dev-workflow.md`](docs/dev-workflow.md). Key facts:
 
+- **Shared dev hub (MULTI-SESSION — read first):** Shared MiSTer tooling + lessons + the
+  build/device-lock protocol live in **`~/Dev/mister-dev-hub`** (`PROTOCOL.md`); `dell` + the
+  test HW are **shared with the 573 session** — honor the locks + shared board. Build via
+  `~/Dev/mister-dev-hub/tools/dell_build.sh` (`DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga
+  DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2`, run `--who` first; namespaces container `quartus-dvd`).
+  Lock a test device before use: `tools/dell_coord.sh devlock mister acquire dvd` … test … `release dvd`.
+  Put **generic** lessons in the hub's `LESSONS.md`; **core-specifics** in your own session memory.
+
 - **Build target:** the standard MiSTer device **`5CSEBA6U23I7`** (DE10-Nano part) with
   the stock Template_MiSTer `sys/` — *confirmed* to compile and run on the SuperStation
   (the user's other project does exactly this). The SuperStation IS the standard MiSTer

@@ -64,3 +64,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   on `mister` + **filmstrip** (M1a-on-hardware; treat the repo README's "NTSC video output"
   as UNVERIFIED until the filmstrip proves it — CLAUDE.md says no confirmed video yet);
   (3) fan out cycle-3 sim/service/ARM depth *during* the 30-min build (interleave, never idle).
+- 2026-06-03 (cycle 4 — shared-hub integration) — **first `mpeg2fpga` `.rbf` built successfully**
+  on the Dell (Full Compilation OK, ~30 min CPU, device 5CSEBA6U23I7) — M0 build milestone.
+  Then **wired NetVOB into the shared MiSTer dev hub** (`~/Dev/mister-dev-hub`, mirrored
+  `dell:~/mister-shared/`) so `dell` + `mister` are shared with the **573 session** without
+  collision: read PROTOCOL.md + LESSONS.md; added the `dvd` row to `registry/projects.md`
+  (pushed to the hub); added the shared-tooling/lock note to CLAUDE.md. **Retired my
+  non-coordinated `tools/build/quartus-build.sh` + poll** (used `pgrep` — would match 573's
+  Quartus + bypassed the shared lock; the hub's lesson is detect-by-`docker ps`-container-name)
+  in favor of the hub's `tools/dell_build.sh` (serializes on `/tmp/dell-build.lock`, namespaces
+  container `quartus-dvd`/log `dellbuild-dvd.log`) + `dell_coord.sh devlock` for test HW.
+  Build config: `DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2`.
+  blocked: none. next: `load_core` the `.rbf` on `mister` behind a `devlock` + filmstrip (M1a-HW),
+  via the shared protocol. (cycle-3 local sim/real-data workflow still running — integrate next.)
