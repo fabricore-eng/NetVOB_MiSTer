@@ -71,6 +71,7 @@ class Streamer:
         rate_bytes_per_s: Optional[float] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        can_emit: Optional[Callable[[], bool]] = None,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
@@ -83,6 +84,12 @@ class Streamer:
         self.rate_bytes_per_s = rate_bytes_per_s
         self._clock = clock
         self._sleep = sleep
+        # Optional last-moment emit gate, re-checked AFTER a (possibly
+        # blocking) pull and immediately BEFORE a write. Lets a threaded
+        # driver (the server's session) pause cleanly even when ``read`` was
+        # blocked when the pause arrived: the just-pulled chunk is held in the
+        # buffer (not dropped) and emitted on resume. Defaults to "always".
+        self._can_emit = can_emit
 
         self.state = State.IDLE
         self.bytes_written = 0
@@ -176,6 +183,13 @@ class Streamer:
                 self._eof = True
             else:
                 self._buffer.extend(chunk)
+
+        # The pull above may have blocked; if a pause/stop landed meanwhile,
+        # hold the buffered bytes and don't emit (they go out on resume).
+        if self.state in (State.PAUSED, State.STOPPED, State.DONE):
+            return False
+        if self._can_emit is not None and not self._can_emit():
+            return False
 
         if self._buffer:
             out = bytes(self._buffer[: self.chunk_size])
