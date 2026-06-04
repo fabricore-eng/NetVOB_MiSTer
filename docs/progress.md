@@ -407,3 +407,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   assert? what's its reset/exit condition? is ram1_reset/reset_out stuck?), check whether the HPS
   f2sdram bridge is enabled/ready on this build, and compare the reset wiring to a known-good HPS-DDR
   MiSTer core. The fix is likely in the f2sdram reset/enable or bridge bring-up, NOT timing or address.
+- 2026-06-04 (BREAKTHROUGH: f2sdram-broken CONFIRMED by reboot — decoder now does REAL DDR traffic) —
+  user-authorized warm reboot, then loaded the dvd core FIRST on the clean boot. RESULT (uart):
+  W:00BD (189 writes, was stuck at 0003), P:0054 (84 reads, was 0), RP:0053 (83 read responses, was 0),
+  @:060000B9 (mem addr advanced). ⇒ the DDR wedge WAS a broken HPS f2sdram interface inherited from
+  prior core-load resets (exactly as f2sdram_safe_terminator.sv documents: mid-stream-terminated
+  transactions wedge f2sdram until an HPS reset; a load_core does NOT fix it). The reboot cleared it and
+  the decoder DECODED real frame data (writes+reads to DDR). HUGE — the whole feed→decode→DDR path works
+  on a fresh boot. BUT it RE-STALLS at W:189: W/P/@ freeze, U:1 (waitrequest) stuck again, watchdog O
+  cycling ~4s, E:0 Q:0 (no new mem reqs). So something re-wedges f2sdram after ~189 single-beat
+  (burstcnt=1) transactions. TWO leading sub-hypotheses for the re-stall: (A) the decoder WATCHDOG
+  (watchdog_rst) resets mem_shim mid-transaction -> yanks a live f2sdram write -> re-breaks the
+  just-cleared f2sdram; (B) f2sdram dropped a read response (P:84 issued vs RP:83 received = 1 gap) and
+  mem_shim hangs waiting for it — EXACTLY the +ddr_drop hang the overnight core/sim/memshim run predicted.
+  NEXT: (1) check what watchdog_rst resets in emu.sv (does it reset mem_shim/reset_n, bypassing the
+  safe_terminator? if so, route it through reset_out OR disable the watchdog so it can't re-break
+  f2sdram); (2) revisit the memshim sim's dropped-response hang + whether mem_shim needs a
+  read-response timeout/recovery; (3) rebuild with the fix, reboot fresh, retest -> success = W climbs
+  past 189 + a full frame decodes. Board returned to MENU + released after the test (no flicker).
+  REBOOT IS USER-AUTHORIZED (shared HW); routine device hand-off stays session-to-session.
