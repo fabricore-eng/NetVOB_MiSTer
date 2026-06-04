@@ -18,7 +18,12 @@
 set -uo pipefail
 HUB="$HOME/Dev/mister-dev-hub"
 RBF_DELL="~/NetVOB_MiSTer/core/MiSTer_MPEG2/output_files/mpeg2fpga_dvd_480i_addrerr.rbf"
+# The golden NTSC 480i ES clip — proven to decode in sim (core/sim). Staging THIS to the
+# board removes the file-not-found ambiguity: if the feed is still empty with a confirmed
+# non-zero file on disk, the bug is the mount PULSE (RTL), not a missing/zero-size file.
+CLIP_LOCAL="$(cd "$(dirname "$0")/../.." && pwd)/tools/testclips/test480i_ntsc.m2v"
 flt(){ grep -vE 'post-quantum|store now|openssh|vulnerable|server may'; }
+[ -f "$CLIP_LOCAL" ] || { echo "regenerating golden clip..."; "$(dirname "$0")/../testclips/make_test480i.sh"; }
 
 echo "── 1. acquire mister devlock (dvd) ───────────────────────────"
 "$HUB/tools/dell_coord.sh" devlock mister acquire dvd 2>&1 | flt || { echo "mister is locked by the other session — try later"; exit 1; }
@@ -26,6 +31,14 @@ trap '"$HUB/tools/dell_coord.sh" devlock mister release dvd 2>&1 | flt' EXIT  # 
 
 echo "── 2. copy candidate .rbf  Dell -> mister:/media/fat ─────────"
 ssh -o BatchMode=yes dell "cat $RBF_DELL" | ssh -o BatchMode=yes mister 'cat > /media/fat/mpeg2fpga_dvd.rbf; ls -la /media/fat/mpeg2fpga_dvd.rbf' 2>&1 | flt
+
+echo "── 2b. stage golden clip  Mac -> mister:/media/fat/test.mpg ──"
+# THIS is the step the original helper was missing: the .mgl mounts path="test.mpg"
+# but nothing put a test.mpg on the board -> img_size=0 -> streamer total_sectors=0 -> black.
+ssh -o BatchMode=yes mister "cat > /media/fat/test.mpg" < "$CLIP_LOCAL" 2>&1 | flt
+ssh -o BatchMode=yes mister 'sz=$(wc -c < /media/fat/test.mpg 2>/dev/null || echo 0)
+  echo "test.mpg on board: ${sz} bytes  $( [ "$sz" -gt 0 ] && echo "(file present -> img_size should be non-zero)" || echo "(EMPTY/MISSING -> would read as file-not-found)" )"
+  echo "first4: $(xxd -p -l 4 /media/fat/test.mpg 2>/dev/null) (expect 000001b3 = MPEG-2 seq header)"' 2>&1 | flt
 
 echo "── 3. load_core the .mgl (core + clip to S0) ─────────────────"
 ssh -o BatchMode=yes mister 'test -f /media/fat/mpeg2_test.mgl || printf "%s\n" "<mistergamedescription>" "  <rbf>mpeg2fpga_dvd</rbf>" "  <file delay=\"1\" type=\"s\" index=\"0\" path=\"test.mpg\"/>" "</mistergamedescription>" > /media/fat/mpeg2_test.mgl
@@ -47,12 +60,22 @@ echo "── 5. filmstrip (HDMI/scaler path — likely BLACK; CRT is truth) ─"
 
 cat <<'NEXT'
 ── READ THIS ─────────────────────────────────────────────────
-LOOK AT THE CRT (analog/component) — that's the only true output for this core.
-Interpret uart_debug (or paste it to me) per docs/hw-decode-diagnostic.md:
-  streamer_* counts == 0      -> FEED bug (mpg_streamer/mount): the decoder gets no bitstream
-  feed > 0, frame_cnt == 0    -> DECODER/FIFO: bitstream arrives but no frames decode
-  mem_rd_count != mem_rsp_count -> MEM_SHIM response desync (the ADDR_ERR fix targets this)
-  all advancing but CRT black -> VIDEO-OUT/analog (decode OK; revisit emu raster)
-Candidate backups staged in core/patches/hw/: fifo-dualclock-swap, (feed-latch TODO).
+A non-zero test.mpg is now staged (step 2b), so the FEED branch is now DECISIVE:
+the decode gate can be read from uart_debug ALONE — you do NOT need the CRT for it
+(the HDMI screenshot is black by design for this raw-VGA core; the CRT is only the
+final analog field/color check AFTER decode is confirmed).
+
+Interpret uart_debug (Z=streamer_total_sectors, J=next_lba, T=active; paste it to me):
+  Z == 0  AND step-2b said EMPTY/MISSING  -> file-not-found: fix the path/copy, re-run.
+  Z == 0  BUT step-2b confirmed a file    -> MOUNT-PULSE bug: img_mounted[0] never fired
+                                             (the .mgl mount didn't reach the S0 slot).
+                                             SPLIT IT (hub LESSONS): open the OSD and use
+                                             "Load Video" to mount test.mpg BY HAND.
+                                               OSD mount works -> .mgl syntax/timing; fix .mgl.
+                                               OSD mount also Z=0 -> core img_mounted/sd_* RTL.
+  Z >  0, frame_cnt(FC) == 0   -> DECODER/FIFO: bitstream arrives but no frames decode.
+  mem_rd(P) != mem_rsp(RP)     -> MEM_SHIM response desync (the ADDR_ERR fix targets this).
+  Z>0, FC advancing, CRT black -> VIDEO-OUT/analog only (decode OK; revisit emu raster).
+Candidate backups staged in core/patches/hw/: fifo-dualclock-swap, (sticky-mount-latch TODO).
 The device lock auto-releases when this script exits.
 NEXT
