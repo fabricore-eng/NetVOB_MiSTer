@@ -48,3 +48,6 @@ tools/**/*.m2v
 
 # OS
 .DS_Store
+
+# Claude Code session scheduler lock
+.claude/scheduled_tasks.lock

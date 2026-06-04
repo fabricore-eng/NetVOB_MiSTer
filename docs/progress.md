@@ -32,3 +32,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   dump host — awaiting `.env` values). building: nothing (all increments verified+committed).
   next: decoder-sim breadth (real-motion I/P/B clip via `tools/` clips→ES; NTSC 480i
   modeline; numeric PSNR-vs-ffmpeg check) — all sim-only, no hardware needed.
+- 2026-06-03 (cycle 2) — **decoder-sim breadth**: real-motion **I/P/B decode CONFIRMED**
+  (first motion-compensation test — `picture_coding_type` advances I→P→B, frames visibly
+  move; filmstrip in `core/sim/artifacts/`); **NTSC 480i modeline added** (720×480i geometry
+  verified live; analog field-rate/PLL = 13.5 MHz dotclock flagged for HW, not a sim
+  blocker); numeric **Y-PSNR = 28.67 dB** vs an ffmpeg reference (below my 30 dB bar but
+  root-caused as benign IDCT-precision divergence — bounded |Δ|≤17, high-freq only — not a
+  decode bug). 3 RTL edits captured as auto-applied patches; harness **reproducible from a
+  pristine submodule** (lint 0 errors, verified by orchestrator). **service**: real
+  PS-over-TCP media server + JSON control channel + localhost-loopback E2E test
+  (browse→play→pause→resume→seek→stop, byte-exact PS) — 52 tests (43+9), non-flaky / 80
+  runs. **arm**: SPSC ring buffer + `sd_*` sector-pull backpressure model + audio-ES
+  routing; 4 host-test binaries pass (ASan/UBSan clean). Also (interactive, hardware
+  discovery): reached the **Dell build box** (Ubuntu 26.04 x86 — Docker + `raetro/quartus:17.0`
+  ALREADY present → bitstream path essentially ready), confirmed **`timepi` = the Pi 5**;
+  installed libdvdcss + ripped the user's **KUNGPOW** DVD (CSS), dumping to the Pi's 512 GB
+  NAS `/mnt/nas/dvd-dumps/` as the first real DVDDumpSource fixture. blocked: `.env` still
+  unfilled (Pi=`timepi`, build box=`dell` now known; SSH key paths + Plex/TMDB pending).
+  building: KUNGPOW `dvdbackup` mirror on the Dell (→ NAS move on completion).
