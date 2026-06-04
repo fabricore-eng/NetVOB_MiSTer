@@ -312,3 +312,42 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   480i+confstr), launched instrumented build detached (pid 3057399, container quartus-dvd). Completion
   watcher re-armed. Also captured M7 finding earlier: framework OSD renders half-height/shifted-up over
   the interlaced raster (core modeline verified correct 480i) — cosmetic, post-decode.
+- 2026-06-04 (instrumented build DONE rc=0; HW read queued behind 573's active device test) — the
+  img_mounted/img_size-instrumented build finished (31:50, rc=0); converted .sof -> compressed
+  mpeg2fpga_dvd_mountdiag.rbf (~3MB) + pointed hw_decode_test.sh at it. Device is LOCKED by 573 (their
+  active colored-bars flash-debug test; they posted "no rush, take your time"). Reciprocated in chat,
+  queued via a device-free watcher (will grab the devlock the moment 573 releases, run the test, read
+  X=img_mounted-count / Y=img_size). Advancing the Pi-side PS->ES demux (M2, FPGA-independent) off-board
+  while waiting. The instrumented HW read is the next decisive step on the decode gate.
+- 2026-06-04 (M2 off-board increment while queued for the device: PS->ES demux reference) — built
+  service/core/ps_demux.py — the MPEG-2 Program-Stream -> video-Elementary-Stream demux that
+  transport.md assigns to the ARM ingest (the decoder's VLD eats ES, not PS; production is C on the ARM,
+  this Python is the reference + a fixture tool to turn a real DVD PS into a sim/HW ES clip). Walks
+  pack(0xBA)/system(0xBB)/PES, concatenates the chosen video stream (0xE0) payloads, strips PES headers
+  (incl. PTS), resyncs on garbage, skips audio/nav(private_stream_2)/system. 7 unit tests (hand-built
+  PS packets, exact-byte asserts) — full suite 86 green. Does NOT touch the M3 PS-passthrough path.
+  Still queued behind 573's device test (watcher bxbs9ohgm) for the instrumented img_mounted HW read.
+- 2026-06-04 (FEED GATE SOLVED on real HW — .mgl needs an ABSOLUTE path) — the instrumented build
+  read decisively: X:001 (img_mounted DID pulse — the mount mechanism was never broken) but Y:000
+  (img_size==0). Per hub LESSONS that = file-not-found: the .mgl RELATIVE path="test.mpg" did not
+  resolve. Rewrote the .mgl with ABSOLUTE path="/media/fat/test.mpg" (rebuild-free) and re-read:
+  Y:E74 (real ~2MB size), Z:0F3B (3899 sectors = 1.99MB), T:1 (streamer ACTIVE), H:1 (cache has data),
+  J:0021 (reading sectors), B:1 (decoder busy), F:1 (vbw bitstream buffer filling). **The entire
+  mount -> sd_* -> mpg_streamer -> bitstream chain now works on real hardware.** Hardened
+  hw_decode_test.sh to always write the .mgl with the absolute path (+ comment). So the long
+  black-screen saga's feed half is DONE; none of CONF_STR/mem_shim/FIFO/latch was the cause — it was
+  the .mgl path resolution. NEXT GATE (revealed): the decoder RECEIVES bitstream (F:1, G:0 no VLD
+  error) but does not decode to DDR yet — W:0003 stuck, P:0000, mem_shim M:D with sdram_busy U:1 /
+  ack K:0, watchdog O:1 fired. = the decoder<->DDR3 write path (the layer the overnight
+  mem_shim/ADDR_ERR/FIFO work targeted). That is the next investigation.
+- 2026-06-04 (NEXT GATE characterized: decoder<->DDR3 f2sdram write path is hard-stuck) — ~20s uart
+  trace with the feed working: W:0003 (DDR writes), P:0000 (reads), J:0021 (streamer lba), Z:0F3B,
+  M:D U:1 K:0 (shim_state D, sdram_busy=1, ack=0) all FROZEN; F:1 (vbw full), B:1 (busy), E:0 Q:0
+  (decoder issuing NO mem requests), G:0 (no VLD error); only FC (raster) free-runs and the watchdog
+  O cycles ~every 4s. Reading: the decoder got bitstream, made 3 DDR writes, then the f2sdram bridge
+  stopped completing (sdram_busy stuck high, never acks) -> mem_shim stalls in state D -> decoder
+  hangs -> streamer backpressures (J frozen, cache full) -> watchdog resets -> repeat. This is the
+  HPS<->FPGA DDR3 (f2sdram) write path, NOT the feed. NEXT (sim-first, off-board): run the
+  core/sim/memshim/ Verilator harness to split mem_shim LOGIC (does the write path complete vs a
+  ddr3_model?) from the HW f2sdram bridge (enable/clocking/reset/base-addr at clk_mem 108MHz). If sim
+  passes, the bug is HW f2sdram config; if sim stalls the same way, it's mem_shim logic.
