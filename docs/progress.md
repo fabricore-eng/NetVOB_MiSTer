@@ -129,6 +129,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (`quartus-dvd`). next: `cpf`→`.rbf` → load via `.mgl` behind the `mister` devlock → CRT test
   (confirm stable lock; check/flip F1). HW follow-ups: no NTSC equalizing pulses (some CRTs may roll),
   27 MHz not ×1000/1001 (0.1% fast), reconcile sim-vs-hw modeline totals (minus-one convention).
+- 2026-06-04 (cycle 6 result — **ANALOG 480i TIMING FIXED on real HW** ✅; decode-on-HW is the
+  remaining gate) — built + loaded the `emu.sv` NTSC 480i fix on the SuperStation: **CRT scramble →
+  STABLE LOCKED raster** — the analog field-exact-480i frontier is CLEARED (the CRT now syncs to our
+  core's output; `VGA_F1`/`ce_pix`/`MODELINE_NTSC_INTERL` fix confirmed in-system). With a **720×480
+  NTSC color-bars clip** (and the 352×240 stream-susi) mounted via the `.mgl`, the screen is **stable
+  BLACK** = no decoded pixels on the now-correct raster. Both clips black → systematic, not per-clip.
+  This isolates the remaining gate = the project's **#1 RISK** (CLAUDE.md: "no confirmed video; FSM /
+  mem_shim DDR3 hangs"): the decoder is **sim-proven on these exact streams** (bench behavioral RAM),
+  so the suspect is the **HW-only datapath the sim never exercised** — `mpg_streamer` `sd_*` feed
+  (CLAUDE.md: loading is verified) → **`mem_shim` DDR3/CMA framestore** → decoder FSM under real SDRAM
+  latency → `VGA_*`. NEXT (the M1a gate, OFF-BOARD): a **full-PORT Verilator sim** (emu + decoder +
+  `mem_shim` + a DDR3 model + mounted-image feed) to reproduce the black + localize the stall (feed?
+  mem_shim? FSM? framestore read?), plus exposing decoder `vld_err`/FSM state to LEDs/HPS for on-HW
+  confirmation. devlock released; `VGA_F1` field-order moot until there's a picture. **NET TODAY:
+  decoder de-risked in sim; full toolchain + hub coordination; KUNGPOW dumped; first HW load; analog
+  480i timing fixed on HW. Remaining: confirmed decoded video on HW (the gate).**
 - BACKLOG (user idea 2026-06-04, design-only/future) — a **3rd source library: live web streams**
   (e.g. Toonami Aftermath) transcoded on the Pi to 480i MPEG-2 PS. Architecturally ≈ PlexSource (URL →
   ffmpeg → 480i NTSC PS); a clean new `Source` plugin, kept separate/badged. Build after the spine
