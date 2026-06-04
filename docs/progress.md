@@ -299,3 +299,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   480i regardless of the OSD overlay. ACTION: tracked as M7 (480i polish) — judge real video geometry
   directly once decode lights up (after the CONF_STR mount fix), then decide if the OSD-over-interlace
   overlay needs a sys_top tweak. Not blocking the decode gate.
+- 2026-06-04 (CONF_STR fix did NOT clear the mount; going autonomous with RTL instrumentation) — built
+  + loaded the CONF_STR-fixed .rbf (mpeg2fpga_dvd_confstr.rbf, 3.0MB); uart STILL Z:0000 T:0 -> the
+  malformed S-slot extension was a real bug but NOT the mount-pulse cause (the .mgl mount-by-index
+  ignores the ext filter). HPS side gives no mount log (checked /var/log, dmesg, /tmp) and there is no
+  standalone mount FIFO verb, and the user (via /loop "never ask the human") wants this settled without a
+  hand-mount. So: INSTRUMENTED emu.sv (emu.sv-only, low risk — repurposed the debug-only uart X/Y
+  fields): X = img_mounted[0] rising-edge COUNT, Y = captured img_size[19:8]. Decisive read next build:
+  X=0 -> mount never reaches the FPGA (framework/.mgl/hps_io); X>0,Y=0 -> pulsed but img_size==0
+  (framework sizing); X>0,Y!=0,Z=0 -> mount fine, bug is downstream (start_streaming/mpg_streamer/
+  total_sectors). Synced emu.sv -> dell build tree (diff confirmed ONLY the instrumentation delta atop
+  480i+confstr), launched instrumented build detached (pid 3057399, container quartus-dvd). Completion
+  watcher re-armed. Also captured M7 finding earlier: framework OSD renders half-height/shifted-up over
+  the interlaced raster (core modeline verified correct 480i) — cosmetic, post-decode.
