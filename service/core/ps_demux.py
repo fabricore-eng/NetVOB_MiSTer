@@ -115,9 +115,30 @@ def _strip_pes_header(data: bytes, start: int, end: int) -> Optional[int]:
         header_data_len = data[start + 2]
         payload = start + 3 + header_data_len
         return payload if payload <= end else None
-    # MPEG-1-style or already-stripped: skip leading stuffing 0xFF, optional STD buffer
-    # scale/size and PTS/DTS. Keep it simple/robust: advance past 0xFF stuffing only.
+    # MPEG-1-style PES header (ISO 11172-1): leading 0xFF stuffing, then an
+    # optional STD_buffer field (2 bytes, top-2-bits '01'), then one of:
+    # PTS-only (5 bytes, top-4-bits '0010'), PTS+DTS (10 bytes, '0011'), or the
+    # no-timestamp marker byte 0x0F (1 byte). These header bytes are NOT ES
+    # payload and must be skipped: the repo's own MPEG-1 VCD PS pipeline
+    # (mpeg2enc -f 1 / mplex -f 1) emits them, and leaking them front-loads
+    # garbage before the sequence_header start code into the VLD FSM. Bound every
+    # advance by `end`; return None on overrun.
     j = start
     while j < end and data[j] == 0xFF:
         j += 1
-    return j if j < end else None
+    if j >= end:
+        return None
+    if (data[j] & 0xC0) == 0x40:          # STD_buffer_scale + STD_buffer_size
+        j += 2
+        if j >= end:
+            return None
+    b = data[j]
+    if (b & 0xF0) == 0x20:                # PTS only (5 bytes)
+        j += 5
+    elif (b & 0xF0) == 0x30:             # PTS + DTS (10 bytes)
+        j += 10
+    elif b == 0x0F:                       # no PTS/DTS: single marker byte
+        j += 1
+    # else: no recognized MPEG-1 header field -> payload begins at j
+    #       (raw body / already-stripped stream)
+    return j if j <= end else None

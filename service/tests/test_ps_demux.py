@@ -43,6 +43,25 @@ def nav_pack() -> bytes:
     return b"\x00\x00\x01\xBF" + bytes([len(body) >> 8, len(body) & 0xFF]) + body
 
 
+def mpeg1_video_pes(payload: bytes, sid: int = VIDEO_STREAM_0, *,
+                    stuffing: int = 0, std: bool = False, ts: str = "none") -> bytes:
+    """MPEG-1-form video PES (ISO 11172-1, NO MPEG-2 '10' marker):
+    [0xFF*stuffing][STD_buffer 2B][PTS 5B | PTS+DTS 10B | 0x0F 1B] + payload.
+    These header bytes precede the ES payload and must be stripped. The repo's
+    own MPEG-1 VCD pipeline (mpeg2enc -f 1 / mplex -f 1) emits this form."""
+    hdr = b"\xFF" * stuffing
+    if std:
+        hdr += b"\x42\x00"                                  # STD_buffer (top bits '01')
+    if ts == "pts":
+        hdr += b"\x21\x00\x01\x00\x01"                      # PTS only, 5B ('0010')
+    elif ts == "ptsdts":
+        hdr += b"\x31\x00\x01\x00\x01\x11\x00\x01\x00\x01"  # PTS+DTS, 10B ('0011')
+    elif ts == "0f":
+        hdr += b"\x0F"                                      # no PTS/DTS, 1B marker
+    body = hdr + payload
+    return b"\x00\x00\x01" + bytes([sid, len(body) >> 8, len(body) & 0xFF]) + body
+
+
 PROGRAM_END = b"\x00\x00\x01\xB9"
 
 # A plausible video ES fragment (starts with a sequence_header_code, like a real clip).
@@ -86,6 +105,29 @@ class TestPsDemux(unittest.TestCase):
     def test_empty_and_no_video(self):
         self.assertEqual(demux_ps_to_video_es(b""), b"")
         self.assertEqual(demux_ps_to_video_es(pack() + PROGRAM_END), b"")
+
+    # --- MPEG-1-form PES header regression (spine-review bug #2) ---
+    # The MPEG-1 PES header (STD_buffer / PTS / PTS+DTS / 0x0F) must be stripped;
+    # leaking it front-loads garbage before the sequence_header into the VLD.
+    def test_mpeg1_pts_header_skipped(self):
+        ps = pack() + mpeg1_video_pes(ES_A, ts="pts") + PROGRAM_END
+        self.assertEqual(demux_ps_to_video_es(ps), ES_A)
+
+    def test_mpeg1_ptsdts_header_skipped(self):
+        ps = pack() + mpeg1_video_pes(ES_A, ts="ptsdts") + PROGRAM_END
+        self.assertEqual(demux_ps_to_video_es(ps), ES_A)
+
+    def test_mpeg1_std_buffer_plus_pts_skipped(self):
+        ps = pack() + mpeg1_video_pes(ES_A, std=True, ts="pts") + PROGRAM_END
+        self.assertEqual(demux_ps_to_video_es(ps), ES_A)
+
+    def test_mpeg1_stuffing_plus_pts_skipped(self):
+        ps = pack() + mpeg1_video_pes(ES_A, stuffing=3, ts="pts") + PROGRAM_END
+        self.assertEqual(demux_ps_to_video_es(ps), ES_A)
+
+    def test_mpeg1_0f_marker_skipped(self):
+        ps = pack() + mpeg1_video_pes(ES_A, ts="0f") + PROGRAM_END
+        self.assertEqual(demux_ps_to_video_es(ps), ES_A)
 
 
 if __name__ == "__main__":

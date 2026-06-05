@@ -14,10 +14,11 @@ Status legend: ☐ open · ☑ fixed (commit)
   PES (DVD VOB), lands in one 64KiB recv chunk so the 1-byte-feed test misses it. One dropped byte
   permanently desyncs the HW decoder. **FIXED** (emit `(pend_zeros-2)` zeros before the reset,
   mirroring the chunk-exhausted path) + Pass 6 regression test (red/green verified, one-chunk feed).
-- ☐ **service/core/ps_demux.py:118-123** — MPEG-1-form PES branch skips only `0xFF` stuffing, never
+- ☑ **service/core/ps_demux.py:118-123** — MPEG-1-form PES branch skips only `0xFF` stuffing, never
   the STD_buffer(2)/PTS(5)/PTS+DTS(10) header fields → header bytes leak into the ES before the
-  sequence header. In scope: the repo's own pipeline emits MPEG-1 VCD PS. **Fix:** real MPEG-1 PES
-  header skip + tests (STD-only / PTS-only / PTS+DTS).
+  sequence header. In scope: the repo's own pipeline emits MPEG-1 VCD PS. **FIXED** (real MPEG-1 PES
+  header skip: stuffing → STD_buffer → PTS/PTS+DTS/0x0F, bounded by `end`) + 5 regression tests
+  (PTS / PTS+DTS / STD+PTS / stuffing+PTS / 0x0F), red/green verified.
 
 ## HIGH — live-path + lifecycle
 - ☐ **arm/netd.c:113-124 (+netingest.c)** — no transport §4 backpressure: recv() never gates on
