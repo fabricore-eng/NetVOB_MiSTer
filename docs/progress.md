@@ -1066,3 +1066,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   results in docs/hw-bridge-wedge-fix-plan.md. | advanced: LogicLock ruled out (license); next-probe
   redirect documented + team-aligned | blocked: bridge-pinning unavailable on Web Edition | building:
   nothing.
+- 2026-06-05 (getbits-OUTPUT probe building) — Swapped the (wedging) raw-dump for a getbits-output
+  probe: capture getbits[23:0] at the first getbits_valid (G0 = first 3 bitstream bytes = 0x000001 if
+  intact) + a later sample G1, all in the VLD region (away from the bridge → should feed clean like the
+  dct_coeff VLD probe; bridge-adjacent vbr_rd_dta wedged every time, LogicLock license-blocked). Reused
+  ports: VL=G0, VN=getbits_valid count, BL=G1, BN=marker (no emu/uart change). lint-clean. qsf clean (no
+  LogicLock). Build pid 1131628 (watcher bpayvla0r). G0 golden is deterministic (clip opens 00 00 01 b3
+  -> first 24-bit window = 0x000001), so no sim run needed for the primary verdict. WHEN IT LANDS:
+  warm-reboot + read UART; feed CLEAN (J->Z, not stuck 0x21) + VL(G0)=00000001 => bitstream INTACT into
+  vld at start (corruption mid-stream, sample later getbits next); VL(G0) shuffled => byte/lane ORDERING
+  bug (fix mem_shim/vbuf 64b lane order). If getbits ALSO wedges => probe-free /dev/mem vbuf-DDR dump on
+  the clean VLD-probe build, or 573's mem_shim↔bridge handoff register. RTL snapshot
+  core/patches/hw/mpeg2fpga-hw-bisect-getbits-probe.patch. | advanced: getbits probe built+queued |
+  blocked: nothing | building: getbits probe (bpayvla0r).

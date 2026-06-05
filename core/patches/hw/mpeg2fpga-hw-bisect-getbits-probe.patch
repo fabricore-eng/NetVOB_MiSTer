@@ -1,3 +1,14 @@
+diff --git a/mpeg2fpga.qsf b/mpeg2fpga.qsf
+index d65f5d6..4704eea 100644
+--- a/mpeg2fpga.qsf
++++ b/mpeg2fpga.qsf
+@@ -268,4 +268,4 @@ set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+ # Verilog define for PLL instantiation
+ set_global_assignment -name VERILOG_MACRO "QUARTUS=1"
+ 
+-set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
+\ No newline at end of file
++set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
 diff --git a/rtl/emu.sv b/rtl/emu.sv
 index aa9bf0d..b9328d8 100644
 --- a/rtl/emu.sv
@@ -496,7 +507,7 @@ index 4669b03..f5836f3 100644
    // test
    parameter [11:0]
 diff --git a/rtl/mpeg2/mpeg2video.v b/rtl/mpeg2/mpeg2video.v
-index 6662245..ca0f95c 100644
+index 6662245..7e34523 100644
 --- a/rtl/mpeg2/mpeg2video.v
 +++ b/rtl/mpeg2/mpeg2video.v
 @@ -57,7 +57,8 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
@@ -520,7 +531,7 @@ index 6662245..ca0f95c 100644
  
    /* register file access */
    input       [3:0]reg_addr;
-@@ -549,6 +554,73 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+@@ -549,6 +554,62 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
    assign sync_rst_out = sync_rst;
    assign vbw_almost_full_out = vbw_wr_almost_full;
  
@@ -545,51 +556,40 @@ index 6662245..ca0f95c 100644
 +   *   bench/iverilog/testbench.v uses this IDENTICAL rld_rd_valid gate.
 +   * VL = running 32-bit sum of the level, sign-extended 12->32 (the level is 2's
 +   *   complement). VN = count of consumed pairs. Both wrap at 32 bits to match sim. */
-+  /* HW-bisect: RAW first-words DUMP (ordering-vs-corruption cut). The byte probe
-+   * localized the divergence to the bitstream WORD getbits reads (vbr_rd_dta) vs
-+   * sim, but a folded checksum can't tell a byte/word-ORDERING mismatch
-+   * (mem_shim/f2sdram 64-bit lane order) from real corruption. So capture the
-+   * FIRST TWO vbr_rd_dta words VERBATIM, registered AT THE SOURCE (cockpit's
-+   * nudge: the long cross-chip route to uart then runs from these regs, not the
-+   * live bridge-adjacent net, to avoid re-rolling the marginal f2sdram bridge
-+   * placement). Reuses the existing 2x32b probe ports as 64b word carriers (no
-+   * emu/uart change): W0=first word -> {bl_chksum_out, bn_cnt_out};
-+   * W1=second word -> {vl_chksum_out, vl_cnt_out}. Read in UART as W0={BL,BN},
-+   * W1={VL,VN}; compare to the sim's first two vbr_rd_dta words: byte-PERMUTATION
-+   * => lane/endian ordering bug; W0 unrelated => corruption from the start;
-+   * W0/W1 MATCH but BL diverged@~90 => mid-stream corruption (capture near 90). */
-+  reg [63:0] vbr_w0, vbr_w1;
-+  reg  [1:0] vbr_widx;   // 0,1,2(=done)
++  /* HW-bisect: getbits-OUTPUT probe — the EFFECTIVE bitstream vld decodes, tapped
++   * in the VLD region (getbits[23:0] is consumed by vld, placed near vld — AWAY
++   * from the f2sdram bridge, so it should feed clean like the dct_coeff VLD probe;
++   * the bridge-adjacent vbr_rd_dta tap wedged every time, and LogicLock pinning is
++   * license-blocked on the free Web Edition). getbits[23:0] is the 24-bit bitstream
++   * window vld reads, strobed by getbits_valid. G0 = the window at the FIRST valid
++   * = the first 3 bitstream bytes = 0x000001 (MPEG start-code prefix) if the
++   * bitstream reaching vld is intact, shuffled if there's a byte/lane-order bug in
++   * the DDR roundtrip. G1 = a later sample (a 2nd content point). Reuses the probe
++   * ports (no emu/uart change): VL=G0, VN=getbits_valid count, BL=G1, BN=G1 marker.
++   * Read in UART: VL(G0)=00000001 + feed CLEAN => bitstream INTACT into vld at the
++   * start (corruption is mid-stream); VL(G0) shuffled => byte/lane ORDERING bug. */
++  reg [23:0] gb0, gb1;
++  reg [31:0] gb_cnt;
++  reg        gb0_got;
 +  always @(posedge clk)
 +    if (~sync_rst) begin
-+      vbr_w0   <= 64'd0;
-+      vbr_w1   <= 64'd0;
-+      vbr_widx <= 2'd0;
-+    end else if (vbr_rd_valid && vbr_widx != 2'd2) begin
-+      if (vbr_widx == 2'd0) vbr_w0 <= vbr_rd_dta;   // capture AT source
-+      else                  vbr_w1 <= vbr_rd_dta;
-+      vbr_widx <= vbr_widx + 2'd1;
++      gb0     <= 24'd0;
++      gb1     <= 24'd0;
++      gb_cnt  <= 32'd0;
++      gb0_got <= 1'b0;
++    end else if (getbits_valid) begin
++      if (!gb0_got) begin
++        gb0     <= getbits;   // first valid window = first 3 bytes
++        gb0_got <= 1'b1;
++      end
++      if (gb_cnt == 32'd256) gb1 <= getbits;  // a later content sample
++      gb_cnt <= gb_cnt + 32'd1;
 +    end
 +
-+  assign vl_chksum_out = vbr_w1[63:32];   // UART "VL" = W1 hi
-+  assign vl_cnt_out    = vbr_w1[31:0];    // UART "VN" = W1 lo
-+
-+  /* HW-bisect: BITSTREAM-INTO-GETBITS probe — same hierarchy-safe parent-level
-+   * pattern, tapping nets that already exist here. This is the cut that splits
-+   * mem-path corruption from vld-decode: vbr_rd_dta[63:0] is the compressed
-+   * bitstream word read back from the vbuf read fifo (i.e. out of DDR via the
-+   * mem path) into getbits, valid on vbr_rd_valid (clk-domain read side, one
-+   * pulse per 64-bit word). The SIM routes the same stream through its modeled
-+   * DDR (mem_ctl), so comparing BL/BN HW-vs-sim tests whether the REAL DDR/
-+   * mem-FIFO round-trip corrupts the bitstream BEFORE vld even sees it.
-+   *   BL = running 32-bit sum of (dta[31:0] + dta[63:32]) (folds all 64 bits).
-+   *   BN = count of words read. Both wrap at 32 bits to match the sim mirror.
-+   * BL/BN match sim => bitstream into vld is intact (bug is vld-decode/rld_fifo);
-+   * BL/BN diverge => the mem path corrupts the bitstream (then a targeted mem-
-+   * FIFO fix is warranted). */
-+  assign bl_chksum_out = vbr_w0[63:32];   // UART "BL" = W0 hi
-+  assign bn_cnt_out    = vbr_w0[31:0];    // UART "BN" = W0 lo
-+  /* (W0/W1 captured in the raw-dump block above; ports reused as 64b carriers) */
++  assign vl_chksum_out = {8'd0, gb0};   // UART "VL" = G0 (first getbits window)
++  assign vl_cnt_out    = gb_cnt;        // UART "VN" = getbits_valid count
++  assign bl_chksum_out = {8'd0, gb1};   // UART "BL" = G1 (later getbits sample)
++  assign bn_cnt_out    = 32'd256;       // UART "BN" = G1 sample marker
 +
    /* reset signal synchronizers */
  
