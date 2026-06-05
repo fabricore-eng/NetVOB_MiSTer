@@ -1132,3 +1132,12 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   => don't chase a deterministic logic bug sim would've caught; the per-byte getbits-vs-sim compare
   decides (i)-timing-stale-word vs (ii)-uninit/X. | advanced: branches sharpened to HW/sim-delta forms |
   blocked: nothing | building: nothing (per-byte getbits probe next).
+- 2026-06-05 (per-MB getbits probe building) — Built the two-way-bisect probe: captures getbits[23:0]
+  the first time macroblock_address hits 4 targets bracketing the ~slice-10 desync — MB 225/405/450/495
+  (rows 5/9/10/11; mb_width=45) into ports VL/VN/BL/BN. Sim mirror added (GBMB T0..T3 in testbench.v) for
+  a count-aligned golden. lint-clean. HW build pid 1287525 (watcher bxtaflsdf); sim rebuilding (bybp25wum).
+  A port reading 0x000000 = decode never reached that MB. VERDICT when both land: HW gb@MB DIVERGES from
+  sim => Branch 1 (mem stale-word/value corruption at that MB's bitstream); HW gb@MB == sim at all
+  reached targets => Branch 2 (vld-internal uninit/X, bitstream clean). RTL snapshot
+  core/patches/hw/mpeg2fpga-hw-bisect-getbits-mb-probe.patch. | advanced: per-MB bisect probe built+queued
+  | blocked: nothing | building: per-MB probe (bxtaflsdf) + sim golden (bybp25wum).
