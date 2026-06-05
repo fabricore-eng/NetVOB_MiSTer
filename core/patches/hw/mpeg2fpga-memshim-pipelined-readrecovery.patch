@@ -1,56 +1,71 @@
 diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
-index 33f3c2a..8ecfd33 100644
+index 33f3c2a..0385eda 100644
 --- a/rtl/mem_shim.sv
 +++ b/rtl/mem_shim.sv
-@@ -80,6 +80,14 @@ module mem_shim (
+@@ -80,6 +80,21 @@ module mem_shim (
  
      reg state;
  
-+    // Single-outstanding-read serialization (HW fix 2026-06-04): after a read is
-+    // ACCEPTED, do not issue the next command until its readdatavalid returns. The
-+    // 2-state FSM otherwise advances on acceptance (not response), so it could issue a
-+    // WRITE on top of an outstanding READ -> on real HW the HPS f2sdram wedges
-+    // (waitrequest stuck) and a lost/misordered response permanently desyncs the
-+    // response stream (observed: uart P=84 reads vs RP=83 responses, then hang).
-+    reg read_pending;
++    // DDR read-response RECOVERY (HW fix 2026-06-05). Keep the bus FULLY PIPELINED — the
++    // HPS f2sdram only returns read responses while pipelined (an isolated read starves;
++    // the decoder self-throttles via mem_req_almost_full so we don't over-issue). The HW
++    // wedge was a WRITE blocked forever by an outstanding READ whose response was LOST
++    // (uart P=84 reads vs RP=83 responses): the f2sdram holds waitrequest until that read
++    // completes. We can't tell which response was lost, so we RECOVER cause-agnostically:
++    // count outstanding reads; if NONE respond for far longer than any real latency,
++    // synthesize one response so the decoder re-syncs and the blocked write proceeds.
++    // (NOTE: do NOT add a read_pending/serialize hold here — stalling the bus deadlocks,
++    //  because the f2sdram needs the pipeline moving to return responses.)
++    reg  [5:0]  outstanding_reads;   // reads accepted but not yet responded
++    reg  [16:0] resp_timer;          // cycles since last response while reads are outstanding
++    wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
++    wire        resp_timeout      = (outstanding_reads != 0) && !ddr3_readdatavalid && (&resp_timer);
 +
      // Skid buffer — captures the FIFO word that appears 1 cycle after rd_en is
      // deasserted (standard mode FIFO 1-cycle latency).
      reg        saved_valid;
-@@ -90,6 +98,7 @@ module mem_shim (
+@@ -89,8 +104,10 @@ module mem_shim (
+ 
      always @(posedge clk) begin
          if (!rst_n) begin
-             state          <= 0;
-+            read_pending   <= 0;
-             ram_read       <= 0;
+-            state          <= 0;
+-            ram_read       <= 0;
++            state             <= 0;
++            outstanding_reads <= 0;
++            resp_timer        <= 0;
++            ram_read          <= 0;
              ram_write      <= 0;
              ram_address    <= 0;
-@@ -109,6 +118,9 @@ module mem_shim (
+             ram_writedata  <= 0;
+@@ -109,6 +126,27 @@ module mem_shim (
              mem_res_wr_en <= ddr3_readdatavalid;
              if (ddr3_readdatavalid)
                  mem_res_wr_dta <= ddr3_readdata;
-+            // The outstanding read's response arrived -> release the serialization hold.
-+            if (ddr3_readdatavalid)
-+                read_pending <= 0;
++            else if (resp_timeout) begin
++                // A read response is genuinely lost (overdue by >2^17 clk_mem cycles,
++                // far beyond any real f2sdram latency) -> synthesize one (0 data) so the
++                // decoder's response count re-syncs and the write it blocks can proceed.
++                mem_res_wr_en  <= 1'b1;
++                mem_res_wr_dta <= 64'd0;
++            end
++
++            // Overdue-response timer: reset on any response or when nothing is outstanding.
++            if (ddr3_readdatavalid || outstanding_reads == 0)
++                resp_timer <= 0;
++            else if (!(&resp_timer))
++                resp_timer <= resp_timer + 1'b1;
++
++            // Outstanding-read count: +1 when a read is accepted, -1 on a real response OR
++            // a synthesized timeout-recovery. (Both events same cycle => net unchanged.)
++            case ({read_accepted_now, (ddr3_readdatavalid | resp_timeout)})
++                2'b10:   outstanding_reads <= outstanding_reads + 1'b1;
++                2'b01:   if (outstanding_reads != 0) outstanding_reads <= outstanding_reads - 1'b1;
++                default: ; // 2'b00 / 2'b11 -> unchanged
++            endcase
  
              // -----------------------------------------------------------------
              // Command Path FSM
-@@ -117,7 +129,13 @@ module mem_shim (
-                 // =============================================================
-                 // S_IDLE: Process next command (skid buffer has priority)
-                 // =============================================================
--                if (saved_valid && !mem_res_wr_almost_full) begin
-+                if (read_pending) begin
-+                    // Serialize: an issued read has not yet returned its data. Hold off
-+                    // issuing the next command AND don't pull from the request FIFO
-+                    // (so no command is lost) until readdatavalid releases read_pending.
-+                    mem_req_rd_en <= 1'b0;
-+                end
-+                else if (saved_valid && !mem_res_wr_almost_full) begin
-                     case (saved_cmd)
-                         CMD_WRITE: begin
-                             if (saved_addr == ADDR_ERR) begin
-@@ -135,11 +153,23 @@ module mem_shim (
+@@ -135,11 +173,23 @@ module mem_shim (
                          end
                          CMD_READ: begin
                              if (saved_addr == ADDR_ERR) begin
@@ -79,7 +94,7 @@ index 33f3c2a..8ecfd33 100644
                              end else begin
                                  ram_read      <= 1;
                                  ram_address   <= {7'b0011000, saved_addr};
-@@ -171,10 +201,18 @@ module mem_shim (
+@@ -171,10 +221,18 @@ module mem_shim (
                          end
                          CMD_READ: begin
                              if (mem_req_rd_addr == ADDR_ERR) begin
@@ -102,24 +117,13 @@ index 33f3c2a..8ecfd33 100644
                              end else begin
                                  ram_read      <= 1;
                                  ram_address   <= {7'b0011000, mem_req_rd_addr};
-@@ -195,10 +233,19 @@ module mem_shim (
+@@ -195,6 +253,9 @@ module mem_shim (
                  // S_WAIT: Hold ram_read/write until bridge accepts
                  // =============================================================
                  if (!ddr3_waitrequest) begin
-+                    // A read just got accepted -> it now owes one readdatavalid. Block
-+                    // the next command until that response returns (single-outstanding),
-+                    // and do NOT pull the next FIFO word yet (read_pending S_IDLE branch
-+                    // keeps rd_en low). For a write (no response) resume pulling normally.
-+                    if (ram_read) begin
-+                        read_pending  <= 1'b1;
-+                        mem_req_rd_en <= 1'b0;
-+                    end else begin
-+                        mem_req_rd_en <= !mem_res_wr_almost_full;
-+                    end
++                    // Command accepted. (A read accepted here is counted via
++                    // read_accepted_now in the response/recovery block above — pipelined,
++                    // not blocked.) Resume pulling the next command immediately.
                      ram_read      <= 0;
                      ram_write     <= 0;
                      state         <= 0;
--                    mem_req_rd_en <= !mem_res_wr_almost_full;
-                 end
- 
-                 // Skid buffer capture: FIFO outputs a word 1 cycle after rd_en

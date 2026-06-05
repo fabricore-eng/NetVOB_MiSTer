@@ -483,3 +483,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   core/sim/memshim ddr3_model fault injection (+ddr_drop / +ddr_dup reproduce the desync hang per the
   README) — iterate in SIM (seconds), not on HW (35-min builds). Replace the current read_pending
   (full-serialize) accordingly.
+- 2026-06-05 (FIX v2 implemented + SIM-VALIDATED: pipelined reads + cause-agnostic read-response
+  recovery) — replaced the (deadlocking) full-serialize with: keep the bus fully PIPELINED (decoder
+  self-throttles; never stall — the f2sdram needs pipelining to respond), track outstanding_reads
+  (++ on read-accept, -- on readdatavalid), and if a response is overdue by >2^17 clk_mem cycles (far
+  beyond real latency -> genuine loss) synthesize one 0-response so the decoder re-syncs and the
+  write it blocks can proceed. Preserved the ADDR_ERR collision guard. SIM (core/sim/memshim): no-drop
+  still decodes greyramp correctly (2 framestore + 3 tv_out, I-frame mean=128); +ddr_drop=8 (drop every
+  8th read response) RECOVERS -> 2 framestore frames, no STALL/hang (the failure mode that wedged HW).
+  Response FIFO is 128-deep/almost_full=64 with the decoder throttling at 16, so no overflow -> the
+  loss is a timing/quirk, handled cause-agnostically. CAVEAT: if HW wedges via f2sdram waitrequest-stuck
+  (unrecoverable by RTL, needs reboot) this won't un-wedge the bridge, but it prevents the decoder hang
+  and is the right next HW experiment. Patch: mpeg2fpga-memshim-pipelined-readrecovery.patch (supersedes
+  the serialize patch). NEXT: sync -> dell (diff-verify), build, reboot-retest.
