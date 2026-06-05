@@ -557,3 +557,24 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   reboot-test; SUCCESS = W climbs into the tens-of-thousands and KEEPS advancing / completes frames with no
   permanent waitrequest-lock = sustained decode. If it still locks, read PC: a lower lock_outstanding => drop
   READ_LIMIT further (e.g. 2); a WRITE lock_cmd => the wedge is write-side, add lock_addr to the probe.
+
+- 2026-06-05 (MILESTONE: f2sdram LOCK FIXED — bound-reads build runs the FULL clip on HW, no
+  wedge, REPRODUCED; new gate = display path) — built + reboot-tested the READ_LIMIT=4 bound-reads
+  mem_shim (caps outstanding reads at 4, below the 6 that locked; non-pulling read_throttled gate in
+  S_IDLE; FSM hand-verified: max-4-in-flight, resp_timeout backstop = no deadlock). HW result across
+  TWO clean runs (reboot, then re-feed): W:EF8F=61327 writes (2x the lock-probe's 29931, 6.7x v2's
+  9192), P==RP matched every sample (no runaway response loss), U:0 (ddr3_waitrequest FREE the whole
+  time), M:0 (shim idle/clean), PC:0000 (lock-probe NEVER tripped = wedged=0, bridge never locked).
+  J==Z==0F3B constant = all 3899 sectors of the clip fed + consumed; W freezes at end-of-clip (no
+  more to decode) NOT from a stall (U:0/M:0 prove the bridge is idle). FC output-frame counter climbs
+  steadily+continuously = output raster alive at ~field rate. ⇒ the HPS f2sdram outstanding-read
+  throttle that wedged every prior build is SOLVED by bounding reads to 4. The hardest, longest-
+  standing gate (the bridge lock) is closed; decode is sustained on hardware. Board -> MENU, devlock
+  released. NEW OPEN GATE (display path): the HDMI/scaler screenshot is BLACK even during ACTIVE
+  decode (captured a 6-frame filmstrip while W & FC were climbing — all mean=0, fully black). So
+  decoded pixels are not reaching the HDMI output. Two unresolved-remotely possibilities: (a) the core
+  is VGA/analog-only by design (picture is on the CRT via ADV7125, invisible over SSH/HDMI), or (b) a
+  decode->display routing gap (the mrchrisster port's original 'no confirmed video output' state).
+  NEXT: chase the display path — inspect the scaler/VGA_* + FB_* routing in emu.sv, and read the
+  decoded framestore straight out of the 0x30000000 DDR window to render a frame PNG camera-free (the
+  definitive, display-independent proof the decoded PIXELS are correct, mirroring the sim framestore).
