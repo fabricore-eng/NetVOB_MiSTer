@@ -643,3 +643,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   round-trip integrity test through the FPGA; (b) trace VBUF-read→VLD→IQ/IDCT→framestore-write for what
   yields DC/low-freq-lost gray on HW only; (c) is the degradation correlated with the mem_shim recovery/
   throttle or pre-existing? Then a targeted fix (likely a build).
+
+- 2026-06-05 (VBUF bitstream ROUND-TRIPS INTACT -> bug is DOWNSTREAM, Altera-port datapath suspect;
+  supersedes the earlier 'VBUF anomaly' guess) — byte-compared the VBUF readback (from fs_allI_big.bin,
+  word 0x1c0000 / phys 0x30E00000) against the SOURCE clip. Raw bytes didn't match, BUT after reversing
+  each 8-byte word (the bitstream is stored 64-bit-word MSB-first, same convention as the framestore),
+  it MATCHES: start codes 101 -> 2204 after per-word reversal (source has 3150; VBUF is a ~1.6MB ring
+  holding ~70% of the 2.38MB clip), and 17/40 high-entropy source chunks found verbatim in the ring.
+  ⇒ the compressed bitstream the decoder reads back from DDR is CORRECT (f2sdram write path + storage
+  clean), and G:0 confirms the VLD parses valid data. This RULES OUT bitstream/VBUF corruption and the
+  earlier 'f2sdram returns wrong read data' hint for the bitstream path. The degradation is DOWNSTREAM
+  of the bitstream: in the coefficient-decode -> inverse-quant -> IDCT -> reconstruct -> framestore-write
+  chain. Since intra has no reference read and the bitstream is intact, the prime suspect is now an
+  ALTERA/CYCLONE-V RAM/ROM/FIFO INFERENCE difference (sim-clean in Verilator/Icarus, wrong on real
+  silicon: uninitialized BRAM, read-during-write semantics, a coefficient/dequant ROM, the IDCT
+  transpose RAM). NOTE: the root-cause WORKFLOW (decode-degradation-rootcause) FAILED this cycle — all 3
+  schema'd explorers returned null + the synth hit a session limit (resets 9pm PT). RETRY next cycle,
+  lighter (inline RTL reads, no strict StructuredOutput schema). NEXT: trace the IDCT/iquant/coeff-RAM
+  modules in rtl/mpeg2/ for Altera inference hazards (compare to any known mpeg2fpga Altera-port notes);
+  candidate cheap HW confirm = a solid-color / single-DC-block clip (does even a flat block reconstruct?).
