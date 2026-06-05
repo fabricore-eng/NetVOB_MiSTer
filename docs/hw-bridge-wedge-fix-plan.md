@@ -49,10 +49,17 @@ set_global_assignment -name LL_ENABLED ON      -section_id f2sdram_ll
 set_global_assignment -name LL_AUTO_SIZE ON    -section_id f2sdram_ll
 set_global_assignment -name LL_STATE FLOATING  -section_id f2sdram_ll
 set_global_assignment -name LL_RESERVED OFF    -section_id f2sdram_ll
-# members (use EXACT instance paths from the .fit.rpt hierarchy):
-set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to sysmem|fpga_interfaces|f2sdram -section_id f2sdram_ll
-set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to <emu|...|mem_shim> -section_id f2sdram_ll
-# add the framestore mem_request_fifo / mem_response_fifo (fifo_dc) instances too
+# members — EXACT instance paths pulled from the 2026-06-05T14:15Z .fit.rpt by cockpit
+# (pin the soft GLUE between mem_shim and the HPS bridge, NOT the hard Altera interface block
+#  sysmem_lite:sysmem|sysmem_HPS_fpga_interfaces:fpga_interfaces — that's framework IP):
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to emu:emu|mem_shim:mem_shim_inst -section_id f2sdram_ll
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to emu:emu|mpeg2video:mpeg2video_inst|framestore:framestore|fifo_dc:mem_request_fifo|xilinx_fifo_dc:xfifo_dc -section_id f2sdram_ll
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to emu:emu|mpeg2video:mpeg2video_inst|framestore:framestore|fifo_dc:mem_response_fifo|xilinx_fifo_dc:xfifo_dc -section_id f2sdram_ll
+# the MiSTer f2sdram safe-terminator soft glue (3 ports; ram1/ram2=main DDR, vbuf=video buffer).
+# Include all 3 for a first FLOATING build (safe default); vbuf is the bitstream-cache readback port:
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to sysmem_lite:sysmem|f2sdram_safe_terminator:f2sdram_safe_terminator_ram1 -section_id f2sdram_ll
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to sysmem_lite:sysmem|f2sdram_safe_terminator:f2sdram_safe_terminator_ram2 -section_id f2sdram_ll
+set_instance_assignment -name LL_MEMBER_OF f2sdram_ll -to sysmem_lite:sysmem|f2sdram_safe_terminator:f2sdram_safe_terminator_vbuf -section_id f2sdram_ll
 ```
 **CRITICAL workflow — FLOAT then LOCK** (a floating region alone won't stop the re-roll):
 1. Build with FLOATING+AUTO_SIZE — groups the bridge logic so it moves as a UNIT. If that alone feeds
