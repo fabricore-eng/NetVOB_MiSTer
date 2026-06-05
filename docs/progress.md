@@ -702,3 +702,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   ramstyle, init dependence); compare how they'd infer on Altera vs the behavioral sim; candidate fix =
   force the correct read-during-write mode / add ramstyle / explicit init. Cheap HW discriminator if
   needed: does even a solid-DC-only block reconstruct?
+
+- 2026-06-05 (build-log smoking-gun candidate: Warning 276027 dual-clock-RAM read-during-write
+  UNDEFINED; + test-gap: FIFO swap used greyramp not the failing clip) — grepped the Quartus build log
+  (dell:/tmp/dellbuild-dvd.log) for RAM-inference messages. The single-clock FIFO/dpram RAMs (xfifo_sc,
+  the intra/non_intra quant matrices) all got Warning 276020 "Pass-through logic ADDED to MATCH the
+  read-during-write behavior" = HANDLED. But the PORT's dual-clock FIFO RAMs (framestore's
+  mem_request_fifo + mem_response_fifo, xilinx_fifo_dc mem_rtl_0) got Warning 276027 "read-during-write
+  behavior of a dual-clock RAM is UNDEFINED and may NOT match the original design" = NOT handled. This
+  is the exact sim-vs-HW gap: the FIFO LOGIC is correct (sim proved bit-identical decode) but Verilator
+  models the internal mem[] with DEFINED read-during-write while Quartus infers a dual-clock M10K whose
+  same-address R/W is undefined. CAVEAT: a correct async FIFO avoids same-address R/W (the 2-stage
+  gray-pointer synchronizer latency means a read only hits a location written >=2 rd_clk cycles earlier),
+  so 276027 may be a conservative/benign warning. TEST GAP found: my FIFO-swap sim used the default
+  greyramp stream, NOT the test480i bars/timecode clip that actually degrades on HW — greyramp may not
+  exercise the failing condition. NEXT (decisive): rebuild stream.dat from tools/testclips/
+  test480i_ntsc.m2v (or _allI) and re-run the port-FIFO-vs-baseline sim on THAT content. If port FIFO
+  degrades in sim with the real clip => reproduced + debuggable in sim. If still bit-identical => the
+  FIFO is truly fine and the HW bug is the 276027 dual-clock-RAM read-during-write (fix: force defined
+  R/W via explicit altsyncram/ramstyle or restructure mem[]) OR a CDC-timing/other-inference issue.
