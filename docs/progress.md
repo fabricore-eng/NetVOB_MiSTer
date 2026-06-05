@@ -1226,3 +1226,18 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (submodule clean). HW build (bb6z8rxpw) still fitting; on land -> flash + warm-reboot +
   tools/build/hw_jitter_measure.sh 5 20 for the verdict. | advanced: fix regression-validated in sim
   | blocked: nothing | building: HW gap fix (bb6z8rxpw).
+- 2026-06-05 (gap-fix build WEDGED -> seed re-roll) — The vbuf read-behind-gap build (SEED default=1)
+  WEDGED the f2sdram bridge: UART J:0021 stuck, PC:A000, P=RP=0000 (zero mem transactions), M:D U:1,
+  framestore blank (hw_jitter_measure all runs row -1 = no decode). The fix LOGIC is sound (sim proved
+  correctness-neutral + no-deadlock); the BUILD's placement re-rolled the marginal bridge path because
+  the framestore_request edit (vbuf_fill counter+comparator) landed in the bridge neighborhood — the
+  recurring placement-FOOTPRINT wedge. NOT a decode verdict. Mister collision side-note: my 20:33 reboot
+  hit while 573 briefly held the devlock, but 573 confirmed their capture finished 20:32:48 BEFORE the
+  reboot = benign; board is mine. Lesson saved (memory hw-gate-actions-on-devlock): gate disruptive HW
+  actions on a SUCCESSFUL devlock acquire. ACTION: added SEED 2 to mpeg2fpga.qsf to re-roll the fitter
+  placement (cheap shot at dodging the marginal path; gap RTL unchanged, md5 7a1b4185), build relaunched
+  (watcher bbru7if5m). Parallel/backup: team (cockpit timing_triage on the wedge build, 573 handoff-reg
+  snippet) for the DURABLE wedge fix (hold margin on mem_shim<->bridge) so future decode-fix iterations
+  stop wedging. TEST when seed build lands: hw_jitter_measure.sh 5 20 -> if non-wedged, get the real gap
+  verdict; if wedged again, implement the durable handoff-register. | advanced: wedge diagnosed + seed
+  re-roll building + lesson banked | blocked: decode verdict gated on a non-wedged build | building: seed-2 gap (bbru7if5m).
