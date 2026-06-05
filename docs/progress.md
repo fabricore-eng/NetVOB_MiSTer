@@ -883,3 +883,24 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   clear); L2+F2 ok => the logic multiply/saturate (rld.v:411-415). PARALLEL (build-independent): fixed
   spine-review bug #1 = arm/ps_demux.c payload-0x00 drop on the one-chunk path (commit 3ff8d7d, Pass 6
   regression red/green verified). 573's hyperbbc booted from STOCK BIOS on HW (the human saw it on the CRT).
+
+- 2026-06-05 (probe2 WEDGES = fit/timing tip [not board, not bug]; landing audio-IIR headroom to unblock;
+  spine bug #2 fixed) — the intermediate L2/F2 probe build (probe2) WEDGED THE FEED DETERMINISTICALLY
+  (5/5 attempts on clean warm reboots: J=0x23 ~190 writes, PC=A081, watchdog cycling, QN=0 = no decode).
+  DIAGNOSIS: re-read the prior FIX build (probefix.rbf) -> CLEAN (full feed J=Z, real QO/IO, QN nonzero)
+  => BOARD FINE; probe2's wedge is in the BITSTREAM = fit/timing perturbation (573's call, matching his
+  patch-0009 experience: "the probe doesn't have to be WRONG, just PRESENT" near a fit margin). 573's
+  3-reset-levels logic confirms: warm `reboot` re-inits the HPS DDR ctrl + f2sdram bridge (clears stale
+  wedges), so a deterministic wedge from a fresh reboot is bitstream, not state -> no power-cycle needed.
+  (Tooling note: my auto-retry clean-detector regex [1-9a-f] was case-sensitive and missed an uppercase
+  QN=F600 -> use [1-9a-fA-F]/grep -i next time.) CHEAP CHECK ruled out the VLD vlc_tables ROM as the
+  decode-bug cause: it's 24 combinational `case` statements (logic, not an init-dependent memory) ->
+  HW-safe. So decode bug still localized to iquant-OUT, needs the L2 probe (VLD-logic vs iquant-arith)
+  but the probe tips the marginal fit. UNBLOCK (573's audio-IIR-drop tweak): replaced the IIR_filter
+  instance in sys/audio_out.v with a sign-preserving passthrough (assign acl/acr = {~is_signed^c[15],
+  c[14:0]}) — frees ~8 DSP + ~430 ALM AND clears the unused audio-PLL timing crits; my audio_out.v
+  matched 573's input expr EXACTLY (zero-boot-risk, verified by 573 on his core). Patch
+  core/patches/hw/mpeg2fpga-audio-iir-drop.patch. Rebuilding probe2 + headroom on dell -> expect a
+  non-wedging fit -> clean L2/F2 read. SIM GOLDEN block16: L2=ffffec6a F2=00052940. PARALLEL: fixed
+  spine-review bug #2 = service/core/ps_demux.py MPEG-1 PES header leak (commit 7c26118, 5 regression
+  tests red/green). NEXT: on build-done, clean L2/F2 read (count-align block16) -> targeted iquant fix.

@@ -1,0 +1,41 @@
+diff --git a/sys/audio_out.v b/sys/audio_out.v
+index 0f748e0..c3d8e6a 100644
+--- a/sys/audio_out.v
++++ b/sys/audio_out.v
+@@ -177,27 +177,15 @@ always @(posedge clk, posedge reset) begin
+ end
+ 
+ wire [15:0] acl, acr;
+-IIR_filter #(.use_params(0)) IIR_filter
+-(
+-	.clk(clk),
+-	.reset(reset),
+-
+-	.ce(flt_ce & a_en1),
+-	.sample_ce(sample_ce),
+-
+-	.cx(cx),
+-	.cx0(cx0),
+-	.cx1(cx1),
+-	.cx2(cx2),
+-	.cy0(cy0),
+-	.cy1(cy1),
+-	.cy2(cy2),
+-
+-	.input_l({~is_signed ^ cl[15], cl[14:0]}),
+-	.input_r({~is_signed ^ cr[15], cr[14:0]}),
+-	.output_l(acl),
+-	.output_r(acr)
+-);
++// IIR_filter DROPPED (573 resource-recovery tweak): frees ~8 DSP + ~430 ALM of headroom and
++// clears the unused audio-PLL timing crits. This MPEG2 core has no audio yet (AUDIO_L/R tied 0
++// in emu), and even with audio, unfiltered is fine. The passthrough preserves the SAME input
++// sign conversion the filter applied at its input, so the downstream DC_blocker + aud_mix_top
++// are unchanged. The OSD 'Audio Filter' option becomes a no-op; cx/cx0-2/cy0-2 coeff wires go
++// unused (Quartus prunes them). Purpose here: free fit/timing slack so the L2/F2 decode probe
++// stops tipping the f2sdram path into a wedge.
++assign acl = {~is_signed ^ cl[15], cl[14:0]};
++assign acr = {~is_signed ^ cr[15], cr[14:0]};
+ 
+ wire [15:0] adl;
+ DC_blocker dcb_l
