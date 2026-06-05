@@ -6,7 +6,14 @@ end-to-end, but is not yet unattended-service-grade or board-ready — bugs clus
 ES-corrupting demux defects, a missing live-path backpressure/sd_* seam, and Python-server
 lifecycle leaks/races.*
 
-Status legend: ☐ open · ☑ fixed (commit)
+Status legend: ☐ open · ◐ partial · ☑ fixed (all fixes red/green-verified)
+
+**SWEEP STATUS (2026-06-05):** 13 ☑ fixed · 1 ◐ partial · 1 ☐ open. All HIGH/MEDIUM/LOW lifecycle +
+demux + backpressure + seek-map + memory-bound items are done and red/green-verified across the
+server/handle/demux/ingest layers. **◐ Remaining-partial:** the server.py seek vs streamer-buffer
+race for a *non-blocking* handle mid-play (handle-level race fixed; the streamer-buffer flush needs a
+handle position-epoch contract — deferred to M2). **☐ Remaining-open:** the one true *feature* gap
+below (title-within-VTS / PTT_SRPT), not a hardening bug.
 
 ## HIGH — ES-corrupting (fix first; they desync the decoder)
 - ☑ **arm/ps_demux.c:377-387** — unbounded-PES matched-prefix path drops payload `0x00` bytes
@@ -54,7 +61,7 @@ Status legend: ☐ open · ☑ fixed (commit)
   session from the registry; idempotent w.r.t. `_end_session`) + same regression test.
 
 ## MEDIUM
-- ◐ **arm/ps_demux.c EOF tail-loss** — no `ps_demux_finalize()`; up to 2 withheld `pend_zeros` lost
+- ☑ **arm/ps_demux.c EOF tail-loss** — no `ps_demux_finalize()`; up to 2 withheld `pend_zeros` lost
   at EOF → last frame truncated. **CORE FIXED** (`ps_demux_finalize()` flushes the withheld trailing
   0x00 run of an unbounded video PES; idempotent; declared in the header with a do-NOT-call-mid-stream
   note) + Pass 8 regression test (red/green verified). **WIRED:** `ni_finalize()` (netingest.c) wraps
