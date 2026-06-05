@@ -175,6 +175,30 @@ int main(void)
     printf("netingest: room-gated feed (netd backpressure) never drops, ES intact OK\n");
     ni_free(&ni3);
 
+    /* === Test 4: ni_finalize() flushes the demuxer's withheld trailing zeros
+     * at a clean EOF — an unbounded video PES (PES_packet_length==0) whose
+     * payload ends in 0x00 with no following start code. The last <=2 bytes are
+     * withheld (could begin a 00 00 01 prefix); ni_finalize must release them
+     * into the ring or the final frame's tail is lost. === */
+    netingest ni4;
+    assert(ni_init(&ni4, 8192, SECTOR) == 0);
+    buf u = { storage, 0, sizeof(storage) };
+    bput(&u, 0x00); bput(&u, 0x00); bput(&u, 0x01); bput(&u, 0xE0);
+    bput(&u, 0x00); bput(&u, 0x00);            /* PES_packet_length = 0 */
+    bput(&u, 0x80); bput(&u, 0x00); bput(&u, 0x00); /* no PTS */
+    uint8_t upay[] = { 0x11, 0x22, 0x00, 0x00 };  /* ends in two withheld zeros */
+    bputn(&u, upay, sizeof(upay));
+    ni_feed(&ni4, u.p, u.len);
+    /* Pre-finalize: only 11 22 emitted; the two trailing zeros are withheld. */
+    assert(ni_get_stats(&ni4)->video_es_bytes == 2);
+    size_t avail_before = ni_available(&ni4);
+    ni_finalize(&ni4);
+    /* Post-finalize: the two zeros are flushed into the ring. */
+    assert(ni_get_stats(&ni4)->video_es_bytes == 4);
+    assert(ni_available(&ni4) == avail_before + 2);
+    printf("netingest: ni_finalize flushes withheld EOF tail into the ring OK\n");
+    ni_free(&ni4);
+
     printf("ALL NETINGEST TESTS PASSED\n");
     return 0;
 }

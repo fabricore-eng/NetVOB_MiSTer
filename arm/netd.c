@@ -111,6 +111,7 @@ int main(int argc, char **argv)
     uint8_t *buf = (uint8_t *)malloc(RECV_CHUNK);
     if (!buf) { close(fd); if (out) fclose(out); ni_free(&ni); return 1; }
 
+    int clean_eof = 0;
     for (;;) {
         /* Consume first so the ring has room (real path: the sd_* pull drains;
          * file-stub: the file always accepts, so the ring empties fully). */
@@ -129,7 +130,7 @@ int main(int argc, char **argv)
         }
         size_t want = room < RECV_CHUNK ? room : RECV_CHUNK;
         ssize_t n = recv(fd, buf, want, 0);
-        if (n == 0) break;                 /* peer closed */
+        if (n == 0) { clean_eof = 1; break; } /* peer closed (clean EOF) */
         if (n < 0) {
             if (errno == EINTR) continue;
             fprintf(stderr, "netd: recv: %s\n", strerror(errno));
@@ -148,6 +149,10 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    /* On a clean peer close, flush the demuxer's withheld trailing bytes (the
+     * last unbounded video PES's pending 0x00 run) into the ring so the final
+     * frame's tail isn't truncated. Skip on error/truncation. */
+    if (clean_eof) ni_finalize(&ni);
     drain_to_file(&ni, sector, out);       /* final flush of whole sectors */
 
     const ni_stats *s = ni_get_stats(&ni);

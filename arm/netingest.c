@@ -79,6 +79,13 @@ void ni_flush(netingest *ni)
     if (ni) ringbuf_clear(&ni->ring);
 }
 
+void ni_finalize(netingest *ni)
+{
+    /* Flush the demuxer's withheld trailing bytes (es_to_ring_sink delivers
+     * them straight into the ring, same as any other ES). */
+    if (ni) ps_demux_finalize(&ni->demux);
+}
+
 const ni_stats *ni_get_stats(const netingest *ni)
 {
     return ni ? &ni->st : NULL;

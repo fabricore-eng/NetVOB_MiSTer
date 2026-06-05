@@ -57,8 +57,9 @@ Status legend: ☐ open · ☑ fixed (commit)
 - ◐ **arm/ps_demux.c EOF tail-loss** — no `ps_demux_finalize()`; up to 2 withheld `pend_zeros` lost
   at EOF → last frame truncated. **CORE FIXED** (`ps_demux_finalize()` flushes the withheld trailing
   0x00 run of an unbounded video PES; idempotent; declared in the header with a do-NOT-call-mid-stream
-  note) + Pass 8 regression test (red/green verified). **Remaining:** wire a `ni_finalize()` wrapper
-  into netd's clean-EOF path so the live ingest actually calls it (tracked with the M2 live-path work).
+  note) + Pass 8 regression test (red/green verified). **WIRED:** `ni_finalize()` (netingest.c) wraps
+  it and netd calls it on a clean peer close (`clean_eof`) before the final sector drain; netingest
+  Test 4 verifies the withheld EOF tail reaches the ring (red/green verified). Fully done.
 - ☑ **arm/ps_demux.c:344-351** — runaway header skip on malformed PES (hdr_len > pkt len) swallows
   the next unit. **FIXED** (stage-0 guard: if `hdr_len > pkt_remaining` on a bounded PES, resync to
   start-code instead of overrunning) + Pass 7 regression test (red/green verified).

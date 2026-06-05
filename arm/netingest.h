@@ -77,6 +77,13 @@ size_t ni_room(const netingest *ni);
 /* Drop any buffered ES (seek / channel change) — flush the ring. */
 void ni_flush(netingest *ni);
 
+/* Flush the demuxer's withheld lookahead bytes into the ring at a CLEAN
+ * end-of-stream (the trailing 0x00 run of an unbounded video PES). Call once
+ * after the final ni_feed() on a clean peer close, before the last sector
+ * drain, so the last frame's tail isn't truncated. Wraps ps_demux_finalize();
+ * do NOT call mid-stream. */
+void ni_finalize(netingest *ni);
+
 const ni_stats *ni_get_stats(const netingest *ni);
 
 #endif /* NETVOB_ARM_NETINGEST_H */
