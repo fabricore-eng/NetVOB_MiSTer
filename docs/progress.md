@@ -1079,3 +1079,18 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   the clean VLD-probe build, or 573's mem_shim↔bridge handoff register. RTL snapshot
   core/patches/hw/mpeg2fpga-hw-bisect-getbits-probe.patch. | advanced: getbits probe built+queued |
   blocked: nothing | building: getbits probe (bpayvla0r).
+- 2026-06-05 (BREAKTHROUGH: real decoded video — mid-stream desync) — The getbits-OUTPUT probe FED
+  CLEAN (J=Z=0F3B, PC:0000, no wedge — VLD-region net dodges the bridge, as predicted). G0=getbits[23:0]
+  @first-valid = 0x000001 = the MPEG start-code prefix => bitstream INTACT into vld at the START (rules
+  out a from-the-start byte/lane ordering bug). Framestore dump (clean feed): FRAME_0 shows the TOP THIRD
+  of the test pattern decoding CORRECTLY (real grey bars + diagonal gradient + timecode box), then black
+  for the bottom 2/3 => the decode PIPELINE WORKS, desyncs ~1/3 into the frame. Saved
+  core/sim/artifacts/getbits_hw/frame0_partial_decode.png (sent to the human). REFRAME: the bug is a
+  MID-STREAM corruption/desync AFTER an intact start — NOT from-the-start. Earlier 'noise/gray' reads were
+  the desynced tail; the byte-probe 'diverges@word~90' was a WEDGE artifact (that build died at sector
+  0x21). NEXT: localize the mid-stream desync — candidates: (a) vbuf CIRCULAR-buffer wrap in DDR (first
+  wrap ~1/3 in), (b) mem_shim resp_timeout 64'd0 inject firing mid-stream, (c) a DDR/sector boundary in
+  the sd_*→vbuf feed; probe with a PER-BYTE count-alignable getbits/feed capture (getbits_valid is
+  continuous/cycle-based so NOT count-alignable — use align/per-byte). | advanced: REAL decoded video on
+  HW (top-third correct); bug narrowed to mid-stream desync, from-start ordering ruled out | blocked:
+  nothing | building: nothing.
