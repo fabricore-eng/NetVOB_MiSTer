@@ -469,3 +469,17 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   >0) + a read-response TIMEOUT to recover from the rare genuinely-lost response (the 1-in-84 that
   desynced pre-serialize) so writes don't block forever. Sim-validate in memshim incl. +ddr_drop, then
   build + reboot-retest (reboot now standing-authorized). Board returned to MENU + released.
+- 2026-06-05 (CORRECTED fix strategy: do NOT stall the bus — bound outstanding reads + sim-iterate
+  vs +ddr_drop) — re-analysis: the planned "hold WRITES while a read is outstanding" would ALSO
+  deadlock, because the serialize test proved the HPS f2sdram only returns read responses while the bus
+  stays PIPELINED (an isolated read gets none). ANY stall starves it. Re-read of the pre-serialize wedge
+  (state=1 cmd=WRITE, U:1 stuck, P:84 RP:83): a WRITE was blocked because an outstanding READ's response
+  was LOST (1-in-84) and the f2sdram holds waitrequest until that read completes -> write waits forever
+  -> wedge. Likely loss mechanism: the mem_shim RESPONSE path (mem_res_wr_en <= ddr3_readdatavalid)
+  does NOT check mem_res_wr_almost_full, so if too many reads are in flight a response overflows the
+  response FIFO and is dropped. CORRECT FIX (non-stalling): BOUND outstanding reads to the response-FIFO
+  margin (>1 so the f2sdram still pipelines + responds, <=margin so it can never overflow -> no lost
+  response -> no desync -> no write-wedge). Validate the WRONG way to fail and the fix via the
+  core/sim/memshim ddr3_model fault injection (+ddr_drop / +ddr_dup reproduce the desync hang per the
+  README) — iterate in SIM (seconds), not on HW (35-min builds). Replace the current read_pending
+  (full-serialize) accordingly.
