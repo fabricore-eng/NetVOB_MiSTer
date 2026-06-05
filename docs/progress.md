@@ -986,3 +986,13 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   released. | advanced: VLD bisect (decode bug localized to VLD output, HW-specific); FPGA-independent
   spine — server lifecycle (b1d23af), ps_demux_finalize (b003635), dvddump seek-map monotonic
   (ab58984), all red/green | blocked: nothing | building: nothing (getbits probe next).
+- 2026-06-05 (FIFO-swap attempt — WEDGES, reverted) — Built cockpit's lead (generic_fifo_dc Gray-FIFO
+  swap for the two 276027 framestore DDR FIFOs, on top of the VLD probe; 0 errors). On HW (fresh warm
+  reboot) the feed WEDGES at J:0023/PC:A081/W:00BD/U:1, VL=VN=0 (decode never runs) — deterministic =
+  bitstream. Swap is unusable (wedges before decode), can't test the dual-clock-R/W theory. Cause:
+  generic_fifo_dc mem_shim/f2sdram protocol incompat OR big-netlist-churn re-tripping the near-full-fit
+  bridge wedge. REVERTED to the clean VLD-probe baseline. (276027 is the generic dual-clock-RAM warning,
+  not proof either way — cockpit walked that back.) NEXT: parent-level getbits/vbuf-OUTPUT byte-checksum
+  probe HW-vs-sim to split mem-path-corruption from vld-decode (rld_fifo is single-clock/276020-safe, not
+  the dual-clock suspect). | advanced: ruled OUT the global FIFO swap (wedges); VLD-output bug still open,
+  next probe designed | blocked: nothing | building: nothing (getbits-probe next).
