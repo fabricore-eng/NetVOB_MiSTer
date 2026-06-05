@@ -61,6 +61,7 @@ from service.sources.dvddump.ifo import (
     vts_ifo_path,
     vts_vob_parts,
 )
+from service.sources.dvddump.discid import try_disc_id
 
 # Start-code constants (the byte after 00 00 01).
 PACK_START_CODE = 0xBA
@@ -370,18 +371,28 @@ class DVDDumpSource(Source):
         (or it cannot be parsed), falls back to listing ``.VOB`` files so the
         library is still browsable. Neither path ever affects the stream path.
 
-        TODO(metadata): human title naming still needs a disc-ID lookup (see
-        ``docs/catalog-browse.md`` §5) — IFOs carry no human-readable titles, so
-        ``title`` is a structural label (``"Title 1 (main feature)"``).
+        Every entry is stamped with ``extra["disc_id"]`` — a stable, content-derived
+        fingerprint of the disc's IFO set (see ``discid.py`` / ``catalog-browse.md``
+        §5). It survives the folder being renamed and is identical across copies of the
+        same dump, so the UI can group a disc's titles and detect re-dumps. ``None`` for
+        a folder with no DVD structure (e.g. a bare-``.VOB`` fallback dir).
+
+        TODO(metadata): mapping the ``disc_id`` to a *human* title still needs an
+        external lookup (see ``docs/catalog-browse.md`` §5) — IFOs carry no
+        human-readable titles, so ``title`` stays a structural label
+        (``"Title 1 (main feature)"``).
         TODO(pgc): multi-PGC title sets report only their first PGC's duration.
         """
         folder = path or self.root
         if not folder or not os.path.isdir(folder):
             return []
+        disc_id = try_disc_id(folder)  # stable disc identity, or None if no IFOs
         entries = self._browse_ifo(folder)
-        if entries is not None:
-            return entries
-        return self._browse_vob_fallback(folder)
+        if entries is None:
+            entries = self._browse_vob_fallback(folder)
+        for entry in entries:
+            entry.extra["disc_id"] = disc_id
+        return entries
 
     def _browse_ifo(self, folder: str) -> Optional[list[CatalogEntry]]:
         """Real IFO-driven title enumeration. None => no/unparseable VMG IFO."""
@@ -469,7 +480,7 @@ class DVDDumpSource(Source):
             entries.append(
                 CatalogEntry(
                     id=f"dvddump:{stem}",
-                    title=stem,  # TODO(metadata): disc-ID lookup -> real title
+                    title=stem,  # structural label; disc_id stamped by browse()
                     kind="title",
                     duration_s=None,
                     poster_url=None,
