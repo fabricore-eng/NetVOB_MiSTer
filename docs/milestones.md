@@ -63,6 +63,18 @@ full-color (filmstrip-verified, reproduced — not a single lucky run).
 **Hardware:** SuperStation (and/or DE10-Nano). **Risk:** decoder bring-up (#1); RTL
 seam wiring (low — proven pattern).
 
+**STATUS (2026-06-05) — substantially achieved; one reliability sub-task open.** *M1a sim:*
+✅ correct decoded-frame PNGs (static, I/P/B motion, NTSC 480i, field parity). *Feed/seam
+(M1b):* ✅ on HW — the `.mgl`→`sd_*`→`mpg_streamer`→bitstream chain works (the bug was the
+`.mgl` needing an **absolute** path). *Decoder on HW:* ✅ **genuinely decoding** — the core did
+~9,192 DDR writes + ~12,735 reads of reference frames in fabric (the `mem_shim`↔HPS-DDR3 path).
+*Open:* the HPS **f2sdram bridge waitrequest-locks** after a rare (~0.05%) lost read response,
+so decode runs far but not yet to a clean sustained full frame. STA **ruled out timing** (real
+`clk_mem` paths close +1.5 ns; negatives are level-1 artifacts) → it's a logic/handshake corner,
+under active debug via an on-chip lock-onset probe. So M1's "confirmed video-out" gate is **cracked
+in principle**; remaining work is bridge-reliability hardening for a stable frame. See
+[`progress.md`](progress.md).
+
 ## M2 — Live network ingest, basic play
 **Goal:** replace the ARM's local file with the **network**.
 - ARM ingest app: **TCP client** receiving **PS over TCP** from a stub Pi server →
