@@ -37,8 +37,9 @@ Status legend: ☐ open · ☑ fixed (commit)
 ## MEDIUM
 - ☐ **arm/ps_demux.c EOF tail-loss** — no `ps_demux_finalize()`; up to 2 withheld `pend_zeros` lost
   at EOF → last frame truncated. **Fix:** add finalize, call on clean close.
-- ☐ **arm/ps_demux.c:344-351** — runaway header skip on malformed PES (hdr_len > pkt len) swallows
-  the next unit. **Fix:** clamp opt-skip to `pkt_remaining`, resync on overflow.
+- ☑ **arm/ps_demux.c:344-351** — runaway header skip on malformed PES (hdr_len > pkt len) swallows
+  the next unit. **FIXED** (stage-0 guard: if `hdr_len > pkt_remaining` on a bounded PES, resync to
+  start-code instead of overrunning) + Pass 7 regression test (red/green verified).
 - ☐ **server.py:580-614 + 130-159** — no double-claim guard on session id → two pumps share one
   handle. **Fix:** atomic pop-or-mark; already-bound check.
 - ☐ **server.py:408-421** — accepted control conn has no `settimeout` → recv hangs forever, defeats

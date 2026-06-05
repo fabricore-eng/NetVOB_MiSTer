@@ -294,6 +294,29 @@ int main(void)
         printf("pass 6 (payload 0x00 before prefix, one chunk): emitted OK\n");
     }
 
+    /* --- Pass 7 (REGRESSION): a malformed/spliced bounded PES whose
+     *     PES_header_data_length (200) exceeds its PES_packet_length (4) must
+     *     RESYNC, not skip 200 bytes into and past the following valid PES
+     *     (swallowing it). Common at DVD seek/splice points. --- */
+    {
+        uint8_t mb[128];
+        buf mbb = { mb, 0, sizeof(mb) };
+        /* corrupt video PES: 00 00 01 E0, len=4, flags1=80 flags2=00 hdr_len=200 */
+        bput(&mbb, 0x00); bput(&mbb, 0x00); bput(&mbb, 0x01); bput(&mbb, 0xE0);
+        bput(&mbb, 0x00); bput(&mbb, 0x04);              /* PES_packet_length = 4 */
+        bput(&mbb, 0x80); bput(&mbb, 0x00); bput(&mbb, 0xC8); /* flags, hdr_len=200 */
+        bput(&mbb, 0x00);                                /* 4th body byte */
+        /* a VALID bounded video PES follows — its payload must survive */
+        put_pes(&mbb, 0xE0, PS_PTS_NONE, PS_PTS_NONE, v3, sizeof(v3));
+
+        es_capture cm = {0};
+        ps_demux dm; ps_demux_init(&dm, es_sink, &cm);
+        ps_demux_feed(&dm, mbb.p, mbb.len);
+        assert(cm.len == sizeof(v3));                    /* not swallowed */
+        assert(memcmp(cm.bytes, v3, sizeof(v3)) == 0);
+        printf("pass 7 (malformed hdr_len>peslen resyncs, next PES survives): OK\n");
+    }
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }

@@ -320,6 +320,15 @@ size_t ps_demux_feed(ps_demux *d, const uint8_t *data, size_t len)
                     break;
                 }
                 uint8_t hdr_len = d->pes_hdr[2];
+                if (!d->pkt_unbounded && (uint32_t)hdr_len > d->pkt_remaining) {
+                    /* Malformed/spliced PES: PES_header_data_length exceeds the
+                     * bytes left in this bounded packet. Capturing/skipping it
+                     * would overrun the packet and swallow the following unit's
+                     * start code (dropping valid video) — common at DVD seek/
+                     * splice points. Resync from the next start code instead. */
+                    d->state = PS_ST_START_CODE;
+                    break;
+                }
                 /* Cap optional-field capture to our scratch space; we only need
                  * the first 10 bytes (PTS+DTS). Anything beyond is skipped, but
                  * still counted against pkt_remaining via the read loop. */
