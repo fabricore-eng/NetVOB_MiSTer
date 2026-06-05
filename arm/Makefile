@@ -17,9 +17,10 @@ TESTS := \
 	$(BUILD)/test_ps_demux_audio \
 	$(BUILD)/test_ringbuf \
 	$(BUILD)/test_feeder \
-	$(BUILD)/test_realpipe
+	$(BUILD)/test_realpipe \
+	$(BUILD)/test_netingest
 
-.PHONY: all test realpipe clean
+.PHONY: all test realpipe netd clean
 
 all: $(TESTS)
 
@@ -57,12 +58,25 @@ $(BUILD)/realpipe: tools/realpipe.c tools/realpipe.h ps_demux.c ps_demux.h \
                    ringbuf.c ringbuf.h feeder.c feeder.h | $(BUILD)
 	$(CC) $(CFLAGS) -DREALPIPE_MAIN -o $@ tools/realpipe.c ps_demux.c ringbuf.c feeder.c
 
+# netingest test links netingest.c + ps_demux.c + ringbuf.c (the live-spine glue)
+$(BUILD)/test_netingest: netingest.c netingest.h ps_demux.c ps_demux.h \
+                         ringbuf.c ringbuf.h tests/test_netingest.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ netingest.c ps_demux.c ringbuf.c tests/test_netingest.c
+
+# netd — the runnable TCP ingest daemon (connects to the Pi streamer, recv()s the
+# PS, feeds the sd_* seam). Build with: make -C arm netd   then ./build/netd ...
+netd: $(BUILD)/netd
+$(BUILD)/netd: netd.c netingest.c netingest.h ps_demux.c ps_demux.h \
+               ringbuf.c ringbuf.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ netd.c netingest.c ps_demux.c ringbuf.c
+
 test: $(TESTS)
 	@echo "== test_ps_demux ==";       ./$(BUILD)/test_ps_demux
 	@echo "== test_ps_demux_audio =="; ./$(BUILD)/test_ps_demux_audio
 	@echo "== test_ringbuf ==";        ./$(BUILD)/test_ringbuf
 	@echo "== test_feeder ==";         ./$(BUILD)/test_feeder
 	@echo "== test_realpipe ==";       ./$(BUILD)/test_realpipe
+	@echo "== test_netingest ==";      ./$(BUILD)/test_netingest
 	@echo "== ALL ARM HOST TESTS PASSED =="
 
 clean:

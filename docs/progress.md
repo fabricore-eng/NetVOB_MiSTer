@@ -734,3 +734,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   difference. NEXT: grep the build log for DSP/multiplier inference; inspect idct.v/iquant.v multiplies
   for signed/width hazards; consider a targeted HW probe (uart-checksum the IDCT output, or a known-DC
   block test). Committed through here.
+
+- 2026-06-05 (SPINE PROGRESS: live PS-over-TCP → sd_* seam wired + proven end-to-end, FPGA-independent)
+  — diversified off the decode-correctness bug (per "advance every unblocked track"). The arm/ ingest
+  had mature host-tested components (ps_demux, ringbuf, feeder — all tests green, incl. a real DVD-slice
+  fixture) but NO actual network glue (no socket code anywhere; realpipe modeled recv() with file reads).
+  Built the missing piece: arm/netingest.{h,c} ties the components into the live seam — TCP recv() ->
+  ps_demux -> video ES -> ring -> ni_get_sector() (one sector per future sd_rd request; the sd_* seam
+  stays abstracted, on HW it becomes sd_buff_dout/sd_buff_wr). Plus arm/netd.c = the runnable TCP daemon
+  (connects to the Pi provider's media socket, recv-loops with ring backpressure, drains whole sectors).
+  arm/tests/test_netingest.c (added to the suite, all 6 arm tests green): chunked-recv -> full-sector
+  pull == demuxed video ES byte-exact, underrun returns 0 (ring untouched), flush, and small-ring
+  backpressure accounting (es_to_ring + es_dropped == video_es, prefix intact). LOOPBACK TCP SMOKE TEST
+  PASSED: muxed the bars clip to a DVD-style PS (ffmpeg -f vob), served it over a real socket, ran netd
+  -> output video ES is BYTE-FOR-BYTE identical to ffmpeg's own ES extraction (974x2048 sectors,
+  dropped=0, prefix byte-exact). So the live PS-over-TCP path works end-to-end without the board. The
+  ONLY board-specific remaining bit of deliverable (a) is swapping netd's drain_to_file() for the real
+  sd_* service (one sd_rd request -> one ni_get_sector()). Decode-correctness HW-bisect still pending
+  (next HW cycle).
