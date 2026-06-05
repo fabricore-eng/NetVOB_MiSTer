@@ -1179,3 +1179,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   dump (phys 0x30E00000 len 0x180000, decoder word 0x1c0000) vs clip via wrap-robust substring search ->
   write-path-clean(=>Branch1 readback timing/stale, P==RP) vs write-path-corrupt. | advanced: precise
   probe-free localization to MB row 8 + wedge-footprint lesson | blocked: nothing | building: nothing.
+- 2026-06-05 (ROOT CAUSE CHARACTERIZED probe-free: Branch 1 = HW readback CDC race) — Two probe-free
+  /dev/mem reads on the breakthrough build NAILED it:
+  (A) WRITE PATH CLEAN: vbuf DDR dump (phys 0x30E00000) vs clip — RAW byte order 0% match, but BYTE-SWAPPED
+      within each 64-bit word = 100.0% match (98301/98303 tiles; the 2 misses are the single ring-wrap seam).
+      The swap is just the f2sdram 64-bit word endianness seen via /dev/mem => the bitstream is delivered to
+      DDR BYTE-PERFECT. Eliminates the whole write-path class (streamer/mem_shim corruption, byte-lane order,
+      write collisions).
+  (B) DESYNC ROW JITTERS: 5 reloads of the SAME byte-perfect clip stall at MB rows [1,6,7,10] (settle-checked
+      at 15s==27s). A non-deterministic failure point on identical input = a HW TIMING RACE, definitively
+      Branch 1 (sim decodes clean -> not a logic bug; jitter -> not a fixed-construct/uninit-at-fixed-MB bug).
+  MECHANISM (leading, pending FIFO RTL confirm): the decoder runs clk_sys=27MHz, mem side clk_mem=108MHz
+  (4:1, same sys_pll -> phase-aligned). The mem RESPONSE dual-clock FIFO (xilinx_fifo_dc) writes @108 reads
+  @27; phase-aligned 4:1 edges allow a read-during-write to the SAME RAM address = undefined data on Altera
+  inferred RAM (build Warning 276027) -> decoder latches a corrupt response word -> desync. Verilator models
+  RAM R/W-same-addr deterministically so sim never sees it (matches "FIFO exonerated in sim"). FIX direction:
+  make the response-FIFO CDC read-during-write safe (Gray-pointer 2FF synchronizer depth / registered-output
+  RAM / empty-flag margin) or 573's handoff-register hold-margin. | advanced: ROOT CAUSE pinned probe-free to
+  a Branch-1 mem readback CDC race + leading mechanism | blocked: nothing | building: nothing (designing FIFO
+  CDC fix next).
