@@ -317,6 +317,49 @@ int main(void)
         printf("pass 7 (malformed hdr_len>peslen resyncs, next PES survives): OK\n");
     }
 
+    /* --- Pass 8 (REGRESSION): an unbounded video PES that ENDS the stream with
+     *     trailing 0x00 payload bytes and no following start code. Those bytes
+     *     are withheld in pend_zeros (they could have begun a 00 00 01 prefix
+     *     across a feed); at clean EOF no prefix can complete, so they are real
+     *     payload. ps_demux_finalize() must flush them, else the last frame's
+     *     tail is truncated. BUG (pre-fix): no finalize -> up to 2 bytes lost. */
+    {
+        uint8_t ub[128];
+        buf ubb = { ub, 0, sizeof(ub) };
+        bput(&ubb, 0x00); bput(&ubb, 0x00); bput(&ubb, 0x01); bput(&ubb, 0xE0);
+        bput(&ubb, 0x00); bput(&ubb, 0x00);   /* PES_packet_length = 0 */
+        bput(&ubb, 0x80); bput(&ubb, 0x00); bput(&ubb, 0x00); /* no PTS */
+        /* payload ends in two trailing 0x00 with NO following start code */
+        const uint8_t upay8[] = { 0x11, 0x22, 0x00, 0x00 };
+        bputn(&ubb, upay8, sizeof(upay8));
+
+        es_capture ce = {0};
+        ps_demux de; ps_demux_init(&de, es_sink, &ce);
+        ps_demux_feed(&de, ubb.p, ubb.len);
+        /* Before finalize the two trailing zeros are still withheld. */
+        assert(ce.len == 2);
+        assert(ce.bytes[0] == 0x11 && ce.bytes[1] == 0x22);
+        /* Finalize flushes them -> full payload delivered. */
+        ps_demux_finalize(&de);
+        assert(ce.len == sizeof(upay8));
+        assert(memcmp(ce.bytes, upay8, sizeof(upay8)) == 0);
+        /* Idempotent: a second finalize emits nothing more. */
+        ps_demux_finalize(&de);
+        assert(ce.len == sizeof(upay8));
+
+        /* And on a clean bounded stream (no withheld bytes) finalize is a
+         * no-op (doesn't fabricate trailing zeros). */
+        es_capture cf = {0};
+        ps_demux df; ps_demux_init(&df, es_sink, &cf);
+        uint8_t bnd[64]; buf bb = { bnd, 0, sizeof(bnd) };
+        put_pes(&bb, 0xE0, PS_PTS_NONE, PS_PTS_NONE, v3, sizeof(v3));
+        ps_demux_feed(&df, bb.p, bb.len);
+        size_t before = cf.len;
+        ps_demux_finalize(&df);
+        assert(cf.len == before);
+        printf("pass 8 (EOF finalize flushes withheld trailing zeros): OK\n");
+    }
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }

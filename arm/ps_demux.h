@@ -167,6 +167,14 @@ void ps_demux_set_audio_sink(ps_demux *d, ps_audio_es_sink sink, void *user);
  * number of bytes consumed (always == len; the parser never stalls). */
 size_t ps_demux_feed(ps_demux *d, const uint8_t *data, size_t len);
 
+/* Flush any bytes the parser was withholding for lookahead (the trailing
+ * 0x00 run of an unbounded video PES that could have begun a start-code
+ * prefix). Call exactly once on a CLEAN end-of-stream — after the final
+ * ps_demux_feed() — so the last frame's tail isn't truncated. Idempotent; do
+ * NOT call mid-stream (it would emit pending bytes that a later feed might
+ * prove to be structure). */
+void ps_demux_finalize(ps_demux *d);
+
 /* Convenience accessors. */
 const ps_stats *ps_demux_stats(const ps_demux *d);
 uint64_t        ps_demux_last_video_pts(const ps_demux *d);

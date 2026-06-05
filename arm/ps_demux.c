@@ -467,3 +467,20 @@ size_t ps_demux_feed(ps_demux *d, const uint8_t *data, size_t len)
 
     return len;
 }
+
+void ps_demux_finalize(ps_demux *d)
+{
+    /* At clean end-of-stream, an unbounded video PES may have up to two
+     * trailing 0x00 bytes withheld in pend_zeros (held back across feeds in
+     * case they begin a 00 00 01 start-code prefix). With no more input no
+     * prefix can complete, so those bytes are genuine payload: emit them, or
+     * the decoder loses the last frame's tail. Mirrors the non-prefix flush in
+     * the PES_PAYLOAD path. Idempotent (pend_zeros is zeroed). */
+    if (d->is_video && d->pend_zeros > 0) {
+        for (int z = 0; z < d->pend_zeros; z++) {
+            uint8_t zero = 0x00;
+            emit_video(d, &zero, 1);
+        }
+    }
+    d->pend_zeros = 0;
+}
