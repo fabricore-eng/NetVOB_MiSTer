@@ -455,3 +455,17 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   mpeg2fpga_dvd_serialize.rbf (~3MB); pointed hw_decode_test.sh at it. The f2sdram is currently WEDGED
   from the prior test, so the clean retest needs a user-authorized warm reboot. Expected on retest: W
   climbs past 189 and keeps going (no re-stall) + a full frame decodes = decode-on-HW complete.
+- 2026-06-05 (serialize fix: ELIMINATED the f2sdram wedge but over-corrected — f2sdram needs PIPELINING)
+  — clean-boot retest of the single-outstanding-read build: W:0000 (zero writes, was 189), P:0001 (1
+  read issued), RP:0000 (NO response), but crucially U:0 + M:0 = the f2sdram is HEALTHY (not wedged;
+  was U:1 stuck). So serialization PREVENTED the wedge (confirming the wedge cause = WRITE issued on top
+  of an outstanding READ). BUT it deadlocked: an ISOLATED single read gets NO readdatavalid response,
+  whereas pre-serialize PIPELINED reads DID respond (P:84/RP:83). ⇒ the HPS f2sdram returns read
+  responses only when the master keeps the bus pipelined; forcing one-at-a-time blocks on the first
+  read (and the watchdog reset + stuck read_pending make it permanent). PURE SERIALIZATION IS THE WRONG
+  LEVER. REFINED ROOT CAUSE: the wedge is specifically a WRITE-on-outstanding-READ; READS pipeline fine
+  and respond. NEXT FIX: allow pipelined reads (don't block them) but hold off WRITES while any read is
+  outstanding (outstanding_reads counter ++ on read-accept, -- on readdatavalid; block write issue when
+  >0) + a read-response TIMEOUT to recover from the rare genuinely-lost response (the 1-in-84 that
+  desynced pre-serialize) so writes don't block forever. Sim-validate in memshim incl. +ddr_drop, then
+  build + reboot-retest (reboot now standing-authorized). Board returned to MENU + released.
