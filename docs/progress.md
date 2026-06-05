@@ -597,3 +597,28 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   currently locked by 573 (hyperbbc573) — QUEUED; will run the readback when it frees. If the
   framestore shows the test pattern => decode-to-pixels CONFIRMED, gate isolated to the
   framestore→core_r/g/b readout RTL (resample/yuv2rgb/video-out). If garbage => decode itself.
+
+- 2026-06-05 (FRAMESTORE DDR-READBACK works; decode is PARTIAL/DEGRADED on HW — new gate is
+  decode-correctness, not display) — ran the camera-free readback: loaded the bound-reads core,
+  let it decode, mmap'd /dev/mem O_SYNC at 0x30000000 on the mister (it has python3), streamed the
+  14MB window to the Mac, rendered the FRAME_n Y planes (tools/build/dump_framestore.py +
+  render_framestore.py). Verified addressing against mem_codes.v (MP@HL: WIDTH_Y=18/WIDTH_C=16;
+  FRAME_n_Y words 0x0/0x60000/0xC0000/0x120000; phys=0x30000000+addr*8) and the layout against the
+  bench write_mb (row-major, 90 words/row x 480; pixel_0=word MSB so little-endian readback reverses
+  each 8-byte word; Y unsigned centered 128 -> NO +128 bias). RESULT: the framestore holds REAL
+  structured data (not black) — the top-left TIMECODE box decodes cleanly — BUT the static test-
+  pattern BARS are MISSING: HW frames are mean=128 stddev~7-12 (mostly flat gray). GROUND TRUTH via
+  ffmpeg on the same clip: every one of its 90 frames is mean=128 stddev~65 (full bars). The clip
+  LOOPS on HW (FC reached thousands of fields > 90 frames) and never has a gray frame, so the gray
+  capture is NOT 'ends on gray' — it's DEGRADED DECODE. Signature: INTRA content (timecode) decodes,
+  INTER-predicted background washes to flat gray. G:0 (no VLD errors), P==RP/PC:0000 (no dropped
+  responses this run) -> bitstream parse is fine and no mem drops -> the degradation is in the
+  RECONSTRUCTION/REFERENCE path, HW-specific (sim decodes this clip's first frames WITH bars). Side-
+  by-side saved /tmp/dvd_shots/compare_ref_vs_hw.png (sent to user). ⇒ The 'video out' gate is a
+  DECODE-CORRECTNESS issue (mostly-DC/gray reconstruction), not the analog/scaler display path.
+  Device released, board to MENU. NEXT (root-cause): (1) make an all-I-frame (intra-only) 480i test
+  clip with ffmpeg so the I-frame can be caught on HW (clip loops too fast to snapshot the I-frame in
+  the normal clip) -> does pure intra decode reproduce the bars on HW? If yes, the bug is in
+  inter-prediction/motion-comp reference fetch; if no, intra reconstruction (IDCT/coeff) is wrong on
+  HW. (2) examine whether f2sdram READ data is correct (not just present): the reference reads may
+  return wrong-but-not-dropped data under the throttle. (3) compare sim-vs-HW same frame.
