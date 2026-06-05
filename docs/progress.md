@@ -833,3 +833,29 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   NEXT (build-done): warm-reboot mister FIRST (avoid inherited wedge), clean decode, read UART; expect
   HW QO==sim QO block-aligned + QN climbing past 0x6500 (decode proceeds). If QO matches but IO still
   diverges -> apply idct.v:1409 $signed fix next.
+
+- 2026-06-05 (NEGATIVE RESULT: $signed iquant fix did NOT resolve the divergence; localizing within
+  rld) — built+deployed the rld.v:410 $signed-all-3-operands fix (mpeg2fpga_dvd_probefix.rbf, rc=0),
+  warm-rebooted mister (clean f2sdram, no wedge: O:0/M:0/U:0), clean decode. Count-aligned at block 16
+  (QN=IN=0x400): **HW QO=000DF98E (+916,366) vs SIM QO=fffff2f8 (-3,336) — STILL DIVERGES** (HW large-
+  positive, ~270x sim magnitude). QO VALUE changed from the no-fix build (001244A2 -> 000DF98E) so the
+  fix WAS built+deployed (confirmed not stale) — it just didn't fix it. So the iquant-OUT corruption is
+  NOT (solely) the rld.v:410 multiply signedness. Also: decode now stalls even earlier (block 16 vs 404
+  pre-fix; full feed J=Z consumed both times) = the stall is downstream + data-dependent on the (still-
+  garbage) coeffs. INVESTIGATION (no-build, RTL trace): (1) the quant matrix feeds via intra_quant_matrix
+  (iquant.v) whose DEFAULT path (default_values=1) is a COMBINATIONAL function default_intra_quant(addr)
+  -> HW-safe; default_values only clears after a full custom-matrix upload (wr_addr==0x3f). ffmpeg's
+  stream uses the default matrix, so the matrix is likely NOT garbage UNLESS default_values spuriously
+  clears on HW (-> reads the uninitialized custom-matrix RAM = garbage). (2) Quartus map.rpt multiplier
+  summary after fix: 16 signed / 25 unsigned / 44 mixed-sign — can't isolate the rld:410 DSP from the
+  summary, so whether $signed() actually forced THIS one signed is unconfirmed. DECISION: stop guessing
+  fixes; add INTERMEDIATE iquant-stage UART checksums to localize EXACTLY where the divergence enters:
+  iquant_factor_2 (the scale*matrix dequant factor), iquant_level_2 (multiply INPUT), iquant_level_3
+  (multiply OUTPUT) — gated by iquant_valid_2/_3. Compare each to sim (testbench reads
+  testbench.mpeg2.rld.* hierarchically). Verdicts: factor_2 diverges => matrix/scale path (incl. a
+  spurious default_values clear or the unsigned scale*mat at rld.v:450); factor_2 ok + level_3 diverges
+  => the multiply IS still unsigned despite $signed() (need explicit lpm_mult SIGNED); level_2 already
+  diverges => upstream (VLD level / level_0 shift+add). $signed fix KEPT (harmless, restores original
+  Xilinx intent, likely still needed once the real stage is found). HDMI/dashboard screenshot is black
+  by design (raw-VGA core); board parked on menu between tests (the human saw the menu color-gradient
+  screensaver, not decode). NEXT: build the intermediate-stage probe, localize, then targeted fix.
