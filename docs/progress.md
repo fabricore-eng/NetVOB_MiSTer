@@ -539,3 +539,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   drop-related; ==0 = a command-specific lock. memshim sim still decodes greyramp correctly (observe-
   only, decode path untouched). NEXT: build, reboot-retest, read PC -> pins the lock cause -> targeted
   fix. Auto-logging the HW result to the shared testlog this cycle too (human wants dashboard visibility).
+
+- 2026-06-05 (lock-probe RESULT pins the cause = OUTSTANDING-READ THROTTLE; bound-reads fix built) —
+  reboot-test of the lock-probe build: uart PC:C306 = wedged=1, lock_cmd=10 (READ), lock_outstanding=6,
+  recovery_count=6, alongside W:29931/P:14018 (3x past v2 — the recovery kept decode alive far longer).
+  DECODE: the bridge LOCKS on a READ issued with 6 reads already in flight, AND recovery_count=6 means
+  6 responses were genuinely dropped (and successfully recovered) before the lock. ⇒ TWO facts: (a) real
+  drops happen (rare), and (b) the HPS f2sdram has an OUTSTANDING-READ THROTTLE — issuing a new read with
+  too many in flight (6 here) is what wedges it, not the drops themselves. TARGETED FIX (built): bound
+  outstanding reads to READ_LIMIT=4 (below the 6 that locked) via a non-pulling read_throttled gate in
+  S_IDLE (`next_is_read && outstanding_reads>=4` -> hold the next READ, don't pull the FIFO, lose nothing;
+  in-order writes behind it wait briefly; resp_timeout still drains any genuinely-lost read so a throttled
+  read can never deadlock). Keep the timeout-recovery for the rare real drop. SIM-VALIDATED in the memshim
+  Verilator bench: no-drop decode -> 2 framestore frames (FRAME_0 mean=128, clean); +ddr_drop=8 (every 8th
+  read response dropped) WITH the throttle -> 15 tv_out frames, no stall = throttle+recovery recover under
+  drops without deadlock. NEXT: sync mem_shim->dell (diff-verify), detached build mpeg2fpga_dvd_boundread.rbf,
+  reboot-test; SUCCESS = W climbs into the tens-of-thousands and KEEPS advancing / completes frames with no
+  permanent waitrequest-lock = sustained decode. If it still locks, read PC: a lower lock_outstanding => drop
+  READ_LIMIT further (e.g. 2); a WRITE lock_cmd => the wedge is write-side, add lock_addr to the probe.

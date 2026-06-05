@@ -1,8 +1,8 @@
 diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
-index 33f3c2a..183f6c0 100644
+index 33f3c2a..0e67e94 100644
 --- a/rtl/mem_shim.sv
 +++ b/rtl/mem_shim.sv
-@@ -80,6 +80,21 @@ module mem_shim (
+@@ -80,6 +80,31 @@ module mem_shim (
  
      reg state;
  
@@ -21,10 +21,20 @@ index 33f3c2a..183f6c0 100644
 +    wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
 +    wire        resp_timeout      = (outstanding_reads != 0) && !ddr3_readdatavalid && (&resp_timer);
 +
++    // The HPS f2sdram has an outstanding-READ throttle: HW lock-probe caught the bridge
++    // LOCKING on a READ with 6 reads in flight (PC: lock_cmd=READ, outstanding=6). Bound
++    // outstanding reads BELOW that so the bridge never throttles/locks. WRITES are not
++    // bounded by this; a genuinely-lost read still drains via resp_timeout, so a throttled
++    // read cannot deadlock (recovery guarantees forward progress).
++    localparam [5:0] READ_LIMIT = 6'd4;
++    wire next_is_read   = saved_valid ? (saved_cmd == CMD_READ)
++                                      : (mem_req_rd_valid && (mem_req_rd_cmd == CMD_READ));
++    wire read_throttled = next_is_read && (outstanding_reads >= READ_LIMIT);
++
      // Skid buffer — captures the FIFO word that appears 1 cycle after rd_en is
      // deasserted (standard mode FIFO 1-cycle latency).
      reg        saved_valid;
-@@ -89,8 +104,10 @@ module mem_shim (
+@@ -89,8 +114,10 @@ module mem_shim (
  
      always @(posedge clk) begin
          if (!rst_n) begin
@@ -37,7 +47,7 @@ index 33f3c2a..183f6c0 100644
              ram_write      <= 0;
              ram_address    <= 0;
              ram_writedata  <= 0;
-@@ -109,6 +126,27 @@ module mem_shim (
+@@ -109,6 +136,27 @@ module mem_shim (
              mem_res_wr_en <= ddr3_readdatavalid;
              if (ddr3_readdatavalid)
                  mem_res_wr_dta <= ddr3_readdata;
@@ -65,7 +75,22 @@ index 33f3c2a..183f6c0 100644
  
              // -----------------------------------------------------------------
              // Command Path FSM
-@@ -135,11 +173,23 @@ module mem_shim (
+@@ -117,7 +165,13 @@ module mem_shim (
+                 // =============================================================
+                 // S_IDLE: Process next command (skid buffer has priority)
+                 // =============================================================
+-                if (saved_valid && !mem_res_wr_almost_full) begin
++                if (read_throttled) begin
++                    // Too many reads in flight -> hold the next READ until they drain below
++                    // the bridge throttle (don't pull the FIFO, nothing is lost). Writes
++                    // behind it wait briefly (in-order); resp_timeout guarantees progress.
++                    mem_req_rd_en <= 1'b0;
++                end
++                else if (saved_valid && !mem_res_wr_almost_full) begin
+                     case (saved_cmd)
+                         CMD_WRITE: begin
+                             if (saved_addr == ADDR_ERR) begin
+@@ -135,11 +189,23 @@ module mem_shim (
                          end
                          CMD_READ: begin
                              if (saved_addr == ADDR_ERR) begin
@@ -94,7 +119,7 @@ index 33f3c2a..183f6c0 100644
                              end else begin
                                  ram_read      <= 1;
                                  ram_address   <= {7'b0011000, saved_addr};
-@@ -171,10 +221,18 @@ module mem_shim (
+@@ -171,10 +237,18 @@ module mem_shim (
                          end
                          CMD_READ: begin
                              if (mem_req_rd_addr == ADDR_ERR) begin
@@ -117,7 +142,7 @@ index 33f3c2a..183f6c0 100644
                              end else begin
                                  ram_read      <= 1;
                                  ram_address   <= {7'b0011000, mem_req_rd_addr};
-@@ -195,6 +253,9 @@ module mem_shim (
+@@ -195,6 +269,9 @@ module mem_shim (
                  // S_WAIT: Hold ram_read/write until bridge accepts
                  // =============================================================
                  if (!ddr3_waitrequest) begin
@@ -127,7 +152,7 @@ index 33f3c2a..183f6c0 100644
                      ram_read      <= 0;
                      ram_write     <= 0;
                      state         <= 0;
-@@ -235,6 +296,42 @@ module mem_shim (
+@@ -235,6 +312,42 @@ module mem_shim (
          end
      end
  
@@ -170,7 +195,7 @@ index 33f3c2a..183f6c0 100644
      // =========================================================================
      // Debug telemetry
      // =========================================================================
-@@ -258,6 +355,6 @@ module mem_shim (
+@@ -258,6 +371,6 @@ module mem_shim (
      assign debug_rd_count         = rd_count;
      assign debug_wr_count         = wr_count;
      assign debug_rsp_count        = rsp_count;
