@@ -904,3 +904,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   non-wedging fit -> clean L2/F2 read. SIM GOLDEN block16: L2=ffffec6a F2=00052940. PARALLEL: fixed
   spine-review bug #2 = service/core/ps_demux.py MPEG-1 PES header leak (commit 7c26118, 5 regression
   tests red/green). NEXT: on build-done, clean L2/F2 read (count-align block16) -> targeted iquant fix.
+
+- 2026-06-05 (probe3 STILL WEDGES with headroom — observer effect, NOT fit-size; escalated to 573;
+  spine bug #3 fixed) — probe3 (probefix + L2/F2 probe + 573's audio-IIR drop; build rc=0, ~2.97MB rbf,
+  freed 8 DSP + 430 ALM confirmed) STILL wedges the feed 5/5 (J~0x22, QN/L2/F2=0), identical to probe2.
+  So the wedge is NOT pure fit-margin SIZE (430 freed ALM >> 2 accumulators). PUZZLE: the probe is all
+  clk_sys (27MHz) — accumulators gated by iquant_valid_2 + 2 new rld output ports to uart — nowhere near
+  the clk_mem (108MHz) f2sdram/mem_shim path that wedges. Yet probefix (4 accumulators, no L2/F2) feeds
+  FULLY clean, and ADDING the L2/F2 taps deterministically wedges the f2sdram READ at ~sector 34. =>
+  OBSERVER EFFECT (placement/routing relocating or starving the mem_shim path despite freed ALM), not a
+  decode bug and not the board (probefix re-read clean = board fine). ESCALATED to 573/cockpit (573
+  cracked similar fit-marginality in patch-0009). Candidate next: MINIMAL-perturbation retry = retarget
+  ONE existing probefix accumulator from iquant_level to iquant_level_2 (keep count=4 = the clean fit
+  profile) instead of ADDING 2 — pending 573 input. Decode bug remains localized to iquant-OUT (QO
+  large-positive); the L2/F2 sub-stage localization (VLD-input vs matrix-factor vs saturate) is BLOCKED
+  on this probe-wedge. PIVOT (autonomy playbook: blocked critical path -> escalate + advance unblocked):
+  build-independent spine fixes. SIM GOLDEN block16 L2=ffffec6a F2=00052940 still valid for when a clean
+  probe lands. Spine: 3 bugs fixed so far (arm ps_demux 3ff8d7d, python ps_demux 7c26118, ifo
+  inverted-cell b2ba13f); continuing the contained ones.
