@@ -947,3 +947,24 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   mechanism + gives the L2/F2 read. ON CLEAN READ: count-align block16 -> HW L2 diverges from ffffec6a
   => VLD/upstream; L2 matches + F2 diverges from 00052940 => matrix/factor; both match => multiply/
   saturate logic. Spine bug #4 fixed: arm ps_demux runaway-header-skip (commit 925eac4, Pass 7 r/g).
+
+- 2026-06-05 (probe-wedge ROOT CAUSE corrected = HIERARCHY LOCATION, not size/hold; clean VLD-level
+  probe building) — the minimal L2/F2/N2 probe (probe4, ~80 nets) WEDGED 5/5 too, REFUTING the
+  export-size/congestion theory. cockpit's per-corner hold data deflated the −81ps bridge hold (it's
+  POSITIVE at the slow/room-temp corners +0.2-0.3ns; the negative is only the FAST corner = benign in
+  operation) — hold was a RED HERRING. TEAM-CONVERGED ROOT CAUSE (theory-3): adding observer logic +
+  output PORTS *inside* the timing-critical rld module materializes its internal pipeline regs and
+  perturbs the local rld→idct→motcomp placement, deterministically wedging the f2sdram feed REGARDLESS
+  of export size. The clean reference (probefix) never touched rld — it tapped rld's EXISTING output
+  from the PARENT (mpeg2video). REUSABLE LESSON (cockpit put it in hub LESSONS.md): "observe a
+  timing-critical module non-invasively by tapping its existing nets from the PARENT hierarchy; never
+  add logic/ports inside it." (Corrects the earlier 'fit-margin SIZE / free ALM headroom via audio-IIR'
+  and 'bridge-hold' theories — both wrong; the audio-IIR drop is still kept as a harmless cleanup.)
+  CLEAN PROBE (building, agent): a VLD-level probe ENTIRELY in mpeg2video — accumulate
+  dct_coeff_rd_signed_level (the VLD-decoded coefficient level, existing rld-INPUT net at mpeg2video.v
+  :195) gated by the rld_fifo read handshake (rld_rd_en/rld_rd_valid, mpeg2video nets :210-211), ZERO
+  rld changes -> should feed clean like probefix. It's ALSO the VLD-vs-iquant bisect: HW VL diverges
+  from sim => VLD/getbits/vlc decode is the bug; VL matches => the bug is inside rld's iquant arithmetic
+  (then re-add a PARENT-level tap of a later rld output to bisect further). Patch
+  core/patches/hw/mpeg2fpga-vld-level-probe.patch; removes the rld L2/F2/N2 probe, keeps rld:410 $signed
+  + audio-IIR. NEXT: build + warm-reboot + read; expect CLEAN feed (mechanism confirmed) + the VL read.
