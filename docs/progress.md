@@ -1164,3 +1164,18 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   warm-rebooting mister to clear any inherited f2sdram wedge, then load mpeg2_test.mgl + read UART
   ttyS1 115200 VL/VN/BL/BN (=gb@225/405/450/495). | advanced: probe bitstream staged + clip-identity
   proven + golden re-confirmed | blocked: nothing | building: nothing (HW read in progress).
+- 2026-06-05 (PROBE WEDGED -> pivot to probe-free /dev/mem; PRECISE localization) — The per-MB getbits
+  probe build wedged the f2sdram bridge (VL/VN/BL/BN=0, blank framestore mean 0.1, J stuck 0x23, PC:A0xx,
+  U:1 M:D). cockpit's refinement: the wedge threshold is placement FOOTPRINT, not tap existence — the
+  minimal getbits-OUTPUT tap (the breakthrough build) fed CLEAN; the 4-reg+comparator block is big enough
+  the placer drops it toward the bridge and re-rolls the marginal path. So a granular UART-probe bisect is
+  structurally wedge-prone. PIVOTED to probe-free /dev/mem (zero added logic). Restored breakthrough
+  getbits.rbf (md5 ea955179) — telemetry healthy (J=Z=0x0F3B all sectors fed, PC:0000, M:0 U:0, no wedge).
+  READ A (framestore dump, ground truth): FRAME_0 Y per-MB-row mean profile shows MB rows 0-7 (MB 0..359,
+  y0..127) = REAL varying content; MB rows 8-29 (MB 360+, y128..479) = EXACTLY 128.0 (framestore init,
+  never written). => decode produces 8 MB rows then STOPS at MB row 8 (MB 360, slice ~9). This is EARLIER
+  + more trustworthy than the getbits-probe's "MB450/slice10" estimate (framestore = ground truth). Artifact
+  core/sim/artifacts/hwfs_breakthrough/frame0_desync_at_mbrow8.png. READ B in progress: vbuf bitstream DDR
+  dump (phys 0x30E00000 len 0x180000, decoder word 0x1c0000) vs clip via wrap-robust substring search ->
+  write-path-clean(=>Branch1 readback timing/stale, P==RP) vs write-path-corrupt. | advanced: precise
+  probe-free localization to MB row 8 + wedge-footprint lesson | blocked: nothing | building: nothing.
