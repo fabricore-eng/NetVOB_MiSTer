@@ -1,8 +1,8 @@
 diff --git a/bench/iverilog/testbench.v b/bench/iverilog/testbench.v
-index accd1b2..adb25fa 100644
+index 83d3546..15a3b08 100644
 --- a/bench/iverilog/testbench.v
 +++ b/bench/iverilog/testbench.v
-@@ -237,6 +237,86 @@ module testbench();
+@@ -237,6 +237,120 @@ module testbench();
      end
  `endif
  
@@ -73,6 +73,40 @@ index accd1b2..adb25fa 100644
 +          end
 +      end
 +
++  /*
++   * INTERMEDIATE iquant stage-2 checksums (HW-bisect, block-aligned).
++   *
++   * Taps the rld-internal pipeline (instance name "rld" inside mpeg2video):
++   *   - L2 = running 32-bit sum of iquant_level_2  (reg signed [12:0]) sign-extended 13->32.
++   *   - F2 = running 32-bit sum of iquant_factor_2 (reg [14:0] UNSIGNED) zero-extended 15->32.
++   * Both gated by the SAME stage-2 valid strobe iquant_valid_2 (same pipeline stage).
++   * N2 counts iquant_valid_2 events. Accumulators are 32-bit so the mod-2^32 wrap
++   * matches the HW register exactly (identical formula as rld.v). A per-block line
++   * "L2=.. F2=.. N2=.." is emitted on each stage-2 end-of-block (iquant_eob_2),
++   * matching the same block cadence the QO/IO probes use.
++   */
++  reg  [31:0]l2_sum = 32'd0;   // L2: running sum of sign-extended iquant_level_2
++  reg  [31:0]f2_sum = 32'd0;   // F2: running sum of zero-extended iquant_factor_2
++  reg  [31:0]n2_cnt = 32'd0;   // N2: count of valid iquant_valid_2 events
++
++  always @(posedge testbench.mpeg2.clk)
++    if (testbench.mpeg2.rst)
++      begin
++        if (testbench.mpeg2.rld.iquant_valid_2)
++          begin
++            l2_sum <= l2_sum + {{19{testbench.mpeg2.rld.iquant_level_2[12]}}, testbench.mpeg2.rld.iquant_level_2};
++            f2_sum <= f2_sum + {17'b0, testbench.mpeg2.rld.iquant_factor_2};
++            n2_cnt <= n2_cnt + 1;
++            if (testbench.mpeg2.rld.iquant_eob_2)
++              begin
++                $fwrite(cf, "L2=%08x F2=%08x N2=%08x\n",
++                        l2_sum + {{19{testbench.mpeg2.rld.iquant_level_2[12]}}, testbench.mpeg2.rld.iquant_level_2},
++                        f2_sum + {17'b0, testbench.mpeg2.rld.iquant_factor_2},
++                        n2_cnt + 1);
++              end
++          end
++      end
++
 +  // per-frame snapshot on v_sync rising edge (sampled in the clk domain)
 +  always @(posedge testbench.mpeg2.clk)
 +    if (testbench.mpeg2.rst)
@@ -80,8 +114,8 @@ index accd1b2..adb25fa 100644
 +        v_sync_d <= v_sync;
 +        if (v_sync && ~v_sync_d)
 +          begin
-+            $fwrite(cf, "FRAME QO=%08x IO=%08x QN=%08x IN=%08x\n",
-+                    rld_sum, idct_sum, rld_cnt, idct_cnt);
++            $fwrite(cf, "FRAME QO=%08x IO=%08x QN=%08x IN=%08x L2=%08x F2=%08x N2=%08x\n",
++                    rld_sum, idct_sum, rld_cnt, idct_cnt, l2_sum, f2_sum, n2_cnt);
 +            $fflush(cf);
 +          end
 +      end
@@ -89,3 +123,46 @@ index accd1b2..adb25fa 100644
  `ifdef DUMP_TVOUT
  
  /*
+@@ -259,9 +373,10 @@ module testbench();
+   wire [11:0]dot_vertical_length;
+   wire       dot_interlaced;
+   wire [11:0]syncgen_horizontal_halfline;
++  wire       dot_odd_field;        // field parity probe: 0=even (top) field, 1=odd (bottom) field
+ 
+   /*
+-   * Note: these assignments have to be modified if synthesis assigns other names to these nets. 
++   * Note: these assignments have to be modified if synthesis assigns other names to these nets.
+    * Use commands such as "find signals -r *name*" at the simulator prompt to find suitable candidates.
+    */
+ 
+@@ -275,6 +390,7 @@ module testbench();
+   assign dot_vertical_sync_end         = testbench.mpeg2.syncgen_intf.dot_vertical_sync_end;
+   assign dot_vertical_length           = testbench.mpeg2.syncgen_intf.dot_vertical_length;
+   assign dot_interlaced                = testbench.mpeg2.syncgen_intf.dot_interlaced;
++  assign dot_odd_field                 = testbench.mpeg2.syncgen_intf.sync_gen.odd_field;
+ 
+   always @(posedge dot_clk)
+     begin
+@@ -329,6 +445,22 @@ module testbench();
+               $fwrite(fp, "# horizontal resolution %0d sync_start %0d sync_end %0d length %0d\n", syncgen_horizontal_resolution, syncgen_horizontal_sync_start, syncgen_horizontal_sync_end, syncgen_horizontal_length);
+               $fwrite(fp, "# vertical resolution %0d sync_start %0d sync_end %0d length %0d\n", dot_vertical_resolution, dot_vertical_sync_start, dot_vertical_sync_end, dot_vertical_length);
+               $fwrite(fp, "# interlaced %0d halfline %0d\n", dot_interlaced, syncgen_horizontal_halfline);
++              // Raster field-parity flag for interlace reassembly: this is the
++              // sync generator's free-running odd_field bit (syncgen.v), i.e. WHICH
++              // geometric field the analog raster is painting -- NOT directly which
++              // decoded field's lines. odd_field toggles at each field start
++              // (h_cntr==v_cntr==0) and is stable by the first visible pixel.
++              //
++              // EMPIRICALLY CALIBRATED (core/sim, field-discriminating clip
++              // /tmp/fieldtest.m2v vs ffmpeg field=top/bottom, ~26 dB separation,
++              // reproduced): in THIS bench the raster odd_field is phase-offset by
++              // one field from the BT.601 content parity, so:
++              //   field_parity 1  carries the BT.601 TOP    field (source rows 0,2,4,...)
++              //   field_parity 0  carries the BT.601 BOTTOM field (source rows 1,3,5,...)
++              // reassemble_fields.py keys on this calibrated mapping. (The absolute
++              // phase is a free-running-counter artifact; on HW the ADV7125 field
++              // ID must be locked to the decoder field, see README Recipe A.)
++              $fwrite(fp, "# field_parity %0d\n", dot_odd_field);
+               img_count = img_count + 1;
+               $fwrite(fp, "%5d %5d 255\n", syncgen_horizontal_length + 1, dot_vertical_length + 1);
+             end

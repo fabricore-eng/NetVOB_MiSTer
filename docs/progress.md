@@ -859,3 +859,27 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   Xilinx intent, likely still needed once the real stage is found). HDMI/dashboard screenshot is black
   by design (raw-VGA core); board parked on menu between tests (the human saw the menu color-gradient
   screensaver, not decode). NEXT: build the intermediate-stage probe, localize, then targeted fix.
+
+- 2026-06-05 (intermediate iquant-stage probe built; cheap Quartus-report checks RULED OUT 3 suspects;
+  spine bug #1 fixed in parallel) — CHEAP localization (no build) from the fix build's reports on dell:
+  (1) rld:410 multiply is in LOGIC (LEs), the ONLY rld DSP is Mult0 = iquant_factor_2 (the rld:450
+  unsigned scale*mat) — so the rld:410 multiply is NOT a DSP signed/unsigned-inference issue (explains
+  why $signed didn't help). (2) RDW warnings: rld un-zigzag dpram_sc ram0/ram1 AND both quant-matrix
+  RAMs got Warning 276020 (pass-through ADDED = RDW HANDLED); only 276027 (undefined RDW) are dual-clock
+  CDC FIFOs + the unused HDMI ascal/shadowmask. So RDW ruled out in the rld path. Remaining suspects:
+  VLD input (level / vlc_tables ROM) or matrix/factor VALUES. Built the INTERMEDIATE probe (agent):
+  32-bit UART checksums L2 = sum of iquant_level_2 (post-VLD multiply INPUT, sign-ext, gate
+  iquant_valid_2) and F2 = sum of iquant_factor_2 (dequant factor, zero-ext, gate iquant_valid_2),
+  accumulators in rld.v -> mpeg2video -> emu -> uart_debug fields L2:/F2: (char_idx 201-224, \r\n
+  225/226), mirrored in sim testbench.v (testbench.mpeg2.rld.*). Patches:
+  core/patches/hw/mpeg2fpga-iquant-stage-probe.patch + extended sim patch. VERIFIED before build:
+  verilator lint of the MiSTer_MPEG2 mpeg2 core CLEAN (rld/mpeg2video port edits valid), uart FSM splice
+  contiguous, identifiers cross-checked, rtl/ rsync'd to dell diff-verified. SIM GOLDEN (run_chksum,
+  block 16 / N2=0x400): **L2=ffffec6a (negative) F2=00052940**; also block1 L2=fffffdde F2=00005294,
+  block4 L2=fffff912 F2=00014a50. Build launched on dell (quartus-dvd). ON BUILD-DONE: warm-reboot
+  mister (573 currently holds the devlock for its hyperbbc screenshot — wait for release), deploy, read
+  UART, count-align L2/F2 vs sim at block 16. VERDICT: HW L2 diverges => VLD/upstream (vlc_tables ROM /
+  level_0); L2 ok + F2 diverges => matrix/factor (default_intra_quant fn or default_values spurious
+  clear); L2+F2 ok => the logic multiply/saturate (rld.v:411-415). PARALLEL (build-independent): fixed
+  spine-review bug #1 = arm/ps_demux.c payload-0x00 drop on the one-chunk path (commit 3ff8d7d, Pass 6
+  regression red/green verified). 573's hyperbbc booted from STOCK BIOS on HW (the human saw it on the CRT).

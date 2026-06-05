@@ -1,0 +1,515 @@
+diff --git a/rtl/emu.sv b/rtl/emu.sv
+index aa9bf0d..30504b7 100644
+--- a/rtl/emu.sv
++++ b/rtl/emu.sv
+@@ -94,9 +94,9 @@ module emu (
+ assign VIDEO_ARX    = 13'd4;
+ assign VIDEO_ARY    = 13'd3;
+ 
+-assign VGA_F1       = 0;
++// VGA_F1 is driven from the decoder field parity in the video-out block below.
+ assign VGA_SL       = 0;
+-assign VGA_SCALER   = 1; // Enable scaler for universal HDMI compatibility
++assign VGA_SCALER   = 0; // Analog raster passthrough (no scaler) for native 480i -> ADV7125
+ assign VGA_DISABLE  = 0;
+ assign HDMI_FREEZE      = 0;
+ assign HDMI_BLACKOUT    = 0;
+@@ -160,22 +160,34 @@ assign DDRAM_CLK = clk_mem;
+ wire watchdog_rst;
+ wire reset_n = locked & ~RESET;
+ 
+-// 108 MHz / 4 = 27 MHz pixel clock enable for internal modules
+-reg [1:0] ce_cnt;
+-always @(posedge clk_mem) ce_cnt <= ce_cnt + 1'b1;
+-wire ce_pixel = (ce_cnt == 2'b00);
++// ---------------------------------------------------------------------------
++// Pixel clock-enable for NTSC 480i (BT.601)
++// ---------------------------------------------------------------------------
++// NTSC 480i is a 13.5 MHz dot rate (858 dots * 15.734 kHz line rate). We keep
++// CLK_VIDEO = clk_sys = 27 MHz (the MiSTer analog PHY clock) and generate a
++// half-rate clock-enable so the *effective* pixel rate is 13.5 MHz.  This same
++// enable gates BOTH the decoder video pipeline (mpeg2video.dot_ce) and the
++// framework PHY (CE_PIXEL), so exactly one decoder pixel is emitted per enable.
++//
++// ce_pix toggles in the clk_sys (= CLK_VIDEO = dot_clk) domain — no CDC.
++reg ce_div;
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) ce_div <= 1'b0;
++    else          ce_div <= ~ce_div;
++end
++wire ce_pix = ce_div;   // 13.5 MHz enable (27 MHz / 2)
+ 
+-// The MiSTer HDMI/VGA PHY natively clocks at CLK_VIDEO frequency. 
+-// For NTSC 480i/p video, this must be exactly 27.0 MHz.
++// CLK_VIDEO is the analog PHY clock (27 MHz); CE_PIXEL gates it to the 13.5 MHz
++// BT.601 dot rate. VGA_SCALER=0 keeps the raster verbatim out the ADV7125 DAC.
+ assign CLK_VIDEO = clk_sys;  // 27 MHz
+-assign CE_PIXEL  = 1'b1;     // Fully utilized 27 MHz clock
++assign CE_PIXEL  = ce_pix;   // 13.5 MHz effective pixel rate (480i BT.601)
+ 
+ // =========================================================================
+ // HPS IO — OSD menu and file loading
+ // =========================================================================
+ parameter CONF_STR = {
+     "MPEG2;;",
+-    "S0,MPG M2V,Load Video;",
++    "S0,MPGM2V,Load Video;",
+     "O1,Aspect Ratio,4:3,16:9;",
+     "O[10],Direct Video,Off,On;",
+     "R0,Reset;",
+@@ -253,14 +265,25 @@ reg        img_mounted_prev;
+ wire       start_streaming = img_mounted[0] && !img_mounted_prev;
+ reg [63:0] current_file_size;
+ 
++// DIAGNOSTIC (mount-pulse localization): does the .mgl/OSD mount ever reach the FPGA?
++// img_mounted_cnt counts img_mounted[0] rising edges; current_file_size latches img_size.
++// Surfaced on the uart X/Y fields (see uart_debug arx/ary feed) for a hands-off read:
++//   X(cnt)=0          -> img_mounted NEVER pulsed: mount not delivered (framework/.mgl/hps_io)
++//   X>0, Y(size)=0    -> pulsed but img_size==0: framework sized the file as 0
++//   X>0, Y!=0, Z=0    -> pulsed with a real size: bug is downstream (start/streamer/total_sectors)
++reg [11:0] img_mounted_cnt;
++
+ always @(posedge clk_sys or negedge reset_n) begin
+     if (!reset_n) begin
+         img_mounted_prev  <= 1'b0;
+         current_file_size <= 64'd0;
++        img_mounted_cnt   <= 12'd0;
+     end else begin
+         img_mounted_prev <= img_mounted[0];
+         if (img_mounted[0])
+             current_file_size <= img_size;
++        if (start_streaming)            // rising edge of img_mounted[0]
++            img_mounted_cnt <= img_mounted_cnt + 1'b1;
+     end
+ end
+ 
+@@ -307,11 +330,13 @@ wire        shim_mem_en;
+ wire        shim_mem_almost_full;
+ 
+ wire [7:0] core_r, core_g, core_b;
+-wire       core_h_sync, core_v_sync;
++wire       core_h_sync, core_v_sync, core_c_sync;
+ wire [11:0] core_h_pos, core_v_pos;
+ wire [8:0]  core_init_cnt;
+ wire        core_sync_rst;
+ wire        core_vbw_almost_full;
++wire [31:0] core_iquant_chksum, core_idct_chksum, core_iquant_cnt, core_idct_cnt; // HW-bisect probe
++wire [31:0] core_iquant_l2_chksum, core_iquant_f2_chksum; // HW-bisect: intermediate iquant stage-2 checksums
+ wire       core_pixel_en;
+ wire [3:0]  shim_debug_state;
+ wire [1:0]  shim_debug_saved_cmd;
+@@ -325,8 +350,8 @@ wire [15:0] shim_debug_read_pend_cycles;
+ mpeg2video mpeg2video_inst (
+     .clk        (clk_sys),   // 27 MHz — matches prior-working-config; 4× lower mem request rate
+     .mem_clk    (clk_mem),   // 108 MHz — FIFO: wr=27MHz rd=108MHz, read-faster safe CDC
+-    .dot_clk    (clk_sys),   // 27MHz native dot clock (cleanly drives MiSTer HDMI PHY)
+-    .dot_ce     (1'b1),      // No clock enable needed when using native 27MHz
++    .dot_clk    (clk_sys),   // 27MHz video clock (= CLK_VIDEO); syncgen advances on dot_ce
++    .dot_ce     (ce_pix),    // 13.5 MHz BT.601 dot-rate enable (480i): syncgen counts at 13.5 MHz
+     .rst        (reset_n),
+ 
+     .stream_data  (stream_data),
+@@ -351,7 +376,7 @@ mpeg2video mpeg2video_inst (
+     .pixel_en   (core_pixel_en),
+     .h_sync     (core_h_sync),
+     .v_sync     (core_v_sync),
+-    .c_sync     (),
++    .c_sync     (core_c_sync),
+     .h_pos      (core_h_pos),
+     .v_pos      (core_v_pos),
+ 
+@@ -369,7 +394,13 @@ mpeg2video mpeg2video_inst (
+     .testpoint_dip_en (1'b0),
+     .init_cnt_out     (core_init_cnt),
+     .sync_rst_out     (core_sync_rst),
+-    .vbw_almost_full_out (core_vbw_almost_full)
++    .vbw_almost_full_out (core_vbw_almost_full),
++    .iquant_chksum_out   (core_iquant_chksum),
++    .idct_chksum_out     (core_idct_chksum),
++    .iquant_cnt_out      (core_iquant_cnt),
++    .idct_cnt_out        (core_idct_cnt),
++    .iquant_l2_chksum_out (core_iquant_l2_chksum),
++    .iquant_f2_chksum_out (core_iquant_f2_chksum)
+ );
+ 
+ // =========================================================================
+@@ -440,21 +471,56 @@ always @(posedge clk_mem or negedge reset_n) begin
+ end
+ 
+ // =========================================================================
+-// Video Output — direct from MPEG2 core (no fallback mux)
++// Video Output — MPEG2 core raster -> MiSTer analog PHY (NTSC 480i)
+ // =========================================================================
+-// The fallback VGA generator ran on clk_vid (25.175 MHz) but CLK_VIDEO =
+-// clk_mem (108 MHz). Sampling clk_vid signals on clk_mem caused metastable
+-// sync signals that the MiSTer scaler could never lock to → permanent black.
+-// The MPEG2 core's outputs are already on clk_mem (dot_clk=clk_mem), so
+-// wiring them directly is clean. Before a stream is decoded, the core
+-// outputs black (Y=16, Cb=Cr=128), which is fine — "no signal" until play.
++// The decoder's video pipeline runs on dot_clk = clk_sys = CLK_VIDEO (27 MHz),
++// advancing one pixel per ce_pix (13.5 MHz, the BT.601 480i dot rate). All
++// decoder video outputs (RGB, h/v/c_sync, pixel_en, v_pos) are therefore in the
++// CLK_VIDEO domain — no CDC. We register them on ce_pix so they line up with the
++// CE_PIXEL the analog PHY samples, and derive the interlace field flag VGA_F1
++// from the decoder's field parity.
++//
++// Field parity: syncgen encodes the field in v_pos[0] when interlaced
++// (syncgen.v: v_pos = {v_cntr[10:0], ~odd_field}), so v_pos[0] == ~odd_field.
++// MiSTer convention: VGA_F1 = 1 on the second (odd) field. odd_field == ~v_pos[0],
++// so VGA_F1 = ~core_v_pos[0]. Latched on ce_pix in the CLK_VIDEO domain so it is
++// stable for the whole field the PHY/DAC is emitting.
++//
++// Sync polarity: MiSTer's analog out / video_mixer contract uses ACTIVE-HIGH
++// HS/VS/DE, which is exactly what syncgen produces (h_sync/v_sync asserted high
++// during the pulse; pixel_en high during active video). vga_out.sv (in sys/)
++// re-times these and, for ypbpr, folds sync onto Y — so we pass active-high
++// straight through. core_c_sync is exported for a future composite-sync TV path.
++reg [7:0] vga_r_r, vga_g_r, vga_b_r;
++reg       vga_hs_r, vga_vs_r, vga_de_r, vga_f1_r;
++
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) begin
++        vga_r_r  <= 8'd0;
++        vga_g_r  <= 8'd0;
++        vga_b_r  <= 8'd0;
++        vga_hs_r <= 1'b0;
++        vga_vs_r <= 1'b0;
++        vga_de_r <= 1'b0;
++        vga_f1_r <= 1'b0;
++    end else if (ce_pix) begin
++        vga_r_r  <= core_r;
++        vga_g_r  <= core_g;
++        vga_b_r  <= core_b;
++        vga_hs_r <= core_h_sync;
++        vga_vs_r <= core_v_sync;
++        vga_de_r <= core_pixel_en;
++        vga_f1_r <= ~core_v_pos[0];  // odd_field; 1 = second field
++    end
++end
+ 
+-assign VGA_R  = core_r;
+-assign VGA_G  = core_g;
+-assign VGA_B  = core_b;
+-assign VGA_HS = core_h_sync;
+-assign VGA_VS = core_v_sync;
+-assign VGA_DE = core_pixel_en;
++assign VGA_R  = vga_r_r;
++assign VGA_G  = vga_g_r;
++assign VGA_B  = vga_b_r;
++assign VGA_HS = vga_hs_r;
++assign VGA_VS = vga_vs_r;
++assign VGA_DE = vga_de_r;
++assign VGA_F1 = vga_f1_r;
+ 
+ 
+ uart_debug debug_inst (
+@@ -463,8 +529,8 @@ uart_debug debug_inst (
+     .tx_pin(UART_TXD),
+     .locked(locked),
+     .active(core_video_active),
+-    .arx({1'b0, core_h_pos}),
+-    .ary({1'b0, core_v_pos}),
++    .arx({1'b0, img_mounted_cnt}),                 // X = img_mounted rising-edge COUNT (0 => mount never reached FPGA)
++    .ary({1'b0, current_file_size[19:8]}),         // Y = captured img_size[19:8] (nonzero => mount delivered a real size)
+     .busy(core_busy),
+     .valid(stream_valid),
+     // Additional debug signals from mpeg2video core internals
+@@ -496,7 +562,13 @@ uart_debug debug_inst (
+     .watchdog_rst(watchdog_rst),       // O: decoder watchdog fired (latched)
+     .core_vs_edge_cnt(core_vs_edge_cnt), // N: vsync edges seen before active
+     .core_frame_cnt(core_frame_cnt),   // FC: free-running frame counter
+-    .mem_addr(DDRAM_ADDR)
++    .mem_addr(DDRAM_ADDR),
++    .iquant_chksum(core_iquant_chksum), // QO: iquant-OUT 32-bit signed checksum
++    .idct_chksum(core_idct_chksum),     // IO: IDCT-OUT 32-bit signed checksum
++    .iquant_cnt(core_iquant_cnt),       // QN: iquant coefficient count
++    .idct_cnt(core_idct_cnt),           // IN: idct sample count
++    .iquant_l2_chksum(core_iquant_l2_chksum), // L2: iquant stage-2 level checksum
++    .iquant_f2_chksum(core_iquant_f2_chksum)  // F2: iquant stage-2 factor checksum
+ );
+ 
+ assign CLK_SYS = clk_sys;
+diff --git a/rtl/mpeg2/mpeg2video.v b/rtl/mpeg2/mpeg2video.v
+index 6662245..603ebf2 100644
+--- a/rtl/mpeg2/mpeg2video.v
++++ b/rtl/mpeg2/mpeg2video.v
+@@ -57,7 +57,9 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+              mem_req_rd_cmd, mem_req_rd_addr, mem_req_rd_dta, mem_req_rd_en, mem_req_rd_valid,                                    // clocked with mem_clk
+              mem_res_wr_dta, mem_res_wr_en, mem_res_wr_almost_full,                                                               // clocked with mem_clk
+              testpoint_dip, testpoint_dip_en, testpoint,
+-             init_cnt_out, sync_rst_out, vbw_almost_full_out
++             init_cnt_out, sync_rst_out, vbw_almost_full_out,
++             iquant_chksum_out, idct_chksum_out, iquant_cnt_out, idct_cnt_out,
++             iquant_l2_chksum_out, iquant_f2_chksum_out
+ 	     );
+ 
+   input            clk;                     // clock. Typically a multiple of 27 Mhz as MPEG2 timestamps have a 27 Mhz resolution.
+@@ -87,6 +89,12 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+   output      [8:0]init_cnt_out;
+   output           sync_rst_out;
+   output           vbw_almost_full_out;
++  output     [31:0]iquant_chksum_out;       // HW-bisect: running 32-bit signed sum of iquant_level (valid-gated)
++  output     [31:0]idct_chksum_out;         // HW-bisect: running 32-bit signed sum of idct_data (valid-gated)
++  output     [31:0]iquant_cnt_out;          // HW-bisect: count of iquant_valid coefficients
++  output     [31:0]idct_cnt_out;            // HW-bisect: count of idct_valid samples
++  output     [31:0]iquant_l2_chksum_out;    // HW-bisect: running 32-bit sum of iquant_level_2 (stage-2, sign-extended)
++  output     [31:0]iquant_f2_chksum_out;    // HW-bisect: running 32-bit sum of iquant_factor_2 (stage-2, zero-extended)
+ 
+   /* register file access */
+   input       [3:0]reg_addr;
+@@ -223,6 +231,8 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+   wire [11:0]iquant_level;                  // inverse quantized dct coefficient
+   wire       iquant_eob;                    // asserted at last inverse quantized dct coefficient of block
+   wire       iquant_valid;                  // asserted when inverse quantized dct coefficient valid
++  wire [31:0]iquant_l2_chksum;              // HW-bisect: stage-2 level checksum from rld
++  wire [31:0]iquant_f2_chksum;              // HW-bisect: stage-2 factor checksum from rld
+ 
+   /* idct - idct_fifo interface */
+   wire  [8:0]idct_data;
+@@ -549,6 +559,36 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+   assign sync_rst_out = sync_rst;
+   assign vbw_almost_full_out = vbw_wr_almost_full;
+ 
++  /* HW-bisect probe (573 plan): running 32-bit checksums of the iquant-OUT and
++   * IDCT-OUT coefficient streams, sign-extended + valid-gated, surfaced over UART.
++   * iquant_level [11:0] / idct_data [8:0] are declared WITHOUT `signed` here, so
++   * sign-extend explicitly; a naive add would zero-extend negatives -> desync vs sim.
++   * Same clk (clk_sys 27MHz) as uart_debug -> no CDC. Free-running; reset on stream reset. */
++  reg [31:0]iquant_chksum_sum; reg [31:0]iquant_chksum_cnt;
++  reg [31:0]idct_chksum_sum;   reg [31:0]idct_chksum_cnt;
++  always @(posedge clk)
++    if (~sync_rst) begin
++      iquant_chksum_sum <= 32'd0; iquant_chksum_cnt <= 32'd0;
++      idct_chksum_sum   <= 32'd0; idct_chksum_cnt   <= 32'd0;
++    end else begin
++      if (iquant_valid) begin
++        iquant_chksum_sum <= iquant_chksum_sum + {{20{iquant_level[11]}}, iquant_level};
++        iquant_chksum_cnt <= iquant_chksum_cnt + 32'd1;
++      end
++      if (idct_valid) begin
++        idct_chksum_sum <= idct_chksum_sum + {{23{idct_data[8]}}, idct_data};
++        idct_chksum_cnt <= idct_chksum_cnt + 32'd1;
++      end
++    end
++  assign iquant_chksum_out = iquant_chksum_sum;
++  assign idct_chksum_out   = idct_chksum_sum;
++  assign iquant_cnt_out    = iquant_chksum_cnt;
++  assign idct_cnt_out      = idct_chksum_cnt;
++
++  /* HW-bisect: pass through rld's intermediate stage-2 checksums (computed inside rld). */
++  assign iquant_l2_chksum_out = iquant_l2_chksum;
++  assign iquant_f2_chksum_out = iquant_f2_chksum;
++
+   /* reset signal synchronizers */
+ 
+   reset reset (
+@@ -821,7 +861,9 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+     .quant_alternate_scan(quant_alternate_scan),                 // to quantiser rams
+     .iquant_level(iquant_level),                                 // to idct
+     .iquant_eob(iquant_eob),                                     // to idct
+-    .iquant_valid(iquant_valid)                                  // to idct
++    .iquant_valid(iquant_valid),                                 // to idct
++    .iquant_l2_chksum_out(iquant_l2_chksum),                     // HW-bisect: stage-2 level checksum
++    .iquant_f2_chksum_out(iquant_f2_chksum)                      // HW-bisect: stage-2 factor checksum
+     );
+ 
+   /* inverse discrete cosine transform */
+diff --git a/rtl/mpeg2/rld.v b/rtl/mpeg2/rld.v
+index 83d3333..832ce0c 100644
+--- a/rtl/mpeg2/rld.v
++++ b/rtl/mpeg2/rld.v
+@@ -43,7 +43,8 @@ module rld(clk, clk_en, rst,
+   quant_rst, quant_rd_addr, quant_rd_intra_data, quant_rd_non_intra_data,		                    // interface with quantizer matrices
+   quant_wr_data, quant_wr_addr, quant_wr_en_intra, quant_wr_en_non_intra,
+   quant_wr_en_chroma_intra, quant_wr_en_chroma_non_intra, quant_alternate_scan,
+-  iquant_level, iquant_eob, iquant_valid         		                                            // interface with idct - dct coefficients output 
++  iquant_level, iquant_eob, iquant_valid,        		                                            // interface with idct - dct coefficients output
++  iquant_l2_chksum_out, iquant_f2_chksum_out                                                                 // HW-bisect: intermediate iquant stage-2 checksums
+   );
+ 
+   input                    clk;                          // clock
+@@ -85,6 +86,9 @@ module rld(clk, clk_en, rst,
+   output reg               iquant_eob;                // asserted at last inverse quantized dct coefficient of block
+   output reg               iquant_valid;              // asserted when inverse quantized dct coefficient valid
+ 
++  output            [31:0]iquant_l2_chksum_out;       // HW-bisect: running 32-bit sum of iquant_level_2 (sign-extended), valid_2-gated
++  output            [31:0]iquant_f2_chksum_out;       // HW-bisect: running 32-bit sum of iquant_factor_2 (zero-extended), valid_2-gated
++
+   reg          [6:0]run;
+   reg signed  [11:0]level;       // 12 bits
+   wire signed [12:0]sign_level;  // 13 bits; sign(level): 0 if level == 0; 1 if level > 0; -1 if level < 0.
+@@ -100,6 +104,8 @@ module rld(clk, clk_en, rst,
+   reg signed  [11:0]iquant_level_4; // 12 bits
+   reg signed  [11:0]iquant_level_5; // 12 bits
+   reg         [14:0]iquant_factor_2; // 15 bits
++  reg         [31:0]iquant_l2_chksum; // HW-bisect: running sum of iquant_level_2 (sign-extended)
++  reg         [31:0]iquant_f2_chksum; // HW-bisect: running sum of iquant_factor_2 (zero-extended)
+   reg          [5:0]iquant_addr_0;
+   reg          [5:0]iquant_addr_1;
+   reg          [5:0]iquant_addr_2;
+@@ -407,7 +413,7 @@ module rld(clk, clk_en, rst,
+ 	   */
+ 	  // Xilinx ISE 6.3 doesn't know $signed
+ 	  //iquant_level_3 <= (iquant_level_2 * $signed({1'b0, iquant_factor_2}) + $signed({5{iquant_level_2[12]}})) >>> 5; // signed multiply
+-	  iquant_level_3 <= (iquant_level_2 * iquant_factor_2_signed + iquant_level_3_correction) >>> 5; // signed multiply
++	  iquant_level_3 <= ($signed(iquant_level_2) * $signed(iquant_factor_2_signed) + $signed(iquant_level_3_correction)) >>> 5; // signed multiply -- $signed() on ALL operands forces a fully-SIGNED expr on Quartus so the product, the + and the >>> (arithmetic shift) all stay signed. Both iquant_factor_2_signed and iquant_level_3_correction are {..}-concats (UNSIGNED in Verilog despite `wire signed`), which Quartus inferred unsigned -> HW-bisect: iquant-OUT QO sign-flipped +1.2M vs sim -13K. Restores the original Xilinx $signed() intent (commented line above). Verilator already treats them signed (sim correct), so this is a no-op in sim.
+ 	if ((iquant_level_3[22:11] == 12'b000000000000) || (iquant_level_3[22:11] == 12'b111111111111)) 
+ 	  iquant_level_4 <= iquant_level_3[11:0];
+ 	else 
+@@ -450,6 +456,22 @@ module rld(clk, clk_en, rst,
+     else if (clk_en) iquant_factor_2 <= quantiser_scale_1 * quant_mat; // unsigned multiply
+     else iquant_factor_2 <= iquant_factor_2;
+ 
++  /* HW-bisect: intermediate stage-2 checksums, gated by iquant_valid_2.
++   * L2 = running 32-bit sum of iquant_level_2 (signed 13b, sign-extend 13->32).
++   * F2 = running 32-bit sum of iquant_factor_2 (unsigned 15b, zero-extend 15->32).
++   * 32-bit accumulators wrap to match sim; surfaced over UART for sim-vs-HW compare. */
++  always @(posedge clk)
++    if (~rst) begin iquant_l2_chksum <= 32'd0; iquant_f2_chksum <= 32'd0; end
++    else if (clk_en) begin
++      if (iquant_valid_2) begin
++        iquant_l2_chksum <= iquant_l2_chksum + {{19{iquant_level_2[12]}}, iquant_level_2};
++        iquant_f2_chksum <= iquant_f2_chksum + {17'b0, iquant_factor_2};
++      end
++    end
++
++  assign iquant_l2_chksum_out = iquant_l2_chksum;
++  assign iquant_f2_chksum_out = iquant_f2_chksum;
++
+   always @(posedge clk)
+     if (~rst) 
+       begin
+diff --git a/rtl/uart_debug.sv b/rtl/uart_debug.sv
+index f2acb92..1936379 100644
+--- a/rtl/uart_debug.sv
++++ b/rtl/uart_debug.sv
+@@ -39,6 +39,12 @@ module uart_debug (
+     input  [2:0] core_vs_edge_cnt,      // Vsync edges seen (0-7, saturates at 7)
+     input [15:0] core_frame_cnt,        // Free-running frame counter (all vsync edges)
+     input [28:0] mem_addr,
++    input [31:0] iquant_chksum,          // QO: iquant-OUT 32-bit signed checksum
++    input [31:0] idct_chksum,            // IO: IDCT-OUT 32-bit signed checksum
++    input [31:0] iquant_cnt,             // QN: iquant coefficient count
++    input [31:0] idct_cnt,               // IN: idct sample count
++    input [31:0] iquant_l2_chksum,       // L2: iquant stage-2 level checksum (running 32-bit sum)
++    input [31:0] iquant_f2_chksum,       // F2: iquant stage-2 factor checksum (running 32-bit sum)
+     output tx_pin
+ );
+ 
+@@ -83,6 +89,8 @@ module uart_debug (
+     reg [2:0]  core_vs_edge_cnt_r;
+     reg [15:0] core_frame_cnt_r;
+     reg [28:0] mem_addr_r;
++    reg [31:0] iquant_chksum_r, idct_chksum_r, iquant_cnt_r, idct_cnt_r; // HW-bisect snapshots
++    reg [31:0] iquant_l2_chksum_r, iquant_f2_chksum_r; // HW-bisect: intermediate stage-2 snapshots
+ 
+     // State machine
+     // (watchdog_latch is driven entirely inside the main always block below)
+@@ -91,7 +99,7 @@ module uart_debug (
+     localparam S_WAIT_TX = 2; // Wait for ready to go low (ack) then high (done)
+ 
+     reg [3:0] state = S_IDLE;
+-    reg [7:0] char_idx = 0;  // 8 bits to hold indices 0-160
++    reg [7:0] char_idx = 0;  // 8 bits to hold indices 0-218 (incl. QO/IO/QN/IN + L2/F2 checksum fields; max 255)
+ 
+     // Message Format: "L:x A:x B:x V:x X:xxx Y:xxx I:xxx S:x F:x E:x Q:x R:x M:x U:x K:x T:x D:x C:x H:x W:xxxx P:xxxx J:xxxx Z:xxxx @:xxxxxxxx G:x O:x N:x SC:x FC:xxxx RP:xxxx PC:xxxx\r\n"
+     // I=init_cnt S=sync_rst F=vbw_almost_full E=mem_req_en Q=mem_req_valid R=mem_res_almost_full
+@@ -100,7 +108,9 @@ module uart_debug (
+     // W=mem_Writes P=mem_reads(P) J=next_lba(Jump)
+     // G=vld_err O=watchdOg_rst(latched) N=vsyNc_edge_count(0-7)
+     // SC=Saved Cmd type (0=none 2=READ 3=WRITE) FC=Frame Counter (vsync edges)
+-    
++    // QO=iquant-OUT chksum IO=IDCT-OUT chksum QN=iquant count IN=idct count
++    // L2=iquant stage-2 Level chksum F2=iquant stage-2 Factor chksum
++
+     function [7:0] to_hex;
+         input [3:0] val;
+         begin
+@@ -155,6 +165,12 @@ module uart_debug (
+                         core_vs_edge_cnt_r <= core_vs_edge_cnt;
+                         core_frame_cnt_r   <= core_frame_cnt;
+                         mem_addr_r <= mem_addr;
++                        iquant_chksum_r <= iquant_chksum;
++                        idct_chksum_r   <= idct_chksum;
++                        iquant_cnt_r    <= iquant_cnt;
++                        idct_cnt_r      <= idct_cnt;
++                        iquant_l2_chksum_r <= iquant_l2_chksum;
++                        iquant_f2_chksum_r <= iquant_f2_chksum;
+                         char_idx <= 0;
+                         state <= S_PRINT;
+                     end
+@@ -326,8 +342,72 @@ module uart_debug (
+                             158: tx_data <= to_hex(mem_pend_cycles_r[11:8]);
+                             159: tx_data <= to_hex(mem_pend_cycles_r[7:4]);
+                             160: tx_data <= to_hex(mem_pend_cycles_r[3:0]);
+-                            161: tx_data <= "\r";
+-                            162: tx_data <= "\n";
++                            161: tx_data <= " ";
++                            162: tx_data <= "Q";
++                            163: tx_data <= "O"; // iQuant-Out checksum (32-bit, signed sum)
++                            164: tx_data <= ":";
++                            165: tx_data <= to_hex(iquant_chksum_r[31:28]);
++                            166: tx_data <= to_hex(iquant_chksum_r[27:24]);
++                            167: tx_data <= to_hex(iquant_chksum_r[23:20]);
++                            168: tx_data <= to_hex(iquant_chksum_r[19:16]);
++                            169: tx_data <= to_hex(iquant_chksum_r[15:12]);
++                            170: tx_data <= to_hex(iquant_chksum_r[11:8]);
++                            171: tx_data <= to_hex(iquant_chksum_r[7:4]);
++                            172: tx_data <= to_hex(iquant_chksum_r[3:0]);
++                            173: tx_data <= " ";
++                            174: tx_data <= "I";
++                            175: tx_data <= "O"; // Idct-Out checksum (32-bit, signed sum)
++                            176: tx_data <= ":";
++                            177: tx_data <= to_hex(idct_chksum_r[31:28]);
++                            178: tx_data <= to_hex(idct_chksum_r[27:24]);
++                            179: tx_data <= to_hex(idct_chksum_r[23:20]);
++                            180: tx_data <= to_hex(idct_chksum_r[19:16]);
++                            181: tx_data <= to_hex(idct_chksum_r[15:12]);
++                            182: tx_data <= to_hex(idct_chksum_r[11:8]);
++                            183: tx_data <= to_hex(idct_chksum_r[7:4]);
++                            184: tx_data <= to_hex(idct_chksum_r[3:0]);
++                            185: tx_data <= " ";
++                            186: tx_data <= "Q";
++                            187: tx_data <= "N"; // iQuant coefficient count (low 16 bits)
++                            188: tx_data <= ":";
++                            189: tx_data <= to_hex(iquant_cnt_r[15:12]);
++                            190: tx_data <= to_hex(iquant_cnt_r[11:8]);
++                            191: tx_data <= to_hex(iquant_cnt_r[7:4]);
++                            192: tx_data <= to_hex(iquant_cnt_r[3:0]);
++                            193: tx_data <= " ";
++                            194: tx_data <= "I";
++                            195: tx_data <= "N"; // Idct sample count (low 16 bits)
++                            196: tx_data <= ":";
++                            197: tx_data <= to_hex(idct_cnt_r[15:12]);
++                            198: tx_data <= to_hex(idct_cnt_r[11:8]);
++                            199: tx_data <= to_hex(idct_cnt_r[7:4]);
++                            200: tx_data <= to_hex(idct_cnt_r[3:0]);
++                            201: tx_data <= " ";
++                            202: tx_data <= "L";
++                            203: tx_data <= "2"; // iquant stage-2 Level checksum (32-bit, sign-extended sum)
++                            204: tx_data <= ":";
++                            205: tx_data <= to_hex(iquant_l2_chksum_r[31:28]);
++                            206: tx_data <= to_hex(iquant_l2_chksum_r[27:24]);
++                            207: tx_data <= to_hex(iquant_l2_chksum_r[23:20]);
++                            208: tx_data <= to_hex(iquant_l2_chksum_r[19:16]);
++                            209: tx_data <= to_hex(iquant_l2_chksum_r[15:12]);
++                            210: tx_data <= to_hex(iquant_l2_chksum_r[11:8]);
++                            211: tx_data <= to_hex(iquant_l2_chksum_r[7:4]);
++                            212: tx_data <= to_hex(iquant_l2_chksum_r[3:0]);
++                            213: tx_data <= " ";
++                            214: tx_data <= "F";
++                            215: tx_data <= "2"; // iquant stage-2 Factor checksum (32-bit, zero-extended sum)
++                            216: tx_data <= ":";
++                            217: tx_data <= to_hex(iquant_f2_chksum_r[31:28]);
++                            218: tx_data <= to_hex(iquant_f2_chksum_r[27:24]);
++                            219: tx_data <= to_hex(iquant_f2_chksum_r[23:20]);
++                            220: tx_data <= to_hex(iquant_f2_chksum_r[19:16]);
++                            221: tx_data <= to_hex(iquant_f2_chksum_r[15:12]);
++                            222: tx_data <= to_hex(iquant_f2_chksum_r[11:8]);
++                            223: tx_data <= to_hex(iquant_f2_chksum_r[7:4]);
++                            224: tx_data <= to_hex(iquant_f2_chksum_r[3:0]);
++                            225: tx_data <= "\r";
++                            226: tx_data <= "\n";
+                             default: begin
+                                 state <= S_IDLE;
+                                 tx_valid <= 0;
