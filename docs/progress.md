@@ -968,3 +968,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (then re-add a PARENT-level tap of a later rld output to bisect further). Patch
   core/patches/hw/mpeg2fpga-vld-level-probe.patch; removes the rld L2/F2/N2 probe, keeps rld:410 $signed
   + audio-IIR. NEXT: build + warm-reboot + read; expect CLEAN feed (mechanism confirmed) + the VL read.
+- 2026-06-05 (VLD-probe HW read — DECISIVE bisect) — The clean VLD-level probe BUILT (mpeg2fpga.sof,
+  0 errors) + converted to mpeg2fpga_dvd_vldprobe.rbf (quartus_cpf, docker) + ran on HW after a warm
+  reboot: **FED THE FULL CLIP, NO WEDGE** (J=Z=0F3B, PC:0000, U:0, M:0) — first clean probe,
+  **HW-CONFIRMS the hierarchy-location lesson** (parent-tap of rld's input net, zero rld edits).
+  Probe read: **HW VL=000BF293 VN=00018288** (deterministic full-clip totals). Full-drain Verilator
+  sim on the IDENTICAL test480i clip gave, COUNT-ALIGNED at ~0x18280: **sim VL=ffffc50a (−15094) vs HW
+  VL=000BF293 (+782995)** — opposite sign, ~798k apart; VN totals also differ (HW 0x18288 vs sim
+  0x22910). **VERDICT: the decode bug is in the VLD OUTPUT (coeff stream feeding rld), NOT rld iquant
+  arithmetic** (redirects the prior $signed/multiply/matrix focus). It's **HW-SPECIFIC**: vld.v/
+  getbits.v/vbuf.v are BYTE-IDENTICAL sim-vs-port (diffed); only rld.v differs by the 6-line $signed
+  fix (downstream of the probe). Prime suspects: HW-only feed/vbuf/DDR path corrupting the bitstream
+  before vld (sim feeds stream.dat directly; recall Warning 276027 dual-clock RAM), or vld/getbits
+  silicon init/timing. Clean-feed framestore dumped = still NOISE (FRAME_1 stddev 67 but visually
+  random; FRAME_0 gray+scanline streaks) → core/sim/artifacts/vldprobe_hw/. NEXT: parent-level probe
+  on getbits OUTPUT (bits entering vld) HW-vs-sim to split feed-corruption vs vld-decode. Board
+  released. | advanced: VLD bisect (decode bug localized to VLD output, HW-specific); FPGA-independent
+  spine — server lifecycle (b1d23af), ps_demux_finalize (b003635), dvddump seek-map monotonic
+  (ab58984), all red/green | blocked: nothing | building: nothing (getbits probe next).
