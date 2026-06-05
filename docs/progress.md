@@ -578,3 +578,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   NEXT: chase the display path — inspect the scaler/VGA_* + FB_* routing in emu.sv, and read the
   decoded framestore straight out of the 0x30000000 DDR window to render a frame PNG camera-free (the
   definitive, display-independent proof the decoded PIXELS are correct, mirroring the sim framestore).
+
+- 2026-06-05 (display-gate REFRAME via workflow + camera-free readback tooling staged) — ran a
+  multi-agent workflow (display-path-verify-plan) to research why the HDMI screenshot is black.
+  KEY FINDING that corrects my earlier guess: the MiSTer scaler (ascal) ALWAYS runs (.run(1) in
+  sys_top) and writes the screenshot framebuffer REGARDLESS of VGA_SCALER — so a black screenshot
+  does NOT mean "analog-only by design"; it means the decoder's DISPLAY RASTER (core_r/g/b / VGA_DE)
+  is itself black. ⇒ the gate is a decode→DISPLAY-READOUT gap (the mrchrisster port's original "no
+  confirmed video output"), NOT the analog routing. Implication: a VGA_SCALER=1 diag build likely
+  would NOT un-black it. DECISIVE TEST instead = read the decoded framestore straight out of DDR
+  (bypasses the whole display path): proves whether the decoder wrote a correct IMAGE. Verified
+  layout from the bench (mem_ctl.v write_mb/write_row): Y plane is ROW-MAJOR CONTIGUOUS from
+  FRAME_n_Y, 90 words/row (720px) x 480 rows; phys = 0x30000000 + word*8; pixel_0 = word MSB (so
+  little-endian readback reverses each 8-byte word); samples signed -> +128. Staged the tooling:
+  tools/build/dump_framestore.py (runs on the MiSTer — mmap /dev/mem O_SYNC for f2sdram coherency,
+  streams the DDR window to stdout) + tools/build/render_framestore.py (Mac — renders all 4 FRAME_n
+  Y planes to PNG, flags the non-flat one). The mister has python3, so no cross-compile. Device is
+  currently locked by 573 (hyperbbc573) — QUEUED; will run the readback when it frees. If the
+  framestore shows the test pattern => decode-to-pixels CONFIRMED, gate isolated to the
+  framestore→core_r/g/b readout RTL (resample/yuv2rgb/video-out). If garbage => decode itself.
