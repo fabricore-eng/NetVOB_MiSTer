@@ -681,3 +681,24 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   for the original. Degrades in sim => FIFO LOGIC bug (fix + sim-validate, fast, no 30-min HW loop);
   stays correct => FIFO logic fine, HW issue is CDC timing (add SDC false_path/sync constraints, rebuild).
   Building that sim test next.
+
+- 2026-06-05 (FIFO EXONERATED in sim — pivot to inferred-RAM; "prove it before building" saved a HW
+  build) — built the full decoder sim with the PORT's rewritten Gray-code xilinx_fifo_dc.v swapped in
+  for the bench's known-good generic_fifo_dc (hybrid wrappers: bench soft single-clock FIFO + port Gray
+  dual-clock FIFO; /tmp/fifo_test/run_fifo_swap_test.sh, Verilator). Ran port-FIFO vs baseline on the
+  same stream.dat (testbench drives ASYNC clocks clk=75MHz / mem_clk=125MHz / dot=27MHz). RESULT:
+  framestore frames 0,1 BYTE-IDENTICAL; frame 2 differed ONLY in the dump's timestamp comment
+  (17.29ms vs 18.45ms) — the entire pixel BODY (all 4 frame buffers + OSD) is byte-identical
+  (body-md5 equal). So the port Gray FIFO decodes BIT-FOR-BIT identically to the reference FIFO in sim
+  (just ~1ms slower latency). ⇒ the rewritten FIFO LOGIC is CORRECT and is NOT the HW degradation cause.
+  (Almost rebuilt HW on a FIFO fix — the sim test prevented a wasted 30-min build; 573's prove-it
+  discipline again.) REORIENT: the HW corruption is SYSTEMATIC/reproducible (consistently gray each
+  run), which argues AGAINST random CDC metastability and FOR a DETERMINISTIC inferred-RAM/ROM
+  difference in an UNCHANGED datapath module — Verilator simulates reg-array memories ideally, but
+  Quartus INFERS hardware RAM whose read-during-write / init semantics can differ on Cyclone V. Prime
+  new suspect: the IDCT transpose RAM (idct.v) and/or iquant weighting-matrix RAM (iquant.v has 2
+  initial blocks) — "DC/low-freq lost -> flat gray" is a classic 2D-IDCT transpose-RAM read-during-write
+  corruption. NEXT: inspect idct.v / iquant.v / coefficient-buffer RAM inference (read-during-write mode,
+  ramstyle, init dependence); compare how they'd infer on Altera vs the behavioral sim; candidate fix =
+  force the correct read-during-write mode / add ramstyle / explicit init. Cheap HW discriminator if
+  needed: does even a solid-DC-only block reconstruct?
