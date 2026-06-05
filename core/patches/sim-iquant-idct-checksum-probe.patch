@@ -1,0 +1,91 @@
+diff --git a/bench/iverilog/testbench.v b/bench/iverilog/testbench.v
+index accd1b2..adb25fa 100644
+--- a/bench/iverilog/testbench.v
++++ b/bench/iverilog/testbench.v
+@@ -237,6 +237,86 @@ module testbench();
+     end
+ `endif
+ 
++  /*
++   * SIM GOLDEN coefficient-stream checksum probe (HW-bisect reference).
++   *
++   * Emits a 32-bit running sum of two internal, valid-gated coefficient
++   * streams so the same checksum can be recomputed in HW (over UART) and the
++   * decode pipeline bisected stage-by-stage:
++   *   - iquant stage: rld.v -> idct interface, testbench.mpeg2.iquant_level[11:0]
++   *                   (run/level-decoded, inverse-quantized DCT coefficient).
++   *   - idct  stage: idct.v -> idct_fifo interface, testbench.mpeg2.idct_data[8:0]
++   *                   (inverse-DCT output sample).
++   *
++   * The nets are declared WITHOUT `signed` at the mpeg2video.v level
++   * (wire [11:0]iquant_level; wire [8:0]idct_data;), so the sign bit MUST be
++   * replicated explicitly when widening 12->32 / 9->32. Zero-extending here
++   * would silently disagree with the HW accumulator.
++   *
++   * All four accumulators are 32-bit so the mod-2^32 wrap matches a 32-bit HW
++   * register exactly. Gated on testbench.mpeg2.rst released (active-high-
++   * released: rst==1 means the decoder is out of reset) and the per-stream
++   * valid. checksums.log gets a per-block QO/QN/IO/IN line on each eob, and a
++   * FRAME line with all four accumulators on every v_sync rising edge.
++   */
++
++  reg  [31:0]rld_sum  = 32'd0;   // QO: running sum of sign-extended iquant_level
++  reg  [31:0]rld_cnt  = 32'd0;   // QN: count of valid iquant coefficients
++  reg  [31:0]idct_sum = 32'd0;   // IO: running sum of sign-extended idct_data
++  reg  [31:0]idct_cnt = 32'd0;   // IN: count of valid idct samples
++
++  integer    cf;
++  reg        v_sync_d = 1'b0;    // delayed v_sync for rising-edge detect
++
++  initial cf = $fopen("checksums.log", "w");
++
++  // iquant stage accumulator (12->32 sign-extend)
++  always @(posedge testbench.mpeg2.clk)
++    if (testbench.mpeg2.rst)
++      begin
++        if (testbench.mpeg2.iquant_valid)
++          begin
++            rld_sum <= rld_sum + {{20{testbench.mpeg2.iquant_level[11]}}, testbench.mpeg2.iquant_level};
++            rld_cnt <= rld_cnt + 1;
++            if (testbench.mpeg2.iquant_eob)
++              begin
++                $fwrite(cf, "QO=%08x QN=%08x\n",
++                        rld_sum + {{20{testbench.mpeg2.iquant_level[11]}}, testbench.mpeg2.iquant_level},
++                        rld_cnt + 1);
++              end
++          end
++      end
++
++  // idct stage accumulator (9->32 sign-extend)
++  always @(posedge testbench.mpeg2.clk)
++    if (testbench.mpeg2.rst)
++      begin
++        if (testbench.mpeg2.idct_valid)
++          begin
++            idct_sum <= idct_sum + {{23{testbench.mpeg2.idct_data[8]}}, testbench.mpeg2.idct_data};
++            idct_cnt <= idct_cnt + 1;
++            if (testbench.mpeg2.idct_eob)
++              begin
++                $fwrite(cf, "IO=%08x IN=%08x\n",
++                        idct_sum + {{23{testbench.mpeg2.idct_data[8]}}, testbench.mpeg2.idct_data},
++                        idct_cnt + 1);
++              end
++          end
++      end
++
++  // per-frame snapshot on v_sync rising edge (sampled in the clk domain)
++  always @(posedge testbench.mpeg2.clk)
++    if (testbench.mpeg2.rst)
++      begin
++        v_sync_d <= v_sync;
++        if (v_sync && ~v_sync_d)
++          begin
++            $fwrite(cf, "FRAME QO=%08x IO=%08x QN=%08x IN=%08x\n",
++                    rld_sum, idct_sum, rld_cnt, idct_cnt);
++            $fflush(cf);
++          end
++      end
++
+ `ifdef DUMP_TVOUT
+ 
+ /*

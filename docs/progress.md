@@ -774,3 +774,32 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (uart-checksum iquant-OUT and IDCT-OUT separately per 573's plan) to empirically localize, and/or a
   cheap targeted build that forces explicit signed multiplies. Process fix: read full chat (not just
   `unread`) each cycle so questions don't get missed.
+
+- 2026-06-05 (session relaunch after Mac update [CC 2.1.165]; BOTH loops re-armed; HW-BISECT probe
+  LAUNCHED) — resumed unattended run on feat-decoder-bringup. (a) restarted the mission `/loop`
+  (self-paced) AND the chat-poll loop (now an event-driven Monitor polling `dell_coord.sh chat unread
+  dvd` @60s, exits/emits on a real @mention — cockpit independently verified this beats the old 5-min
+  poll). Human authorized OVERNIGHT autonomy (don't park questions, ask peers via chat, smart
+  roll-back-able commits). (b) Ran a 5-agent design workflow mapping the bisect: tap points = iquant-OUT
+  (rld.iquant_level[11:0] signed, gated by iquant_valid) and IDCT-OUT (idct.idct_data[8:0] signed, gated
+  by idct_valid), both in clk_sys 27MHz (same as uart_debug -> NO CDC). SHARPENED PRIME SUSPECT (beyond
+  the prior multiplier audit): **idct.v:1409** in module `mult22x16` (the COLUMN pass) does
+  `multiplier_msb = multiplier[21:4]` then `multiplier_msb * multiplicand`. multiplier_msb IS a `wire
+  signed` so SIM computes it signed (correct -> sim decode is fine); the risk is QUARTUS inferring an
+  UNSIGNED DSP from the part-select origin (573 case 2: silicon-only, Verilator-invisible) -> negative
+  AC coeffs mangled -> gray. Row pass uses clean inline signed*signed. (c) CHECKSUM FORMULA (identical
+  HW+sim, key: golden IS the sim's own value so HW-vs-sim divergence == silicon-only): 32-bit running sum
+  of SIGN-EXTENDED valid-gated data (32-bit not 64 for wrap parity); never zero-extend (nets declared
+  without `signed`). (d) SIM GOLDEN captured (agent, run_chksum/, hwclip md5 ab99abb5...):
+  **QO=fffe8a38 IO=ffee0b8c QN=0018f200 IN=0018f140** (+ per-frame table in checksums.log); decode
+  correct in sim (6 PPMs, geometry = hwclip 720x240i). Patch:
+  core/patches/sim-iquant-idct-checksum-probe.patch (auto-applied by `make build`). (e) HW PROBE patch:
+  core/patches/hw/mpeg2fpga-iquant-idct-checksum-uart.patch — mpeg2video.v 4 free-running accumulators +
+  4 output ports; emu.sv 4 wires + connections to both instances; uart_debug.sv 4 inputs + snapshot regs
+  + S_IDLE latch + new FSM fields QO:/IO: (8 nibbles) QN:/IN: (4 nibbles) at char_idx 161..202. Reverse-
+  check OK (patch == working tree). (f) Synced rtl/ -> dell (diff-verified identical, per the :450 drift
+  lesson; no drift), build slot 2 acquired (573 on slot 1 w/ debug-off build), LAUNCHED detached probe
+  build (quartus-dvd). NEXT (build-done ~30-50min -> Monitor wakes loop): devlock mister, read UART
+  QO/IO, compare to golden. QO-match+IO-mismatch => idct.v:1409 col-mult sign bug (apply held-back fix
+  $signed(multiplier_msb)*$signed(multiplicand)); QO already off => iquant stage (rld.v:410 $signed fix).
+  Held-back fixes kept SEPARATE so probe vs fix never confound.
