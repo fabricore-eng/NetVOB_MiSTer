@@ -1,0 +1,50 @@
+diff --git a/rtl/mpeg2/framestore_request.v b/rtl/mpeg2/framestore_request.v
+index 99e5394..d0f821a 100644
+--- a/rtl/mpeg2/framestore_request.v
++++ b/rtl/mpeg2/framestore_request.v
+@@ -463,7 +463,35 @@ module framestore_request(rst, clk,
+     else vbuf_empty <= next_vbuf_empty;
+ 
+   /*
+-   * Priority scheme: 
++   * READ-BEHIND SAFETY GAP (HW fix 2026-06-05).
++   * The HPS f2sdram POSTS writes (mem_shim has no writeresponsevalid / commit ack), so a vbuf
++   * READ issued just behind the WRITE frontier can return DDR data whose write has not yet
++   * committed -> the decoder gets STALE ring content -> a mid-frame decode desync that JITTERS
++   * run-to-run with DDR latency (refresh / ARM contention). It is invisible in Verilator
++   * (fixed-latency modeled DDR = deterministic ordering) and at a /dev/mem dump (writes long since
++   * landed). The race is worst at decode START, when the ring is nearly empty so the read frontier
++   * sits right on the write frontier — which is exactly why the desync lands in the top MB rows and
++   * its row jitters [observed 1,6,7,10] across reloads of a BYTE-PERFECT bitstream (write path
++   * confirmed 100% intact via vbuf DDR dump).
++   * FIX: keep the decoder's vbuf read frontier >= VBUF_READ_GAP words behind the write frontier so
++   * every word it reads is committed-readable. Track fill with a counter advanced by the SAME
++   * conditions as the vbuf_wr/rd address pointers, and gate do_vbr on it. The gap (words) covers
++   * worst-case write-commit latency and is tiny vs the ~1.47MB ring (256 words = 2 KiB = 4 sectors;
++   * the streamer trivially stays that far ahead, so no throughput/deadlock cost in steady state).
++   * Tunable: if jitter persists, raise VBUF_READ_GAP; if it is gone, this confirms the ordering race.
++   */
++  localparam [22:0] VBUF_READ_GAP = 23'd256;
++  reg  [22:0] vbuf_fill;                                               // words written but not yet read
++  wire        vbuf_did_wr = (previous == STATE_VBW) && vbw_rd_valid;   // == next_vbuf_wr_addr advance condition
++  wire        vbuf_did_rd = (previous == STATE_VBR) && ~vbuf_empty;    // == next_vbuf_rd_addr advance condition
++  wire        vbuf_gap_ok = (vbuf_fill >= VBUF_READ_GAP);             // >= GAP words committed-readable
++  always @(posedge clk)
++    if (~rst)          vbuf_fill <= 23'd0;
++    else if (vb_flush) vbuf_fill <= 23'd0;
++    else               vbuf_fill <= vbuf_fill + (vbuf_did_wr ? 23'd1 : 23'd0) - (vbuf_did_rd ? 23'd1 : 23'd0);
++
++  /*
++   * Priority scheme:
+    *  refresh >  display frame read > forward frame read > backward frame read > reconstructed frame write > osd write
+    *
+    * Note we do not treat requests for a 'reader' when the data fifo is "almost full".
+@@ -478,7 +506,7 @@ module framestore_request(rst, clk,
+  
+   assign do_refresh = (refresh_cnt == 0)                    && REFRESH_EN                 && ~mem_req_wr_almost_full;
+   assign do_disp    = ~disp_rd_addr_empty                   && ~disp_wr_dta_almost_full   && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
+-  assign do_vbr     = ~vbuf_empty          && ~vbuf_holdoff &&  vbr_rd_almost_empty       && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
++  assign do_vbr     = ~vbuf_empty && vbuf_gap_ok && ~vbuf_holdoff &&  vbr_rd_almost_empty   && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
+   assign do_fwd     = ~fwd_rd_addr_empty                    && ~fwd_wr_dta_almost_full    && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
+   assign do_bwd     = ~bwd_rd_addr_empty                    && ~bwd_wr_dta_almost_full    && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
+   assign do_recon   =                                          ~recon_rd_empty            && ~mem_req_wr_almost_full;

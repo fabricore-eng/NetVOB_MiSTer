@@ -1198,3 +1198,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   RAM / empty-flag margin) or 573's handoff-register hold-margin. | advanced: ROOT CAUSE pinned probe-free to
   a Branch-1 mem readback CDC race + leading mechanism | blocked: nothing | building: nothing (designing FIFO
   CDC fix next).
+- 2026-06-05 (FIX BUILDING: vbuf read-behind safety gap) — Implemented the team-converged ordering
+  FENCE for the Branch-1 readback race. mem_shim posts writes (no commit ack / writeresponsevalid),
+  so a vbuf READ just behind the WRITE frontier can return DDR data whose posted write hasn't
+  committed -> stale ring content -> desync. Worst at decode START (ring near-empty -> read frontier
+  on write frontier), which is exactly why the desync is in the TOP rows and its row JITTERS [1,6,7,10].
+  FIX (framestore_request.v): added a vbuf fill counter (advanced by the SAME conditions as the
+  vbuf_wr/rd address pointers) and gate do_vbr on vbuf_fill >= VBUF_READ_GAP (localparam=256 words =
+  2KiB = 4 sectors; tiny vs the ~1.47MB ring, streamer trivially stays that far ahead). Keeps the read
+  frontier >=256 words behind the write frontier so every word read is committed-readable. verilator
+  --lint clean (STATE_VBW/VBR + vb_flush in scope confirmed). rsync'd to dell (md5 7a1b4185), build
+  launched detached (pid 1457080, watcher bb6z8rxpw), 573's b5117b8 co-building (cap=2). Patch:
+  core/patches/hw/mpeg2fpga-vbuf-read-behind-gap-commit-fence.patch. TEST WHEN IT LANDS: quartus_cpf
+  .sof->.rbf, flash, warm-reboot, dump FRAME_0 across N reloads -> if the per-MB-row cutoff is now
+  FULL (all 30 rows decoded, no jitter) the ordering race is FIXED + confirmed; if jitter reduced but
+  present, raise VBUF_READ_GAP; if unchanged, mechanism wrong -> pivot. PROBE-FREE /dev/mem only.
+  | advanced: ordering-fence fix implemented+lint-clean+building | blocked: nothing | building: fix (bb6z8rxpw).
