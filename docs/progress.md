@@ -1241,3 +1241,20 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   stop wedging. TEST when seed build lands: hw_jitter_measure.sh 5 20 -> if non-wedged, get the real gap
   verdict; if wedged again, implement the durable handoff-register. | advanced: wedge diagnosed + seed
   re-roll building + lesson banked | blocked: decode verdict gated on a non-wedged build | building: seed-2 gap (bbru7if5m).
+- 2026-06-05 (seed-2 gap build = MARGINAL/noise, NOT a win; metric fixed) — HONEST correction. The
+  seed-2 re-roll un-wedged but landed on a MARGINAL placement that corrupts decode into NOISE. My old
+  jitter metric (per-MB-row mean != 128) was FOOLED by sparse speckle -> falsely reported full-frame
+  [27,29,29,29,29]. Rendering the actual FRAME_0 (+ a stddev metric) shows the truth: seed-2 gap = clean
+  rows 0-1 (stddev 64,63) then NOISE speckle (stddev 6-19) — WORSE than the breakthrough (clean rows 0-7,
+  stddev 80->61, then 0.0 init). Calibrated against the sim golden (vivid color bars + rainbow sweep =
+  correct). So: (1) the gap DID change behavior — the decoder no longer cleanly stalls early, it proceeds
+  — but the seed-2 marginal placement then corrupts it into noise (TWO issues: the ordering race [gap
+  targets] AND marginal placement [needs handoff-register]). (2) seed-reroll is DEAD as a strategy
+  (coin-flip that lands wedged OR marginal-noise, neither clean). (3) FIXED the verdict metric in
+  tools/build/hw_jitter_measure.sh: per-MB-row STDDEV>30 = contiguous clean-decode prefix (speckle-immune;
+  validated: breakthrough->7, seed-2->1). NEXT: durable HANDOFF-REGISTER on mem_shim<->bridge to get a
+  NON-MARGINAL build, then evaluate the gap fix cleanly. Asked cockpit for the focused bridge-handshake
+  STA (build now done) to pin the hop to register; will design the Avalon register-slice from it. Lock-
+  checked reboot helper (devlock mister reboot dvd) adopted + used cleanly. | advanced: honest result +
+  trustworthy metric + strategy locked on handoff-register | blocked: clean gap eval gated on a
+  non-marginal build | building: nothing.

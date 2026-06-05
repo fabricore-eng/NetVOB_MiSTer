@@ -44,14 +44,27 @@ python3 - "$TMP" "$N" <<'PY'
 import sys
 W,H=720,480
 tmp,N=sys.argv[1],int(sys.argv[2])
+def rowstd(d, mb):
+    # stddev over a full MB-row band (16 lines x 720 px). A cleanly-decoded test-pattern row
+    # crosses all 7 color bars + the gradient -> HIGH stddev (~50-70). Undecoded = framestore
+    # init 128 -> ~0. Desync NOISE = mostly-128 + sparse speckle -> LOW stddev (~10-18). So a
+    # stddev threshold robustly separates real decode from speckle (the old mean!=128 metric did
+    # NOT — speckle shifted the mean and faked a full frame).
+    band=d[mb*16*W:(mb*16+16)*W]; n=len(band)
+    if n==0: return 0.0
+    mean=sum(band)/n
+    return (sum((v-mean)*(v-mean) for v in band)/n) ** 0.5
 def stall(fn):
     try: d=open(fn,'rb').read(W*H)
     except: return None
     if len(d)<W*H: return None
-    # a decoded MB-row's 16px mean differs from the 128.0 framestore-init constant
-    rows=[mb for mb in range(30)
-          if abs(sum(sum(d[(mb*16+k)*W:(mb*16+k+1)*W]) for k in range(16))/(16*W)-128.0)>0.3]
-    return max(rows) if rows else -1
+    # last MB-row of the CONTIGUOUS cleanly-decoded run from the top (decode degrades to noise
+    # from the desync down, so the clean region is a top-contiguous prefix; ignore speckle below).
+    last=-1
+    for mb in range(30):
+        if rowstd(d, mb) > 30.0: last=mb
+        else: break
+    return last
 res=[stall(f"{tmp}/f0_{n}.bin") for n in range(1,N+1)]
 print(f"\nstall MB-row per run: {res}")
 good=[r for r in res if r is not None]
