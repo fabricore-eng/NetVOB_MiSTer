@@ -803,3 +803,33 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   QO/IO, compare to golden. QO-match+IO-mismatch => idct.v:1409 col-mult sign bug (apply held-back fix
   $signed(multiplier_msb)*$signed(multiplicand)); QO already off => iquant stage (rld.v:410 $signed fix).
   Held-back fixes kept SEPARATE so probe vs fix never confound.
+
+- 2026-06-05 (BISECT RESULT: ROOT CAUSE FOUND = iquant unsigned-multiply; fix building) — probe build
+  rc=0 (timing: only audio-PLL + a small general[1] aux clock fail; clk_sys/general[0] MEETS +0.722 so
+  the checksums are valid). FIRST HW read showed an INHERITED f2sdram wedge (loaded without a warm
+  reboot): QN=IN=0, W/P/RP frozen, watchdog every ~3s, only FC climbing = the wedge-vs-real-bug
+  signature (saved as a tell). Warm-rebooted mister (standing-auth) -> CLEAN read: O:0 no watchdog,
+  M:0/U:0 mem healthy, J=Z=0F3B full feed, checksums STABLE: HW QO=001244A2 IO=FFE9FB78 QN=IN=0x6500.
+  Counts (0x6500=25856=block 404, since QN steps by 0x40=64/block) didn't match sim's 6-frame final, so
+  COUNT-ALIGNED at block 404 via run_chksum/checksums.log: **iquant-OUT HW QO=001244A2 (+1,196,706) vs
+  SIM QO=ffffcca2 (-13,150) -> DIVERGES, large-POSITIVE = unsigned-multiply SIGN-FLIP**. IDCT-OUT also
+  diverges but downstream of the corrupt iquant (garbage-in). Verified rld.v + idct.v are IDENTICAL
+  between the MiSTer_MPEG2 (HW) and mpeg2fpga (sim) trees -> bisect valid. ROOT CAUSE (rld.v:379/410):
+  iquant_factor_2_signed = {1'b0, iquant_factor_2} and iquant_level_3_correction = {17'b0,...} are
+  CONCATS -> UNSIGNED in Verilog regardless of the `wire signed` decl (IEEE 1364-2005 §5.5.1) -> Quartus
+  inferred an UNSIGNED multiply, turning negative AC coeffs into huge positives = the gray-attenuation
+  symptom. Verilator follows the `signed` wire so SIM is correct (golden valid). The port REGRESSED the
+  original Xilinx code, which explicitly cast `$signed({1'b0, iquant_factor_2})` + `$signed({5{...}})`
+  (still in rld.v:409 as a comment). FIX (core/patches/hw/mpeg2fpga-rld-iquant-signed-mult.patch):
+  rld.v:410 -> `($signed(iquant_level_2) * $signed(iquant_factor_2_signed) + $signed(iquant_level_3_
+  correction)) >>> 5` — casts ALL 3 operands so product, + and >>> (arithmetic shift) all stay signed on
+  Quartus; no-op in Verilator so sim golden unchanged. (Cast all 3, not just the multiply: an unsigned
+  correction term would make the + and the >>> logical, still corrupting negatives.) BONUS finding: HW
+  decode STALLED at block 404 (~5% of frame 1) on the clean run -> the garbage coeffs likely choke
+  downstream; the fix may un-stall it (watch QN climb past 0x6500). Concat-audit (573's tip) flagged
+  more `wire signed = {..}` sites in motcomp_recon/motvec for future scrutiny if needed. Applied
+  iquant-fix ONLY this build (rigorous: if IO ALSO matches sim after just the iquant fix, the IDCT was
+  never broken -> no speculative idct.v:1409 change). Build (probe+fix) relaunched detached on dell.
+  NEXT (build-done): warm-reboot mister FIRST (avoid inherited wedge), clean decode, read UART; expect
+  HW QO==sim QO block-aligned + QN climbing past 0x6500 (decode proceeds). If QO matches but IO still
+  diverges -> apply idct.v:1409 $signed fix next.

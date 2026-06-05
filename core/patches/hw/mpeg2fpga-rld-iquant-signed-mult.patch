@@ -1,0 +1,13 @@
+diff --git a/rtl/mpeg2/rld.v b/rtl/mpeg2/rld.v
+index 83d3333..88abdad 100644
+--- a/rtl/mpeg2/rld.v
++++ b/rtl/mpeg2/rld.v
+@@ -407,7 +407,7 @@ module rld(clk, clk_en, rst,
+ 	   */
+ 	  // Xilinx ISE 6.3 doesn't know $signed
+ 	  //iquant_level_3 <= (iquant_level_2 * $signed({1'b0, iquant_factor_2}) + $signed({5{iquant_level_2[12]}})) >>> 5; // signed multiply
+-	  iquant_level_3 <= (iquant_level_2 * iquant_factor_2_signed + iquant_level_3_correction) >>> 5; // signed multiply
++	  iquant_level_3 <= ($signed(iquant_level_2) * $signed(iquant_factor_2_signed) + $signed(iquant_level_3_correction)) >>> 5; // signed multiply -- $signed() on ALL operands forces a fully-SIGNED expr on Quartus so the product, the + and the >>> (arithmetic shift) all stay signed. Both iquant_factor_2_signed and iquant_level_3_correction are {..}-concats (UNSIGNED in Verilog despite `wire signed`), which Quartus inferred unsigned -> HW-bisect: iquant-OUT QO sign-flipped +1.2M vs sim -13K. Restores the original Xilinx $signed() intent (commented line above). Verilator already treats them signed (sim correct), so this is a no-op in sim.
+ 	if ((iquant_level_3[22:11] == 12'b000000000000) || (iquant_level_3[22:11] == 12'b111111111111)) 
+ 	  iquant_level_4 <= iquant_level_3[11:0];
+ 	else 
