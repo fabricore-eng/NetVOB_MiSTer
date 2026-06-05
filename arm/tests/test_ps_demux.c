@@ -261,6 +261,39 @@ int main(void)
         printf("pass 5 (unbounded video PES, len==0): exact + chunk-invariant OK\n");
     }
 
+    /* --- Pass 6 (REGRESSION): unbounded video PES whose payload ends in a 0x00
+     *     IMMEDIATELY before the next unit's start-code prefix: on-wire
+     *     '...77 00 | 00 00 01 ...'. The leading 0x00 is real payload; only the
+     *     last two 0x00 + 0x01 are structure. The matched-prefix path must emit
+     *     that payload 0x00. BUG (pre-fix): it reset pend_zeros to 0 without
+     *     emitting the (pend_zeros-2) excess, dropping the payload byte and
+     *     permanently desyncing the HW decoder. Fed as ONE chunk = the
+     *     production path (netd 64KiB recv -> ni_feed); byte-by-byte happens to
+     *     work via the chunk-exhausted path, which is why pass 5 missed it. --- */
+    {
+        uint8_t ub[128];
+        buf ubb = { ub, 0, sizeof(ub) };
+        bput(&ubb, 0x00); bput(&ubb, 0x00); bput(&ubb, 0x01); bput(&ubb, 0xE0);
+        bput(&ubb, 0x00); bput(&ubb, 0x00);   /* PES_packet_length = 0 */
+        bput(&ubb, 0x80); bput(&ubb, 0x00); bput(&ubb, 0x00); /* no PTS */
+        /* payload ends in 77 00 — the 00 is payload, then the next unit's prefix */
+        const uint8_t upay6[] = { 0x11, 0x22, 0x77, 0x00 };
+        bputn(&ubb, upay6, sizeof(upay6));
+        put_pes(&ubb, 0xE0, PS_PTS_NONE, PS_PTS_NONE, v3, sizeof(v3)); /* terminator */
+
+        uint8_t expect6[64]; size_t el6 = 0;
+        memcpy(expect6 + el6, upay6, sizeof(upay6)); el6 += sizeof(upay6);
+        memcpy(expect6 + el6, v3, sizeof(v3));       el6 += sizeof(v3);
+
+        es_capture cc = {0};
+        ps_demux dc; ps_demux_init(&dc, es_sink, &cc);
+        ps_demux_feed(&dc, ubb.p, ubb.len);   /* ONE chunk = production path */
+        assert(cc.len == el6);
+        assert(memcmp(cc.bytes, expect6, el6) == 0);  /* must include the payload 00 */
+        assert(ps_demux_stats(&dc)->video_pes == 2);
+        printf("pass 6 (payload 0x00 before prefix, one chunk): emitted OK\n");
+    }
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }

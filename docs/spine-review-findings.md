@@ -9,11 +9,11 @@ lifecycle leaks/races.*
 Status legend: ☐ open · ☑ fixed (commit)
 
 ## HIGH — ES-corrupting (fix first; they desync the decoder)
-- ☐ **arm/ps_demux.c:377-387** — unbounded-PES matched-prefix path drops payload `0x00` bytes
+- ☑ **arm/ps_demux.c:377-387** — unbounded-PES matched-prefix path drops payload `0x00` bytes
   before a start code (`'77 00 00 00 01 E0'` loses the payload `00`). Fires for unbounded video
   PES (DVD VOB), lands in one 64KiB recv chunk so the 1-byte-feed test misses it. One dropped byte
-  permanently desyncs the HW decoder. **Fix:** emit `(pend_zeros-2)` zeros before the reset,
-  mirroring the chunk-exhausted path at lines 409-418. + regression test feeding it as ONE chunk.
+  permanently desyncs the HW decoder. **FIXED** (emit `(pend_zeros-2)` zeros before the reset,
+  mirroring the chunk-exhausted path) + Pass 6 regression test (red/green verified, one-chunk feed).
 - ☐ **service/core/ps_demux.py:118-123** — MPEG-1-form PES branch skips only `0xFF` stuffing, never
   the STD_buffer(2)/PTS(5)/PTS+DTS(10) header fields → header bytes leak into the ES before the
   sequence header. In scope: the repo's own pipeline emits MPEG-1 VCD PS. **Fix:** real MPEG-1 PES

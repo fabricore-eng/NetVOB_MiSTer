@@ -378,6 +378,18 @@ size_t ps_demux_feed(ps_demux *d, const uint8_t *data, size_t len)
                         /* 00 00 01 prefix complete; the two 0x00 + this 0x01 are
                          * structure, not payload (already withheld via pend). */
                         i++;                 /* consume the 0x01 */
+                        /* Excess withheld zeros beyond the prefix's two are real
+                         * payload (e.g. on-wire '...77 00 00 00 01' the leading 00
+                         * is payload). Emit them before consuming the prefix,
+                         * mirroring the chunk-exhausted path below. (Fix: this path
+                         * previously dropped them, permanently desyncing the HW
+                         * MPEG-2 decoder on unbounded video PES.) */
+                        if (d->is_video && d->pend_zeros > 2) {
+                            for (int z = 0; z < d->pend_zeros - 2; z++) {
+                                uint8_t zero = 0x00;
+                                emit_video(d, &zero, 1);
+                            }
+                        }
                         d->pend_zeros = 0;
                         d->sc_shift   = 0x00000001u; /* prime: 00 00 01 seen */
                         d->sc_primed  = 3;
