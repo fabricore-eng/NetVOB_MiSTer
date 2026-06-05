@@ -1026,3 +1026,30 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   corruption). | advanced: decode bug localized rld-iquant → VLD-output → HW bitstream-delivery path (huge
   narrowing); byte probe + sim BL/VL goldens built | blocked: byte-region probing needs the LogicLock pin
   (else wedge) | building: nothing.
+- 2026-06-05 (RAW-WORD-DUMP probe building) — Swapped the byte-fold (BL/BN) for a SOURCE-REGISTERED
+  raw capture of the first two vbr_rd_dta words (cockpit's nudge: capture at the source so the long
+  UART route runs from the reg, not the live bridge net — should dodge the wedge w/o LogicLock). Reused
+  the probe ports: W0={BL,BN}, W1={VL,VN} (no emu/uart change). lint-clean. HW build pid 897990 (watcher
+  b61klt0ha). SIM RAW GOLDEN captured + VERIFIED == clip's first 16 bytes: RAWW0=000001b32d01e014
+  RAWW1=15f92380000001b5 (MPEG-2 seq header 720x480 + extension; vbuf packs first-byte→MSB). HW-read
+  verdict patterns: W0=000001b32d01e014 => bitstream intact at word0 (corruption mid-stream); W0=
+  14e0012db3010000 => full byte-reverse = lane/endian ordering bug; W0=2d01e014000001b3 => 32b-half swap;
+  else => corruption from start. If the source-reg build still wedges, LogicLock region ready-to-paste in
+  docs/hw-bridge-wedge-fix-plan.md. RTL snapshot core/patches/hw/mpeg2fpga-hw-bisect-rawdump-probe.patch
+  (re-appliable; superseded the stale vld+byte-probe patch). | advanced: raw-dump probe + verified golden;
+  decisive ordering-vs-corruption read queued | blocked: nothing | building: HW raw-dump (b61klt0ha).
+- 2026-06-05 (PTT_SRPT feature DONE + LogicLock build) — SPINE SWEEP COMPLETE: the last open item
+  (dvddump title-within-VTS) is fixed (f739ec8) — ifo.py vts_ttn_to_pgcn()+parse_pgc_for_ttn() parse
+  VTS_PTT_SRPT + multi-PGC PGCIT; browse() ids VTS_nn_<ttn>; open() streams the right PGC per title; 3
+  red/green tests (115 service pass). Sweep now 14 fixed / 1 partial (M2 seek-epoch) / 0 open. HW: the
+  source-registered raw-dump WEDGED too (J:0021/W:0007/PC:A000, BN=0 — capture reg placed by its input
+  locality in the bridge neighborhood, cockpit confirmed; source-register alone insufficient). Applied
+  573's LogicLock f2sdram_ll region (FLOATING+AUTO_SIZE, cockpit's exact node paths, keywords 573-verified
+  for 17.0-Std) to mpeg2fpga.qsf ON TOP of the raw-dump probe → one build pins the bridge AND reads W0/W1.
+  Build pid 967743 (watcher bhfqxzxzs), in STA, no region-ignored warning so far. Sim raw golden (verified
+  == clip): RAWW0=000001b32d01e014 RAWW1=15f92380000001b5. WHEN IT LANDS: warm-reboot, read W0={BL,BN}
+  W1={VL,VN}; clean feed + W0==golden=>intact@word0/mid-stream corruption; byte-reverse=>lane order;
+  unrelated=>corruption-from-start. cockpit does region-actually-took + hold confirms. If region IGNORED
+  (silent drop) or it TOOK+still-wedged => flip to LOCKED w/ hard LL_ORIGIN (573 step 2). | advanced:
+  PTT_SRPT feature (spine 100% swept) + LogicLock+rawdump build queued | blocked: nothing | building:
+  LogicLock+rawdump (bhfqxzxzs).
