@@ -662,3 +662,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   lighter (inline RTL reads, no strict StructuredOutput schema). NEXT: trace the IDCT/iquant/coeff-RAM
   modules in rtl/mpeg2/ for Altera inference hazards (compare to any known mpeg2fpga Altera-port notes);
   candidate cheap HW confirm = a solid-color / single-DC-block clip (does even a flat block reconstruct?).
+
+- 2026-06-05 (ROOT-CAUSE LEAD: the rewritten dual-clock FIFO is the prime suspect — it was NEVER
+  validated by the full-decode sim) — inline RTL diff port-vs-upstream (core/mpeg2fpga is vendored):
+  the ONLY substantive datapath change is xilinx_fifo_dc.v (240 lines — a full rewrite to a Gray-code
+  async FIFO for Cyclone V). iquant.v's 14 lines are a cosmetic `do`->`dout_wire` rename (do = Quartus
+  reserved word); idct/rld/recon/framestore/vld all 0 changes; wrappers.v's 1 line (~rst->rst) correctly
+  matches the new FIFO's active-low reset. CRITICAL: the decode-validating sim (core/sim/run_hwclip,
+  which produced the correct bars) runs the UPSTREAM core/mpeg2fpga/bench/iverilog bench against the
+  ORIGINAL rtl — i.e. the ORIGINAL Xilinx FIFO, NOT the port's rewrite. The rewritten Gray FIFO is only
+  exercised by the narrow memshim sim, NEVER by full decode. It sits on the clk<->mem_clk framestore CDC
+  path (framestore.v: fifo_dc wr_clk(clk)/rd_clk(mem_clk) for writes, mem_clk/clk for read-back). And
+  sys_top.sdc has NO false_path/max_delay on the decoder CDC synchronizers (only framework OSD/VGA/FB).
+  ⇒ PRIME SUSPECT = the rewritten xilinx_fifo_dc.v corrupts framestore data crossing clk<->mem_clk on HW
+  (logic bug the original-FIFO sim couldn't catch, or unconstrained-CDC metastability). Signature fits:
+  DC/low-freq coefficients lost (flat bars -> gray) while high-freq (timecode edges) partly survive.
+  DECISIVE TEST (FPGA-independent): run the FULL decoder sim with the PORT's xilinx_fifo_dc.v swapped in
+  for the original. Degrades in sim => FIFO LOGIC bug (fix + sim-validate, fast, no 30-min HW loop);
+  stays correct => FIFO logic fine, HW issue is CDC timing (add SDC false_path/sync constraints, rebuild).
+  Building that sim test next.
