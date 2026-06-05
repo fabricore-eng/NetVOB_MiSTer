@@ -496,3 +496,7 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (unrecoverable by RTL, needs reboot) this won't un-wedge the bridge, but it prevents the decoder hang
   and is the right next HW experiment. Patch: mpeg2fpga-memshim-pipelined-readrecovery.patch (supersedes
   the serialize patch). NEXT: sync -> dell (diff-verify), build, reboot-retest.
+- 2026-06-05 (v2 build DONE rc=0; .rbf ready; rebooting to test pipelined+recovery on HW) — converted
+  .sof -> mpeg2fpga_dvd_readrecovery.rbf (~3MB); pointed hw_decode_test.sh at it. Standing-authorized
+  reboot test next (clear the f2sdram + load v2 first). Expected: W climbs past the old 189 stall and
+  keeps going = decode-on-HW.
