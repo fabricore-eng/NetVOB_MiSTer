@@ -16,9 +16,23 @@
 # ~6 Mbps, ~3 s => ~2 MB (well under the 4 MiB sim cap and a trivial board file).
 #
 # Usage: tools/testclips/make_test480i.sh [OUT.m2v] [DURATION_SEC]
+#   ALLI=1 tools/testclips/make_test480i.sh   -> all-INTRA variant (every frame an I-frame)
+#
+# The ALLI variant (default out: test480i_ntsc_allI.m2v) sets GOP=1 / no B-frames so
+# EVERY frame is intra-coded. Decode-bring-up use: because every frame carries the full
+# picture with no inter-prediction, ANY framestore snapshot on HW lands on a complete
+# intra frame — isolating intra reconstruction (IDCT/coeff) from the motion-comp/
+# reference-fetch path. If the normal GOP clip degrades to gray on HW but this all-I
+# clip decodes the bars, the bug is in inter-prediction, not intra. (See docs/progress.md
+# 'decode is PARTIAL/DEGRADED on HW'.)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="${1:-${HERE}/test480i_ntsc.m2v}"
+ALLI="${ALLI:-0}"
+if [ "$ALLI" = 1 ]; then
+  OUT="${1:-${HERE}/test480i_ntsc_allI.m2v}"; GOP=1; BF=0
+else
+  OUT="${1:-${HERE}/test480i_ntsc.m2v}"; GOP=12; BF=2
+fi
 DUR="${2:-3}"
 
 command -v ffmpeg >/dev/null || { echo "ERROR: ffmpeg not found" >&2; exit 1; }
@@ -26,7 +40,7 @@ command -v ffmpeg >/dev/null || { echo "ERROR: ffmpeg not found" >&2; exit 1; }
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=${DUR}" \
   -c:v mpeg2video -pix_fmt yuv420p \
-  -flags +ilme+ildct -top 1 -g 12 -bf 2 \
+  -flags +ilme+ildct -top 1 -g "$GOP" -bf "$BF" \
   -b:v 6000k -maxrate 9000k -minrate 0 -bufsize 1835008 \
   -profile:v 4 -level:v 8 \
   -f mpeg2video "$OUT"
