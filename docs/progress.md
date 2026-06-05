@@ -1141,3 +1141,14 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   reached targets => Branch 2 (vld-internal uninit/X, bitstream clean). RTL snapshot
   core/patches/hw/mpeg2fpga-hw-bisect-getbits-mb-probe.patch. | advanced: per-MB bisect probe built+queued
   | blocked: nothing | building: per-MB probe (bxtaflsdf) + sim golden (bybp25wum).
+- 2026-06-05 (sim GBMB golden = all 0xbc8529 — caveat + robust signal) — Sim getbits@MB 225/405/450/495
+  are ALL IDENTICAL = 0xbc8529. Likely getbits-at-MB-START is a structural/wait-state constant for this
+  regular test pattern (not per-MB DCT data), so the VALUE-match is a WEAK Branch-1/2 split. BUT the
+  per-MB probe is still useful for LOCALIZATION via the unreached signal: a HW port reading 0x000000 =>
+  the decode never reached that MB (robust stop-point locator); a HW port != 0xbc8529 (and !=0) => a real
+  value divergence at that MB. So when the HW build lands: VL/VN/BL/BN = HW @ MB 225/405/450/495; find the
+  first that is 0 (decode stopped there) or != bc8529 (diverged there) => localizes the desync row. If the
+  read is ambiguous (all bc8529), REBUILD with a robust ALIGN-COUNT@MB probe (cumulative `align` count at
+  each MB target — strictly increasing, per-MB-distinct, count-alignable HW-vs-sim) for an unambiguous
+  localization. HW build pid 1287525 (watcher bxtaflsdf) still fitting. | advanced: sim golden captured +
+  read-interpretation + fallback probe defined | blocked: nothing | building: per-MB probe (bxtaflsdf).
