@@ -27,13 +27,22 @@ worst "INTRA clk_sys(27)->clk_sys"  $sys $sys
 worst "XING clk_sys->clk_mem (FIFO)" $sys $mem
 worst "XING clk_mem->clk_sys (FIFO)" $mem $sys
 
-puts "##### WORST clk_mem->clk_mem PATH DETAIL #####"
-set ps [get_timing_paths -setup -from_clock $mem -to_clock $mem -npaths 3 -nworst 3]
+puts "##### TOP clk_mem->clk_mem PATHS (find the worst REAL one: levels>1) #####"
+# levels==1 with a huge negative slack = a clock-relationship ARTIFACT, ignore. A REAL
+# failing DDR-interface path has levels>1 AND negative slack -> then lowering clk_mem is
+# justified. If every REAL path closes (slack>0) -> the lost responses are a handshake/FIFO
+# corner, NOT raw timing, and lowering the clock won't help (573's prove-it-first discipline).
+set ps [get_timing_paths -setup -from_clock $mem -to_clock $mem -npaths 12 -nworst 12]
 foreach_in_collection p $ps {
-    # Real terrible routing => big arrival/many logic levels. Constraint artifact =>
-    # tiny arrival but hugely-negative required (bogus launch/latch edge relationship).
-    # levels==1 with a huge negative slack => CONSTRAINT/clock artifact, NOT real logic delay.
-    puts "slack=[get_path_info $p -slack] arrival=[get_path_info $p -arrival_time] required=[get_path_info $p -required_time] levels=[get_path_info $p -num_logic_levels]"
-    puts "   FROM=[get_node_info -name [get_path_info $p -from]]  TO=[get_node_info -name [get_path_info $p -to]]"
+    set lv [get_path_info $p -num_logic_levels]
+    set sl [get_path_info $p -slack]
+    set tag artifact?; if {$lv > 1} { set tag REAL }
+    puts "slack=$sl levels=$lv $tag  FROM=[get_node_info -name [get_path_info $p -from]]  TO=[get_node_info -name [get_path_info $p -to]]"
+}
+# Also: any failing setup path ENDING in mem_shim (the f2sdram readdata/response capture)?
+puts "--- worst setup paths INTO mem_shim (the DDR-interface capture) ---"
+set mp [get_timing_paths -setup -to {*mem_shim*} -npaths 6 -nworst 6]
+foreach_in_collection p $mp {
+    puts "slack=[get_path_info $p -slack] levels=[get_path_info $p -num_logic_levels]  FROM=[get_node_info -name [get_path_info $p -from]]  TO=[get_node_info -name [get_path_info $p -to]]"
 }
 puts "##### END #####"
