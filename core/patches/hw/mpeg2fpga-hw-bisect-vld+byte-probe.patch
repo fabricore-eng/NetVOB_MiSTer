@@ -1,0 +1,778 @@
+diff --git a/rtl/emu.sv b/rtl/emu.sv
+index aa9bf0d..b9328d8 100644
+--- a/rtl/emu.sv
++++ b/rtl/emu.sv
+@@ -94,9 +94,9 @@ module emu (
+ assign VIDEO_ARX    = 13'd4;
+ assign VIDEO_ARY    = 13'd3;
+ 
+-assign VGA_F1       = 0;
++// VGA_F1 is driven from the decoder field parity in the video-out block below.
+ assign VGA_SL       = 0;
+-assign VGA_SCALER   = 1; // Enable scaler for universal HDMI compatibility
++assign VGA_SCALER   = 0; // Analog raster passthrough (no scaler) for native 480i -> ADV7125
+ assign VGA_DISABLE  = 0;
+ assign HDMI_FREEZE      = 0;
+ assign HDMI_BLACKOUT    = 0;
+@@ -160,22 +160,34 @@ assign DDRAM_CLK = clk_mem;
+ wire watchdog_rst;
+ wire reset_n = locked & ~RESET;
+ 
+-// 108 MHz / 4 = 27 MHz pixel clock enable for internal modules
+-reg [1:0] ce_cnt;
+-always @(posedge clk_mem) ce_cnt <= ce_cnt + 1'b1;
+-wire ce_pixel = (ce_cnt == 2'b00);
++// ---------------------------------------------------------------------------
++// Pixel clock-enable for NTSC 480i (BT.601)
++// ---------------------------------------------------------------------------
++// NTSC 480i is a 13.5 MHz dot rate (858 dots * 15.734 kHz line rate). We keep
++// CLK_VIDEO = clk_sys = 27 MHz (the MiSTer analog PHY clock) and generate a
++// half-rate clock-enable so the *effective* pixel rate is 13.5 MHz.  This same
++// enable gates BOTH the decoder video pipeline (mpeg2video.dot_ce) and the
++// framework PHY (CE_PIXEL), so exactly one decoder pixel is emitted per enable.
++//
++// ce_pix toggles in the clk_sys (= CLK_VIDEO = dot_clk) domain — no CDC.
++reg ce_div;
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) ce_div <= 1'b0;
++    else          ce_div <= ~ce_div;
++end
++wire ce_pix = ce_div;   // 13.5 MHz enable (27 MHz / 2)
+ 
+-// The MiSTer HDMI/VGA PHY natively clocks at CLK_VIDEO frequency. 
+-// For NTSC 480i/p video, this must be exactly 27.0 MHz.
++// CLK_VIDEO is the analog PHY clock (27 MHz); CE_PIXEL gates it to the 13.5 MHz
++// BT.601 dot rate. VGA_SCALER=0 keeps the raster verbatim out the ADV7125 DAC.
+ assign CLK_VIDEO = clk_sys;  // 27 MHz
+-assign CE_PIXEL  = 1'b1;     // Fully utilized 27 MHz clock
++assign CE_PIXEL  = ce_pix;   // 13.5 MHz effective pixel rate (480i BT.601)
+ 
+ // =========================================================================
+ // HPS IO — OSD menu and file loading
+ // =========================================================================
+ parameter CONF_STR = {
+     "MPEG2;;",
+-    "S0,MPG M2V,Load Video;",
++    "S0,MPGM2V,Load Video;",
+     "O1,Aspect Ratio,4:3,16:9;",
+     "O[10],Direct Video,Off,On;",
+     "R0,Reset;",
+@@ -253,14 +265,25 @@ reg        img_mounted_prev;
+ wire       start_streaming = img_mounted[0] && !img_mounted_prev;
+ reg [63:0] current_file_size;
+ 
++// DIAGNOSTIC (mount-pulse localization): does the .mgl/OSD mount ever reach the FPGA?
++// img_mounted_cnt counts img_mounted[0] rising edges; current_file_size latches img_size.
++// Surfaced on the uart X/Y fields (see uart_debug arx/ary feed) for a hands-off read:
++//   X(cnt)=0          -> img_mounted NEVER pulsed: mount not delivered (framework/.mgl/hps_io)
++//   X>0, Y(size)=0    -> pulsed but img_size==0: framework sized the file as 0
++//   X>0, Y!=0, Z=0    -> pulsed with a real size: bug is downstream (start/streamer/total_sectors)
++reg [11:0] img_mounted_cnt;
++
+ always @(posedge clk_sys or negedge reset_n) begin
+     if (!reset_n) begin
+         img_mounted_prev  <= 1'b0;
+         current_file_size <= 64'd0;
++        img_mounted_cnt   <= 12'd0;
+     end else begin
+         img_mounted_prev <= img_mounted[0];
+         if (img_mounted[0])
+             current_file_size <= img_size;
++        if (start_streaming)            // rising edge of img_mounted[0]
++            img_mounted_cnt <= img_mounted_cnt + 1'b1;
+     end
+ end
+ 
+@@ -307,11 +330,15 @@ wire        shim_mem_en;
+ wire        shim_mem_almost_full;
+ 
+ wire [7:0] core_r, core_g, core_b;
+-wire       core_h_sync, core_v_sync;
++wire       core_h_sync, core_v_sync, core_c_sync;
+ wire [11:0] core_h_pos, core_v_pos;
+ wire [8:0]  core_init_cnt;
+ wire        core_sync_rst;
+ wire        core_vbw_almost_full;
++wire [31:0] core_vl_chksum; // HW-bisect: VLD-decoded coeff level checksum (input to rld, parent-level tap)
++wire [31:0] core_vl_cnt;    // HW-bisect: count of run/level pairs consumed by rld
++wire [31:0] core_bl_chksum; // HW-bisect: bitstream-into-getbits word checksum (vbr_rd_dta, mem-path readback)
++wire [31:0] core_bn_cnt;    // HW-bisect: count of bitstream words read out of DDR into getbits
+ wire       core_pixel_en;
+ wire [3:0]  shim_debug_state;
+ wire [1:0]  shim_debug_saved_cmd;
+@@ -325,8 +352,8 @@ wire [15:0] shim_debug_read_pend_cycles;
+ mpeg2video mpeg2video_inst (
+     .clk        (clk_sys),   // 27 MHz — matches prior-working-config; 4× lower mem request rate
+     .mem_clk    (clk_mem),   // 108 MHz — FIFO: wr=27MHz rd=108MHz, read-faster safe CDC
+-    .dot_clk    (clk_sys),   // 27MHz native dot clock (cleanly drives MiSTer HDMI PHY)
+-    .dot_ce     (1'b1),      // No clock enable needed when using native 27MHz
++    .dot_clk    (clk_sys),   // 27MHz video clock (= CLK_VIDEO); syncgen advances on dot_ce
++    .dot_ce     (ce_pix),    // 13.5 MHz BT.601 dot-rate enable (480i): syncgen counts at 13.5 MHz
+     .rst        (reset_n),
+ 
+     .stream_data  (stream_data),
+@@ -351,7 +378,7 @@ mpeg2video mpeg2video_inst (
+     .pixel_en   (core_pixel_en),
+     .h_sync     (core_h_sync),
+     .v_sync     (core_v_sync),
+-    .c_sync     (),
++    .c_sync     (core_c_sync),
+     .h_pos      (core_h_pos),
+     .v_pos      (core_v_pos),
+ 
+@@ -369,7 +396,11 @@ mpeg2video mpeg2video_inst (
+     .testpoint_dip_en (1'b0),
+     .init_cnt_out     (core_init_cnt),
+     .sync_rst_out     (core_sync_rst),
+-    .vbw_almost_full_out (core_vbw_almost_full)
++    .vbw_almost_full_out (core_vbw_almost_full),
++    .vl_chksum_out    (core_vl_chksum),
++    .vl_cnt_out       (core_vl_cnt),
++    .bl_chksum_out    (core_bl_chksum),
++    .bn_cnt_out       (core_bn_cnt)
+ );
+ 
+ // =========================================================================
+@@ -440,21 +471,56 @@ always @(posedge clk_mem or negedge reset_n) begin
+ end
+ 
+ // =========================================================================
+-// Video Output — direct from MPEG2 core (no fallback mux)
++// Video Output — MPEG2 core raster -> MiSTer analog PHY (NTSC 480i)
+ // =========================================================================
+-// The fallback VGA generator ran on clk_vid (25.175 MHz) but CLK_VIDEO =
+-// clk_mem (108 MHz). Sampling clk_vid signals on clk_mem caused metastable
+-// sync signals that the MiSTer scaler could never lock to → permanent black.
+-// The MPEG2 core's outputs are already on clk_mem (dot_clk=clk_mem), so
+-// wiring them directly is clean. Before a stream is decoded, the core
+-// outputs black (Y=16, Cb=Cr=128), which is fine — "no signal" until play.
++// The decoder's video pipeline runs on dot_clk = clk_sys = CLK_VIDEO (27 MHz),
++// advancing one pixel per ce_pix (13.5 MHz, the BT.601 480i dot rate). All
++// decoder video outputs (RGB, h/v/c_sync, pixel_en, v_pos) are therefore in the
++// CLK_VIDEO domain — no CDC. We register them on ce_pix so they line up with the
++// CE_PIXEL the analog PHY samples, and derive the interlace field flag VGA_F1
++// from the decoder's field parity.
++//
++// Field parity: syncgen encodes the field in v_pos[0] when interlaced
++// (syncgen.v: v_pos = {v_cntr[10:0], ~odd_field}), so v_pos[0] == ~odd_field.
++// MiSTer convention: VGA_F1 = 1 on the second (odd) field. odd_field == ~v_pos[0],
++// so VGA_F1 = ~core_v_pos[0]. Latched on ce_pix in the CLK_VIDEO domain so it is
++// stable for the whole field the PHY/DAC is emitting.
++//
++// Sync polarity: MiSTer's analog out / video_mixer contract uses ACTIVE-HIGH
++// HS/VS/DE, which is exactly what syncgen produces (h_sync/v_sync asserted high
++// during the pulse; pixel_en high during active video). vga_out.sv (in sys/)
++// re-times these and, for ypbpr, folds sync onto Y — so we pass active-high
++// straight through. core_c_sync is exported for a future composite-sync TV path.
++reg [7:0] vga_r_r, vga_g_r, vga_b_r;
++reg       vga_hs_r, vga_vs_r, vga_de_r, vga_f1_r;
++
++always @(posedge clk_sys or negedge reset_n) begin
++    if (!reset_n) begin
++        vga_r_r  <= 8'd0;
++        vga_g_r  <= 8'd0;
++        vga_b_r  <= 8'd0;
++        vga_hs_r <= 1'b0;
++        vga_vs_r <= 1'b0;
++        vga_de_r <= 1'b0;
++        vga_f1_r <= 1'b0;
++    end else if (ce_pix) begin
++        vga_r_r  <= core_r;
++        vga_g_r  <= core_g;
++        vga_b_r  <= core_b;
++        vga_hs_r <= core_h_sync;
++        vga_vs_r <= core_v_sync;
++        vga_de_r <= core_pixel_en;
++        vga_f1_r <= ~core_v_pos[0];  // odd_field; 1 = second field
++    end
++end
+ 
+-assign VGA_R  = core_r;
+-assign VGA_G  = core_g;
+-assign VGA_B  = core_b;
+-assign VGA_HS = core_h_sync;
+-assign VGA_VS = core_v_sync;
+-assign VGA_DE = core_pixel_en;
++assign VGA_R  = vga_r_r;
++assign VGA_G  = vga_g_r;
++assign VGA_B  = vga_b_r;
++assign VGA_HS = vga_hs_r;
++assign VGA_VS = vga_vs_r;
++assign VGA_DE = vga_de_r;
++assign VGA_F1 = vga_f1_r;
+ 
+ 
+ uart_debug debug_inst (
+@@ -463,8 +529,8 @@ uart_debug debug_inst (
+     .tx_pin(UART_TXD),
+     .locked(locked),
+     .active(core_video_active),
+-    .arx({1'b0, core_h_pos}),
+-    .ary({1'b0, core_v_pos}),
++    .arx({1'b0, img_mounted_cnt}),                 // X = img_mounted rising-edge COUNT (0 => mount never reached FPGA)
++    .ary({1'b0, current_file_size[19:8]}),         // Y = captured img_size[19:8] (nonzero => mount delivered a real size)
+     .busy(core_busy),
+     .valid(stream_valid),
+     // Additional debug signals from mpeg2video core internals
+@@ -496,7 +562,11 @@ uart_debug debug_inst (
+     .watchdog_rst(watchdog_rst),       // O: decoder watchdog fired (latched)
+     .core_vs_edge_cnt(core_vs_edge_cnt), // N: vsync edges seen before active
+     .core_frame_cnt(core_frame_cnt),   // FC: free-running frame counter
+-    .mem_addr(DDRAM_ADDR)
++    .mem_addr(DDRAM_ADDR),
++    .vl_chksum(core_vl_chksum), // VL: VLD-decoded coeff level checksum (input to rld)
++    .vl_cnt(core_vl_cnt),       // VN: count of run/level pairs consumed by rld
++    .bl_chksum(core_bl_chksum), // BL: bitstream-into-getbits word checksum (DDR readback)
++    .bn_cnt(core_bn_cnt)        // BN: count of bitstream words read out of DDR into getbits
+ );
+ 
+ assign CLK_SYS = clk_sys;
+diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
+index 33f3c2a..0e67e94 100644
+--- a/rtl/mem_shim.sv
++++ b/rtl/mem_shim.sv
+@@ -80,6 +80,31 @@ module mem_shim (
+ 
+     reg state;
+ 
++    // DDR read-response RECOVERY (HW fix 2026-06-05). Keep the bus FULLY PIPELINED — the
++    // HPS f2sdram only returns read responses while pipelined (an isolated read starves;
++    // the decoder self-throttles via mem_req_almost_full so we don't over-issue). The HW
++    // wedge was a WRITE blocked forever by an outstanding READ whose response was LOST
++    // (uart P=84 reads vs RP=83 responses): the f2sdram holds waitrequest until that read
++    // completes. We can't tell which response was lost, so we RECOVER cause-agnostically:
++    // count outstanding reads; if NONE respond for far longer than any real latency,
++    // synthesize one response so the decoder re-syncs and the blocked write proceeds.
++    // (NOTE: do NOT add a read_pending/serialize hold here — stalling the bus deadlocks,
++    //  because the f2sdram needs the pipeline moving to return responses.)
++    reg  [5:0]  outstanding_reads;   // reads accepted but not yet responded
++    reg  [16:0] resp_timer;          // cycles since last response while reads are outstanding
++    wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
++    wire        resp_timeout      = (outstanding_reads != 0) && !ddr3_readdatavalid && (&resp_timer);
++
++    // The HPS f2sdram has an outstanding-READ throttle: HW lock-probe caught the bridge
++    // LOCKING on a READ with 6 reads in flight (PC: lock_cmd=READ, outstanding=6). Bound
++    // outstanding reads BELOW that so the bridge never throttles/locks. WRITES are not
++    // bounded by this; a genuinely-lost read still drains via resp_timeout, so a throttled
++    // read cannot deadlock (recovery guarantees forward progress).
++    localparam [5:0] READ_LIMIT = 6'd4;
++    wire next_is_read   = saved_valid ? (saved_cmd == CMD_READ)
++                                      : (mem_req_rd_valid && (mem_req_rd_cmd == CMD_READ));
++    wire read_throttled = next_is_read && (outstanding_reads >= READ_LIMIT);
++
+     // Skid buffer — captures the FIFO word that appears 1 cycle after rd_en is
+     // deasserted (standard mode FIFO 1-cycle latency).
+     reg        saved_valid;
+@@ -89,8 +114,10 @@ module mem_shim (
+ 
+     always @(posedge clk) begin
+         if (!rst_n) begin
+-            state          <= 0;
+-            ram_read       <= 0;
++            state             <= 0;
++            outstanding_reads <= 0;
++            resp_timer        <= 0;
++            ram_read          <= 0;
+             ram_write      <= 0;
+             ram_address    <= 0;
+             ram_writedata  <= 0;
+@@ -109,6 +136,27 @@ module mem_shim (
+             mem_res_wr_en <= ddr3_readdatavalid;
+             if (ddr3_readdatavalid)
+                 mem_res_wr_dta <= ddr3_readdata;
++            else if (resp_timeout) begin
++                // A read response is genuinely lost (overdue by >2^17 clk_mem cycles,
++                // far beyond any real f2sdram latency) -> synthesize one (0 data) so the
++                // decoder's response count re-syncs and the write it blocks can proceed.
++                mem_res_wr_en  <= 1'b1;
++                mem_res_wr_dta <= 64'd0;
++            end
++
++            // Overdue-response timer: reset on any response or when nothing is outstanding.
++            if (ddr3_readdatavalid || outstanding_reads == 0)
++                resp_timer <= 0;
++            else if (!(&resp_timer))
++                resp_timer <= resp_timer + 1'b1;
++
++            // Outstanding-read count: +1 when a read is accepted, -1 on a real response OR
++            // a synthesized timeout-recovery. (Both events same cycle => net unchanged.)
++            case ({read_accepted_now, (ddr3_readdatavalid | resp_timeout)})
++                2'b10:   outstanding_reads <= outstanding_reads + 1'b1;
++                2'b01:   if (outstanding_reads != 0) outstanding_reads <= outstanding_reads - 1'b1;
++                default: ; // 2'b00 / 2'b11 -> unchanged
++            endcase
+ 
+             // -----------------------------------------------------------------
+             // Command Path FSM
+@@ -117,7 +165,13 @@ module mem_shim (
+                 // =============================================================
+                 // S_IDLE: Process next command (skid buffer has priority)
+                 // =============================================================
+-                if (saved_valid && !mem_res_wr_almost_full) begin
++                if (read_throttled) begin
++                    // Too many reads in flight -> hold the next READ until they drain below
++                    // the bridge throttle (don't pull the FIFO, nothing is lost). Writes
++                    // behind it wait briefly (in-order); resp_timeout guarantees progress.
++                    mem_req_rd_en <= 1'b0;
++                end
++                else if (saved_valid && !mem_res_wr_almost_full) begin
+                     case (saved_cmd)
+                         CMD_WRITE: begin
+                             if (saved_addr == ADDR_ERR) begin
+@@ -135,11 +189,23 @@ module mem_shim (
+                         end
+                         CMD_READ: begin
+                             if (saved_addr == ADDR_ERR) begin
+-                                // Synthetic 0 response — do not forward to DDR3
+-                                mem_res_wr_dta <= 64'd0;
+-                                mem_res_wr_en  <= 1'b1;
+-                                saved_valid    <= 0;
+-                                mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                // Synthetic 0 response — do not forward to DDR3.
++                                // COLLISION GUARD: if a real DDR3 readdatavalid lands this
++                                // cycle, the response path above already owns mem_res_wr_en/dta
++                                // for the REAL response. Do not overwrite it with the synthetic
++                                // 0, and do not consume the ADDR_ERR command — hold the skid word
++                                // (saved_valid stays 1, no FIFO pull) so the synthetic response is
++                                // re-issued next cycle. Without this, the same-cycle collision
++                                // drops the real read's data (-> corrupt reference -> garbage).
++                                if (!ddr3_readdatavalid) begin
++                                    mem_res_wr_dta <= 64'd0;
++                                    mem_res_wr_en  <= 1'b1;
++                                    saved_valid    <= 0;
++                                    mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                end else begin
++                                    saved_valid    <= 1; // hold; retry next cycle
++                                    mem_req_rd_en  <= 0;
++                                end
+                             end else begin
+                                 ram_read      <= 1;
+                                 ram_address   <= {7'b0011000, saved_addr};
+@@ -171,10 +237,18 @@ module mem_shim (
+                         end
+                         CMD_READ: begin
+                             if (mem_req_rd_addr == ADDR_ERR) begin
+-                                // Synthetic 0 response — keep flowing
+-                                mem_res_wr_dta <= 64'd0;
+-                                mem_res_wr_en  <= 1'b1;
+-                                mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                // Synthetic 0 response — keep flowing. COLLISION GUARD: if a real
++                                // DDR3 readdatavalid lands this cycle, the response path above owns
++                                // mem_res_wr_en/dta for the REAL response — do not overwrite it with
++                                // the synthetic 0; stall the FIFO read so the same ADDR_ERR word is
++                                // re-presented and the synthetic response is issued next cycle.
++                                if (!ddr3_readdatavalid) begin
++                                    mem_res_wr_dta <= 64'd0;
++                                    mem_res_wr_en  <= 1'b1;
++                                    mem_req_rd_en  <= !mem_res_wr_almost_full;
++                                end else begin
++                                    mem_req_rd_en  <= 0; // stall; retry next cycle
++                                end
+                             end else begin
+                                 ram_read      <= 1;
+                                 ram_address   <= {7'b0011000, mem_req_rd_addr};
+@@ -195,6 +269,9 @@ module mem_shim (
+                 // S_WAIT: Hold ram_read/write until bridge accepts
+                 // =============================================================
+                 if (!ddr3_waitrequest) begin
++                    // Command accepted. (A read accepted here is counted via
++                    // read_accepted_now in the response/recovery block above — pipelined,
++                    // not blocked.) Resume pulling the next command immediately.
+                     ram_read      <= 0;
+                     ram_write     <= 0;
+                     state         <= 0;
+@@ -235,6 +312,42 @@ module mem_shim (
+         end
+     end
+ 
++    // =========================================================================
++    // Bridge-LOCK probe (HW debug, observe-only — decode path untouched)
++    // Catches the moment the HPS f2sdram waitrequest sticks high while a command
++    // is asserted (the bridge stops accepting). Surfaced on the (previously unused)
++    // debug_read_pend_cycles -> uart PC field as a packed snapshot:
++    //   PC = {wedged(1), lock_cmd(2)={read,write}, lock_outstanding(6), recovery_count(7)}
++    // wedged (PC bit15 / PC>=0x8000) = bridge locked; lock_cmd tells read-vs-write at the
++    // lock; lock_outstanding = reads in flight then; recovery_count>0 = real dropped
++    // responses occurred (so the lock is drop-related) vs ==0 (a command-specific lock).
++    // =========================================================================
++    reg [11:0] wr_stall_cnt;
++    reg        wedged;
++    reg  [1:0] lock_cmd;
++    reg  [5:0] lock_outstanding;
++    reg  [6:0] recovery_count;
++    always @(posedge clk) begin
++        if (!rst_n) begin
++            wr_stall_cnt <= 0; wedged <= 0; lock_cmd <= 0; lock_outstanding <= 0; recovery_count <= 0;
++        end else begin
++            // consecutive cycles the bridge refuses an asserted command (waitrequest high)
++            if (state && (ram_read || ram_write) && ddr3_waitrequest) begin
++                if (!(&wr_stall_cnt)) wr_stall_cnt <= wr_stall_cnt + 1'b1;
++            end else begin
++                wr_stall_cnt <= 0;
++            end
++            // sustained refusal (>=256 cyc) = LOCK -> latch the condition, sticky
++            if (wr_stall_cnt >= 12'd256 && !wedged) begin
++                wedged           <= 1'b1;
++                lock_cmd         <= {ram_read, ram_write};
++                lock_outstanding <= outstanding_reads;
++            end
++            // count genuine lost responses recovered (resp_timeout synthesized one)
++            if (resp_timeout && !(&recovery_count)) recovery_count <= recovery_count + 1'b1;
++        end
++    end
++
+     // =========================================================================
+     // Debug telemetry
+     // =========================================================================
+@@ -258,6 +371,6 @@ module mem_shim (
+     assign debug_rd_count         = rd_count;
+     assign debug_wr_count         = wr_count;
+     assign debug_rsp_count        = rsp_count;
+-    assign debug_read_pend_cycles = 16'd0;
++    assign debug_read_pend_cycles = {wedged, lock_cmd, lock_outstanding, recovery_count};
+ 
+ endmodule
+diff --git a/rtl/mpeg2/modeline.v b/rtl/mpeg2/modeline.v
+index 4669b03..f5836f3 100644
+--- a/rtl/mpeg2/modeline.v
++++ b/rtl/mpeg2/modeline.v
+@@ -28,7 +28,9 @@
+ `ifndef MODELINE_VGA
+ `ifndef MODELINE_SVGA
+ `ifndef MODELINE_NTSC
+-`define MODELINE_NTSC 1  // NTSC 720x480@60Hz for 27.0 MHz dot_clk
++`ifndef MODELINE_NTSC_INTERL
++`define MODELINE_NTSC_INTERL 1  // NTSC 720x480i @ 59.94 fields/s, BT.601 13.5 MHz dot rate
++`endif
+ `endif
+ `endif
+ `endif
+@@ -106,6 +108,47 @@
+     VID_MODE       = 3'b000;
+ `endif
+ 
++`ifdef MODELINE_NTSC_INTERL
++
++  /*
++   * modeline: NTSC 480i (720x480 interlaced, ~59.94 fields/s) -- the ADV7125 / CRT target.
++   *
++   * ITU-R BT.601 525-line: 13.5 MHz dot rate, 858 total dots/line (720 active);
++   * 525 total lines/frame = 262.5/field, 480 active = 240/field.  Line rate
++   * 13.5e6/858 = 15.734 kHz; field rate 59.94 Hz; frame rate 29.97 Hz.
++   *
++   * syncgen runs a FIELD-based counter when interlaced, so VERT_RES / VERT_LEN /
++   * VERT_SYNC_* are PER FIELD; HALFLINE is the mid-line dot (= HORZ_LEN/2) where
++   * v_sync starts on odd fields, producing the half-line interlace offset.
++   *
++   * Counter convention (syncgen.v: `h_cntr >= horizontal_length` wrap): the
++   * register value is the X11-modeline TOTAL minus one (same convention as the
++   * progressive MODELINE_NTSC entry just above; 857 -> 858 dots).  Horizontal
++   * geometry reuses the proven progressive NTSC values verbatim.
++   *
++   *   HORZ_RES = 719  -> 720 active dots
++   *   HORZ_LEN = 857  -> 858 total dots (BT.601)
++   *   VERT_RES = 239  -> 240 visible lines / field (480 / 2)
++   *   VERT_LEN = 261  -> 262 lines / field; the .5 of 262.5 is realized by the
++   *                      odd-field half-line (HALFLINE), giving 525 total / frame
++   *   HALFLINE = 428  -> ~ HORZ_LEN/2, mid-line v_sync start on odd fields
++   */
++
++  parameter [11:0]
++    HORZ_RES       = 719,
++    HORZ_SYNC_STRT = 735,
++    HORZ_SYNC_END  = 797,
++    HORZ_LEN       = 857,
++    VERT_RES       = 239,
++    VERT_SYNC_STRT = 243,
++    VERT_SYNC_END  = 246,
++    VERT_LEN       = 261,
++    HALFLINE       = 428;
++
++  parameter [2:0]
++    VID_MODE       = 3'b001;   // {clip_display_size, pixel_repetition, interlaced}
++`endif
++
+ `ifdef MODELINE_SIF
+   // test
+   parameter [11:0]
+diff --git a/rtl/mpeg2/mpeg2video.v b/rtl/mpeg2/mpeg2video.v
+index 6662245..6dea156 100644
+--- a/rtl/mpeg2/mpeg2video.v
++++ b/rtl/mpeg2/mpeg2video.v
+@@ -57,7 +57,8 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+              mem_req_rd_cmd, mem_req_rd_addr, mem_req_rd_dta, mem_req_rd_en, mem_req_rd_valid,                                    // clocked with mem_clk
+              mem_res_wr_dta, mem_res_wr_en, mem_res_wr_almost_full,                                                               // clocked with mem_clk
+              testpoint_dip, testpoint_dip_en, testpoint,
+-             init_cnt_out, sync_rst_out, vbw_almost_full_out
++             init_cnt_out, sync_rst_out, vbw_almost_full_out,
++             vl_chksum_out, vl_cnt_out, bl_chksum_out, bn_cnt_out
+ 	     );
+ 
+   input            clk;                     // clock. Typically a multiple of 27 Mhz as MPEG2 timestamps have a 27 Mhz resolution.
+@@ -87,6 +88,10 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+   output      [8:0]init_cnt_out;
+   output           sync_rst_out;
+   output           vbw_almost_full_out;
++  output     [31:0]vl_chksum_out;           // HW-bisect: running 32-bit sum of VLD-decoded coeff level (input to rld, sign-extended 12->32)
++  output     [31:0]vl_cnt_out;              // HW-bisect: count of run/level pairs consumed by rld (32-bit)
++  output     [31:0]bl_chksum_out;           // HW-bisect: running 32-bit sum of bitstream words read into getbits (vbr_rd_dta, 64->32 fold)
++  output     [31:0]bn_cnt_out;              // HW-bisect: count of vbr_rd_valid words read out of DDR into getbits (32-bit)
+ 
+   /* register file access */
+   input       [3:0]reg_addr;
+@@ -549,6 +554,68 @@ module mpeg2video(clk, mem_clk, dot_clk, dot_ce,
+   assign sync_rst_out = sync_rst;
+   assign vbw_almost_full_out = vbw_wr_almost_full;
+ 
++  /* HW-bisect: clean VLD-LEVEL probe — accumulated ENTIRELY at the PARENT (mpeg2video)
++   * level by tapping nets that ALREADY exist here. ZERO rld changes, so it routes like
++   * the proven reference probe and does NOT perturb the rld->idct->motcomp placement
++   * that wedged the f2sdram feed when probes were added inside rld.
++   *
++   * Tapped nets (all pre-existing in this scope):
++   *   dct_coeff_rd_signed_level [11:0] — the VLD-decoded coefficient level feeding rld
++   *                                      (rld_fifo dout, combinationally valid the cycle
++   *                                      rld_rd_valid is asserted).
++   *   rld_rd_valid                     — the rld_fifo read-acknowledge.
++   * Consume strobe = rld_rd_valid (clk_en is tied 1'b1 on this rld instance).
++   *   The rld_fifo handshake is request/ack, NOT a sustained data-valid: rld pulses
++   *   rld_rd_en for one cycle (rld.v:277-279), the fifo answers with a one-cycle
++   *   rld_rd_valid the NEXT cycle (fifo_sc valid = "rd_en was asserted previous cycle
++   *   and data was read", wrappers.v) and rld latches the pair on that same
++   *   (clk_en && rld_rd_valid) cycle (rld.v:208). So rld_rd_en and rld_rd_valid are
++   *   never high together — gating on the AND would NEVER fire. rld_rd_valid alone
++   *   fires EXACTLY once per consumed run/level pair. The sim mirror in
++   *   bench/iverilog/testbench.v uses this IDENTICAL rld_rd_valid gate.
++   * VL = running 32-bit sum of the level, sign-extended 12->32 (the level is 2's
++   *   complement). VN = count of consumed pairs. Both wrap at 32 bits to match sim. */
++  reg [31:0] vl_chksum;
++  reg [31:0] vl_cnt;
++  always @(posedge clk)
++    if (~sync_rst) begin
++      vl_chksum <= 32'd0;
++      vl_cnt    <= 32'd0;
++    end else if (rld_rd_valid) begin
++      vl_chksum <= vl_chksum + {{20{dct_coeff_rd_signed_level[11]}}, dct_coeff_rd_signed_level};
++      vl_cnt    <= vl_cnt + 32'd1;
++    end
++
++  assign vl_chksum_out = vl_chksum;
++  assign vl_cnt_out    = vl_cnt;
++
++  /* HW-bisect: BITSTREAM-INTO-GETBITS probe — same hierarchy-safe parent-level
++   * pattern, tapping nets that already exist here. This is the cut that splits
++   * mem-path corruption from vld-decode: vbr_rd_dta[63:0] is the compressed
++   * bitstream word read back from the vbuf read fifo (i.e. out of DDR via the
++   * mem path) into getbits, valid on vbr_rd_valid (clk-domain read side, one
++   * pulse per 64-bit word). The SIM routes the same stream through its modeled
++   * DDR (mem_ctl), so comparing BL/BN HW-vs-sim tests whether the REAL DDR/
++   * mem-FIFO round-trip corrupts the bitstream BEFORE vld even sees it.
++   *   BL = running 32-bit sum of (dta[31:0] + dta[63:32]) (folds all 64 bits).
++   *   BN = count of words read. Both wrap at 32 bits to match the sim mirror.
++   * BL/BN match sim => bitstream into vld is intact (bug is vld-decode/rld_fifo);
++   * BL/BN diverge => the mem path corrupts the bitstream (then a targeted mem-
++   * FIFO fix is warranted). */
++  reg [31:0] bl_chksum;
++  reg [31:0] bn_cnt;
++  always @(posedge clk)
++    if (~sync_rst) begin
++      bl_chksum <= 32'd0;
++      bn_cnt    <= 32'd0;
++    end else if (vbr_rd_valid) begin
++      bl_chksum <= bl_chksum + vbr_rd_dta[31:0] + vbr_rd_dta[63:32];
++      bn_cnt    <= bn_cnt + 32'd1;
++    end
++
++  assign bl_chksum_out = bl_chksum;
++  assign bn_cnt_out    = bn_cnt;
++
+   /* reset signal synchronizers */
+ 
+   reset reset (
+diff --git a/rtl/mpeg2/rld.v b/rtl/mpeg2/rld.v
+index 83d3333..3b2c42c 100644
+--- a/rtl/mpeg2/rld.v
++++ b/rtl/mpeg2/rld.v
+@@ -43,7 +43,7 @@ module rld(clk, clk_en, rst,
+   quant_rst, quant_rd_addr, quant_rd_intra_data, quant_rd_non_intra_data,		                    // interface with quantizer matrices
+   quant_wr_data, quant_wr_addr, quant_wr_en_intra, quant_wr_en_non_intra,
+   quant_wr_en_chroma_intra, quant_wr_en_chroma_non_intra, quant_alternate_scan,
+-  iquant_level, iquant_eob, iquant_valid         		                                            // interface with idct - dct coefficients output 
++  iquant_level, iquant_eob, iquant_valid         		                                            // interface with idct - dct coefficients output
+   );
+ 
+   input                    clk;                          // clock
+@@ -407,7 +407,7 @@ module rld(clk, clk_en, rst,
+ 	   */
+ 	  // Xilinx ISE 6.3 doesn't know $signed
+ 	  //iquant_level_3 <= (iquant_level_2 * $signed({1'b0, iquant_factor_2}) + $signed({5{iquant_level_2[12]}})) >>> 5; // signed multiply
+-	  iquant_level_3 <= (iquant_level_2 * iquant_factor_2_signed + iquant_level_3_correction) >>> 5; // signed multiply
++	  iquant_level_3 <= ($signed(iquant_level_2) * $signed(iquant_factor_2_signed) + $signed(iquant_level_3_correction)) >>> 5; // signed multiply -- $signed() on ALL operands forces a fully-SIGNED expr on Quartus so the product, the + and the >>> (arithmetic shift) all stay signed. Both iquant_factor_2_signed and iquant_level_3_correction are {..}-concats (UNSIGNED in Verilog despite `wire signed`), which Quartus inferred unsigned -> HW-bisect: iquant-OUT QO sign-flipped +1.2M vs sim -13K. Restores the original Xilinx $signed() intent (commented line above). Verilator already treats them signed (sim correct), so this is a no-op in sim.
+ 	if ((iquant_level_3[22:11] == 12'b000000000000) || (iquant_level_3[22:11] == 12'b111111111111)) 
+ 	  iquant_level_4 <= iquant_level_3[11:0];
+ 	else 
+@@ -451,7 +451,7 @@ module rld(clk, clk_en, rst,
+     else iquant_factor_2 <= iquant_factor_2;
+ 
+   always @(posedge clk)
+-    if (~rst) 
++    if (~rst)
+       begin
+         iquant_addr_0 <= 6'b0;
+         iquant_addr_1 <= 6'b0;
+diff --git a/rtl/uart_debug.sv b/rtl/uart_debug.sv
+index f2acb92..a6c22c3 100644
+--- a/rtl/uart_debug.sv
++++ b/rtl/uart_debug.sv
+@@ -39,6 +39,10 @@ module uart_debug (
+     input  [2:0] core_vs_edge_cnt,      // Vsync edges seen (0-7, saturates at 7)
+     input [15:0] core_frame_cnt,        // Free-running frame counter (all vsync edges)
+     input [28:0] mem_addr,
++    input [31:0] vl_chksum,              // VL: VLD-decoded coeff level checksum (input to rld, running 32-bit sum)
++    input [31:0] vl_cnt,                 // VN: count of run/level pairs consumed by rld (32-bit)
++    input [31:0] bl_chksum,              // BL: bitstream-into-getbits word checksum (vbr_rd_dta, DDR readback)
++    input [31:0] bn_cnt,                 // BN: count of bitstream words read out of DDR into getbits (32-bit)
+     output tx_pin
+ );
+ 
+@@ -83,6 +87,10 @@ module uart_debug (
+     reg [2:0]  core_vs_edge_cnt_r;
+     reg [15:0] core_frame_cnt_r;
+     reg [28:0] mem_addr_r;
++    reg [31:0] vl_chksum_r; // HW-bisect: VLD-decoded coeff level checksum snapshot
++    reg [31:0] vl_cnt_r;    // HW-bisect: run/level pair count snapshot
++    reg [31:0] bl_chksum_r; // HW-bisect: bitstream-into-getbits word checksum snapshot
++    reg [31:0] bn_cnt_r;    // HW-bisect: bitstream word count snapshot
+ 
+     // State machine
+     // (watchdog_latch is driven entirely inside the main always block below)
+@@ -91,7 +99,7 @@ module uart_debug (
+     localparam S_WAIT_TX = 2; // Wait for ready to go low (ack) then high (done)
+ 
+     reg [3:0] state = S_IDLE;
+-    reg [7:0] char_idx = 0;  // 8 bits to hold indices 0-160
++    reg [7:0] char_idx = 0;  // 8 bits to hold indices 0-186 (incl. VL/VN checksum fields; max 255)
+ 
+     // Message Format: "L:x A:x B:x V:x X:xxx Y:xxx I:xxx S:x F:x E:x Q:x R:x M:x U:x K:x T:x D:x C:x H:x W:xxxx P:xxxx J:xxxx Z:xxxx @:xxxxxxxx G:x O:x N:x SC:x FC:xxxx RP:xxxx PC:xxxx\r\n"
+     // I=init_cnt S=sync_rst F=vbw_almost_full E=mem_req_en Q=mem_req_valid R=mem_res_almost_full
+@@ -100,7 +108,8 @@ module uart_debug (
+     // W=mem_Writes P=mem_reads(P) J=next_lba(Jump)
+     // G=vld_err O=watchdOg_rst(latched) N=vsyNc_edge_count(0-7)
+     // SC=Saved Cmd type (0=none 2=READ 3=WRITE) FC=Frame Counter (vsync edges)
+-    
++    // VL=VLD-decoded coeff Level chksum (input to rld, 32-bit) VN=run/level pair couNt (32-bit)
++
+     function [7:0] to_hex;
+         input [3:0] val;
+         begin
+@@ -155,6 +164,10 @@ module uart_debug (
+                         core_vs_edge_cnt_r <= core_vs_edge_cnt;
+                         core_frame_cnt_r   <= core_frame_cnt;
+                         mem_addr_r <= mem_addr;
++                        vl_chksum_r <= vl_chksum;
++                        vl_cnt_r    <= vl_cnt;
++                        bl_chksum_r <= bl_chksum;
++                        bn_cnt_r    <= bn_cnt;
+                         char_idx <= 0;
+                         state <= S_PRINT;
+                     end
+@@ -326,8 +339,56 @@ module uart_debug (
+                             158: tx_data <= to_hex(mem_pend_cycles_r[11:8]);
+                             159: tx_data <= to_hex(mem_pend_cycles_r[7:4]);
+                             160: tx_data <= to_hex(mem_pend_cycles_r[3:0]);
+-                            161: tx_data <= "\r";
+-                            162: tx_data <= "\n";
++                            161: tx_data <= " ";
++                            162: tx_data <= "V";
++                            163: tx_data <= "L"; // VLD-decoded coeff Level checksum (32-bit, sign-extended sum, input to rld)
++                            164: tx_data <= ":";
++                            165: tx_data <= to_hex(vl_chksum_r[31:28]);
++                            166: tx_data <= to_hex(vl_chksum_r[27:24]);
++                            167: tx_data <= to_hex(vl_chksum_r[23:20]);
++                            168: tx_data <= to_hex(vl_chksum_r[19:16]);
++                            169: tx_data <= to_hex(vl_chksum_r[15:12]);
++                            170: tx_data <= to_hex(vl_chksum_r[11:8]);
++                            171: tx_data <= to_hex(vl_chksum_r[7:4]);
++                            172: tx_data <= to_hex(vl_chksum_r[3:0]);
++                            173: tx_data <= " ";
++                            174: tx_data <= "V";
++                            175: tx_data <= "N"; // run/level pair couNt (32-bit) -- count-aligns VL with sim
++                            176: tx_data <= ":";
++                            177: tx_data <= to_hex(vl_cnt_r[31:28]);
++                            178: tx_data <= to_hex(vl_cnt_r[27:24]);
++                            179: tx_data <= to_hex(vl_cnt_r[23:20]);
++                            180: tx_data <= to_hex(vl_cnt_r[19:16]);
++                            181: tx_data <= to_hex(vl_cnt_r[15:12]);
++                            182: tx_data <= to_hex(vl_cnt_r[11:8]);
++                            183: tx_data <= to_hex(vl_cnt_r[7:4]);
++                            184: tx_data <= to_hex(vl_cnt_r[3:0]);
++                            185: tx_data <= " ";
++                            186: tx_data <= "B";
++                            187: tx_data <= "L"; // bitstream-into-getbits checksum (DDR readback)
++                            188: tx_data <= ":";
++                            189: tx_data <= to_hex(bl_chksum_r[31:28]);
++                            190: tx_data <= to_hex(bl_chksum_r[27:24]);
++                            191: tx_data <= to_hex(bl_chksum_r[23:20]);
++                            192: tx_data <= to_hex(bl_chksum_r[19:16]);
++                            193: tx_data <= to_hex(bl_chksum_r[15:12]);
++                            194: tx_data <= to_hex(bl_chksum_r[11:8]);
++                            195: tx_data <= to_hex(bl_chksum_r[7:4]);
++                            196: tx_data <= to_hex(bl_chksum_r[3:0]);
++                            197: tx_data <= " ";
++                            198: tx_data <= "B";
++                            199: tx_data <= "N"; // bitstream word couNt read out of DDR
++                            200: tx_data <= ":";
++                            201: tx_data <= to_hex(bn_cnt_r[31:28]);
++                            202: tx_data <= to_hex(bn_cnt_r[27:24]);
++                            203: tx_data <= to_hex(bn_cnt_r[23:20]);
++                            204: tx_data <= to_hex(bn_cnt_r[19:16]);
++                            205: tx_data <= to_hex(bn_cnt_r[15:12]);
++                            206: tx_data <= to_hex(bn_cnt_r[11:8]);
++                            207: tx_data <= to_hex(bn_cnt_r[7:4]);
++                            208: tx_data <= to_hex(bn_cnt_r[3:0]);
++                            209: tx_data <= "\r";
++                            210: tx_data <= "\n";
+                             default: begin
+                                 state <= S_IDLE;
+                                 tx_valid <= 0;
+diff --git a/sys/audio_out.v b/sys/audio_out.v
+index 0f748e0..c3d8e6a 100644
+--- a/sys/audio_out.v
++++ b/sys/audio_out.v
+@@ -177,27 +177,15 @@ always @(posedge clk, posedge reset) begin
+ end
+ 
+ wire [15:0] acl, acr;
+-IIR_filter #(.use_params(0)) IIR_filter
+-(
+-	.clk(clk),
+-	.reset(reset),
+-
+-	.ce(flt_ce & a_en1),
+-	.sample_ce(sample_ce),
+-
+-	.cx(cx),
+-	.cx0(cx0),
+-	.cx1(cx1),
+-	.cx2(cx2),
+-	.cy0(cy0),
+-	.cy1(cy1),
+-	.cy2(cy2),
+-
+-	.input_l({~is_signed ^ cl[15], cl[14:0]}),
+-	.input_r({~is_signed ^ cr[15], cr[14:0]}),
+-	.output_l(acl),
+-	.output_r(acr)
+-);
++// IIR_filter DROPPED (573 resource-recovery tweak): frees ~8 DSP + ~430 ALM of headroom and
++// clears the unused audio-PLL timing crits. This MPEG2 core has no audio yet (AUDIO_L/R tied 0
++// in emu), and even with audio, unfiltered is fine. The passthrough preserves the SAME input
++// sign conversion the filter applied at its input, so the downstream DC_blocker + aud_mix_top
++// are unchanged. The OSD 'Audio Filter' option becomes a no-op; cx/cx0-2/cy0-2 coeff wires go
++// unused (Quartus prunes them). Purpose here: free fit/timing slack so the L2/F2 decode probe
++// stops tipping the f2sdram path into a wedge.
++assign acl = {~is_signed ^ cl[15], cl[14:0]};
++assign acr = {~is_signed ^ cr[15], cr[14:0]};
+ 
+ wire [15:0] adl;
+ DC_blocker dcb_l

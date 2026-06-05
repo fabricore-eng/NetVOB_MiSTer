@@ -996,3 +996,14 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   probe HW-vs-sim to split mem-path-corruption from vld-decode (rld_fifo is single-clock/276020-safe, not
   the dual-clock suspect). | advanced: ruled OUT the global FIFO swap (wedges); VLD-output bug still open,
   next probe designed | blocked: nothing | building: nothing (getbits-probe next).
+- 2026-06-05 (byte-probe build — the mem-path-vs-vld bisect) — Added a BL/BN byte probe ALONGSIDE
+  VL/VN (4 parent-level accumulators in mpeg2video = the known-clean probefix size, zero churn):
+  BL/BN = checksum+count of vbr_rd_dta gated by vbr_rd_valid = the compressed bitstream WORDS read back
+  out of DDR into getbits. Mirror added to the iverilog testbench (FRAME line + 0x1000-word
+  checkpoints). lint-clean (mpeg2video 67 modules, uart_debug). HW build launched (pid 725493,
+  watcher by0qh3q4k); sim rebuilt + full-draining for the BL/BN golden. VERDICT LOGIC: HW BL/BN==sim =>
+  bitstream into vld is INTACT through the real DDR/mem-FIFO path => dual-clock-R/W theory WRONG, bug is
+  vld-decode/rld_fifo; HW BL/BN!=sim => mem path corrupts the bitstream => targeted 2-FIFO swap worth a
+  build. RTL snapshot: core/patches/hw/mpeg2fpga-hw-bisect-vld+byte-probe.patch (re-appliable, verified).
+  | advanced: byte-probe bisect queued (HW+sim building) | blocked: nothing | building: HW byte-probe
+  (by0qh3q4k), sim golden (bo4hfsal9).
