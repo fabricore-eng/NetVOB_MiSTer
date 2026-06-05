@@ -922,3 +922,28 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   build-independent spine fixes. SIM GOLDEN block16 L2=ffffec6a F2=00052940 still valid for when a clean
   probe lands. Spine: 3 bugs fixed so far (arm ps_demux 3ff8d7d, python ps_demux 7c26118, ifo
   inverted-cell b2ba13f); continuing the contained ones.
+
+- 2026-06-05 (WEDGE MECHANISM CRACKED by team = −81ps bridge HOLD; minimal probe building to confirm;
+  spine bug #4 fixed) — 573+cockpit P&R teardown converged: the probe-wedge is a marginal placement-
+  induced HOLD violation on the HPS f2sdram bridge clock (h2f_user0_clk->h2f_user0_clk INTRA-domain,
+  worst-corner hold slack −0.081ns). NAMEABLE LESSON (cockpit added to hub LESSONS.md): Quartus fixes
+  hold by inserting routing delay on the fast path; at near-full routing utilization it RUNS OUT of room
+  and leaves a sub-threshold hold viol (−81ps) WITHOUT a Critical Warning. The probe's wide export
+  (6×32b ~192 cross-hier nets) STOLE the local routing room Quartus needed near sysmem -> tripped the
+  hold. Fits every symptom: setup-INVISIBLE (bridge setup meets +12%), freq-independent (warm reboot
+  can't clear -> deterministic-from-clean), placement/skew-dependent (re-fit trips it), deterministic
+  (5/5-identical sector-34 wedge). RULED OUT: observe-effect/CDC (intra-domain), fit-SIZE (430 ALM
+  headroom didn't help — it's LOCAL route skew, not global util; corrects my earlier headroom theory),
+  internal unconstrained landmine (unconstrained = I/O pins only). FIX SEPARATION (573): (A) the −81ps
+  hold = a ROOM problem on an already-constrained/already-fix-attempted path -> cure is FLOORPLAN
+  (LogicLock the probe export AWAY from sysmem to restore delay-insertion room); SDC min-delay does NOT
+  cure (changes what STA checks, not the room) and you can't pipeline inside the Altera f2sdram IP. (B)
+  the 3 unconstrained I/O ports -> constrain for VISIBILITY only (catch future regressions), not a hold
+  cure. IMMEDIATE: shrank the probe to L2/F2/N2 ONLY (dropped QO/IO/QN/IN; ~80 nets << the 128-net clean
+  threshold) to remove the perturbation -> patch core/patches/hw/mpeg2fpga-l2f2-minimal-probe.patch
+  (authoritative current HW working tree; supersedes the QO/IO probe patches). Lint clean, FSM
+  contiguous (0..194), QO/IO/QN/IN identifiers gone, sim golden unchanged (block16 L2=ffffec6a
+  F2=00052940). BUILDING on dell (occ=2 w/ 573). PREDICTION: feeds clean (hold closes) -> confirms
+  mechanism + gives the L2/F2 read. ON CLEAN READ: count-align block16 -> HW L2 diverges from ffffec6a
+  => VLD/upstream; L2 matches + F2 diverges from 00052940 => matrix/factor; both match => multiply/
+  saturate logic. Spine bug #4 fixed: arm ps_demux runaway-header-skip (commit 925eac4, Pass 7 r/g).
