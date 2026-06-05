@@ -1094,3 +1094,15 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   continuous/cycle-based so NOT count-alignable — use align/per-byte). | advanced: REAL decoded video on
   HW (top-third correct); bug narrowed to mid-stream desync, from-start ordering ruled out | blocked:
   nothing | building: nothing.
+- 2026-06-05 (mid-frame desync analysis — wrap/lost-response/from-start all RULED OUT) — VBUF
+  (mem_codes.v, MP_AT_HL active): 0x1c0000..0x1efffe = ~1.47MB circular buffer (wraps once at ~1.47MB in
+  the 2MB clip). The desync is MID-FRAME (~top third = MB-row ~10/30 of ONE frame; one 720x480 frame's
+  bitstream << 1.47MB) so the buffer doesn't wrap until many frames later => candidate (a) buffer-wrap
+  RULED OUT. (b) resp_timeout RULED OUT (P==RP, no lost response / no 64'd0 inject). From-start ordering
+  RULED OUT (G0=0x000001). So the desync is a SPECIFIC mid-frame event at ~slice 10/30. Leading
+  hypothesis: a mid-frame DDR-roundtrip VALUE corruption (a wrong word delivered ~1/3 in — responded but
+  wrong data) that desyncs vld, or a vld construct mis-handled. NEXT: a PER-BYTE/per-MB count-alignable
+  getbits-vs-sim probe to pin the first divergent byte + a per-macroblock decode-progress counter to map
+  the desync to a bitstream offset. (getbits_valid is continuous/cycle-based — gate on a per-byte event.)
+  | advanced: desync localized to a mid-frame slice (~10/30); wrap/lost-response/from-start eliminated |
+  blocked: nothing | building: nothing (per-byte getbits probe next).
