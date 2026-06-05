@@ -37,7 +37,7 @@ import socket
 import threading
 import uuid
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from service.core import protocol as proto
 from service.core.catalog import Catalog
@@ -86,6 +86,7 @@ class _Session:
         chunk_size: int,
         prebuffer_bytes: int,
         rate_bytes_per_s: Optional[float],
+        on_finish: Optional[Callable[["_Session"], None]] = None,
     ) -> None:
         self.session_id = session_id
         self.source = source
@@ -93,6 +94,10 @@ class _Session:
         self._chunk_size = chunk_size
         self._prebuffer_bytes = prebuffer_bytes
         self._rate_bytes_per_s = rate_bytes_per_s
+        # Invoked exactly once when the session is fully torn down (natural
+        # EOF/error in the pump, or stop()). The server uses it to evict the
+        # session from its registry so finished sessions don't accumulate.
+        self._on_finish = on_finish
 
         self.handle: Optional[StreamHandle] = None
         self.streamer: Optional[Streamer] = None
@@ -105,6 +110,8 @@ class _Session:
         self._lock = threading.Lock()
         self._closed = False
         self._paused = False
+        self._bound = False
+        self._finished = False
         # Set once the handle has been opened (so the preamble is buildable).
         self.opened = threading.Event()
 
@@ -134,6 +141,12 @@ class _Session:
                 # stop() already ran (e.g. control channel dropped); refuse to
                 # start a doomed pump and let the caller close the socket.
                 raise OSError("session already stopped")
+            if self._bound:
+                # A second media socket raced to claim the same session id;
+                # reject it so two pumps never share one handle (which would
+                # corrupt the stream). The caller closes the losing socket.
+                raise OSError("session already bound")
+            self._bound = True
             assert self.handle is not None
             self._media_sock = media_sock
             writer = _SocketWriter(media_sock)
@@ -183,7 +196,9 @@ class _Session:
             # Media socket closed under us (client/stop). Treat as end.
             pass
         finally:
-            self._finish_media_socket()
+            # Natural EOF/error: release the handle, the socket, and evict the
+            # session. Idempotent, so stop()'s own cleanup is harmless.
+            self._cleanup()
 
     def _finish_media_socket(self) -> None:
         sock = self._media_sock
@@ -196,6 +211,33 @@ class _Session:
             try:
                 sock.close()
             except OSError:
+                pass
+
+    def _cleanup(self) -> None:
+        """Idempotently release the handle + media socket, then notify.
+
+        Called from the pump's ``finally`` (natural EOF/error) and from
+        ``stop()``. The ``_finished`` guard makes it run its effects exactly
+        once regardless of which path (or both) reaches it, so the source
+        handle (which may wrap an ffmpeg subprocess/fd) is always closed and
+        the server is told exactly once to evict the session.
+        """
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            on_finish = self._on_finish
+            handle = self.handle
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        self._finish_media_socket()
+        if on_finish is not None:
+            try:
+                on_finish(self)
+            except Exception:
                 pass
 
     # -- control surface ----------------------------------------------------
@@ -216,6 +258,13 @@ class _Session:
         self._run_gate.set()
 
     def seek(self, t_seconds: float) -> None:
+        # Handle-level read/seek atomicity is the handle's responsibility (the
+        # design contract: a handle.seek() may run concurrently with a blocked
+        # read() and redirect the in-flight read to post-seek data). We must
+        # NOT serialize seek behind the pump's (possibly blocking) read here or
+        # a gated/transcode handle deadlocks. The streamer-buffer flush below
+        # races the pump's buffer churn only for a *non-blocking* handle
+        # mid-play; see the spine-review note on the remaining epoch work.
         with self._lock:
             if self.streamer is not None:
                 self.streamer.seek(t_seconds)
@@ -233,16 +282,24 @@ class _Session:
             if self._closed:
                 return
             self._closed = True
-            if self.streamer is not None:
-                self.streamer.stop()
-            elif self.handle is not None:
-                self.handle.close()
-        # Wake the pump so it observes STOPPED and exits.
+            streamer = self.streamer
+        # Flag the streamer stopped (authoritative exit is ``_closed``, checked
+        # under ``_lock`` at the pump's loop top; this only flips an enum so it
+        # can't race the pump's handle.read(), and it spares a final stale
+        # emit). Handle close is deferred to _cleanup to avoid a double close.
+        if streamer is not None:
+            streamer.state = State.STOPPED
+        # Wake a parked pump so it observes the stop and exits its loop.
         self._run_gate.set()
+        # Release the handle + socket BEFORE the join so a pump blocked in
+        # handle.read() (a gated/transcode handle waits on its own condition,
+        # which close() signals) OR in sendall (the closed socket raises)
+        # unblocks and exits — otherwise the join would hang on it. _cleanup
+        # is idempotent, so the pump's own finally _cleanup is a no-op after.
+        self._cleanup()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5.0)
-        self._finish_media_socket()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -305,6 +362,7 @@ class Server:
         self._sessions_lock = threading.Lock()
 
         self._threads: list[threading.Thread] = []
+        self._threads_lock = threading.Lock()
         self._running = False
         #: Set once *both* listeners are bound + listening — the real
         #: readiness signal tests wait on (no sleeps).
@@ -341,7 +399,7 @@ class Server:
         ):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
-            self._threads.append(t)
+            self._register_thread(t)
         # Both listeners are now bound + listening.
         self.ready.set()
 
@@ -353,16 +411,29 @@ class Server:
             self._sessions.clear()
         for sess in sessions:
             sess.stop()
-        for t in self._threads:
+        with self._threads_lock:
+            threads = list(self._threads)
+            self._threads.clear()
+        for t in threads:
             if t is not threading.current_thread():
                 t.join(timeout=2.0)
-        self._threads.clear()
         for sock in (self._ctrl_sock, self._media_sock):
             try:
                 sock.close()
             except OSError:
                 pass
         self.ready.clear()
+
+    def _register_thread(self, t: threading.Thread) -> None:
+        """Track a worker thread, pruning any that have already finished.
+
+        Per-connection handler threads are short-lived; without pruning the
+        list would grow unbounded over a long-lived server. Guarded so the two
+        acceptor threads (and shutdown) don't race the list.
+        """
+        with self._threads_lock:
+            self._threads = [x for x in self._threads if x.is_alive()]
+            self._threads.append(t)
 
     def __enter__(self) -> "Server":
         self.start()
@@ -386,7 +457,7 @@ class Server:
                 name="ctrl-conn", daemon=True,
             )
             t.start()
-            self._threads.append(t)
+            self._register_thread(t)
 
     def _accept_media(self) -> None:
         while self._running:
@@ -401,7 +472,7 @@ class Server:
                 name="media-conn", daemon=True,
             )
             t.start()
-            self._threads.append(t)
+            self._register_thread(t)
 
     # -- control connection handler -----------------------------------------
 
@@ -414,6 +485,11 @@ class Server:
         """
         active: Optional[_Session] = None
         buf = b""
+        # Accepted sockets do NOT inherit the listener's timeout, so without
+        # this an idle recv() blocks forever and the loop never re-checks
+        # ``_running`` -> shutdown() can't reap this thread. The timeout turns
+        # idle recv into a periodic wakeup (caught below, loop continues).
+        conn.settimeout(0.5)
         try:
             with conn:
                 while self._running:
@@ -500,6 +576,9 @@ class Server:
             chunk_size=self._chunk_size,
             prebuffer_bytes=self._prebuffer_bytes,
             rate_bytes_per_s=self._rate_bytes_per_s,
+            # Evict the session from the registry when it finishes on its own
+            # (EOF/error in the pump), so finished sessions don't accumulate.
+            on_finish=self._evict,
         )
         # open() may raise (bad id / not implemented) -> surfaces as error.
         sess.open()
@@ -567,6 +646,14 @@ class Server:
         if prefix in well_known:
             return self.catalog.find_source(well_known[prefix])
         return None
+
+    def _evict(self, sess: "_Session") -> None:
+        """Drop a session from the registry (called on natural EOF/error).
+
+        Idempotent w.r.t. ``_end_session``: both ``pop(..., None)``.
+        """
+        with self._sessions_lock:
+            self._sessions.pop(sess.session_id, None)
 
     def _end_session(self, active: Optional[_Session]) -> None:
         if active is None:

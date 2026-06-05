@@ -23,6 +23,7 @@ import service.tests._bootstrap  # noqa: F401
 import json
 import socket
 import threading
+import time
 import unittest
 
 from service.core import protocol as proto
@@ -608,6 +609,148 @@ class ServerLoopbackTest(unittest.TestCase):
         reply = client.recv_msg()
         self.assertEqual(reply["type"], proto.MSG_ERROR)
         self.assertIn("no such title", reply["message"])
+
+    # -- lifecycle: natural EOF closes the handle + evicts the session -------
+
+    def test_natural_eof_closes_handle_and_evicts_session(self):
+        # A finite source streamed to completion must (a) close its handle
+        # (else an ffmpeg subprocess/fd leaks per finished playback) and
+        # (b) be evicted from the registry (else _sessions grows unbounded).
+        ps = _build_ps(num_video_packets=8, payload_size=512)
+
+        class _RecordingSource(FakeSource):
+            def __init__(self, data):
+                super().__init__(data)
+                self.last_handle: _MemHandle | None = None
+
+            def open(self, id):
+                h = _MemHandle(self._data)
+                self.last_handle = h
+                return h
+
+        src = _RecordingSource(ps)
+        server = self._start_server(src)
+        client = _Client(server)
+        self.addCleanup(client.close)
+
+        client.send(proto.make(proto.MSG_PLAY, id="fake:clip"))
+        session_id = client.recv_msg()["session_id"]
+        client.open_media(session_id)
+
+        # Drain to EOF: the pump reaches DONE and runs its finally cleanup.
+        received = client.media_recv_all()
+        self.assertEqual(received, ps)  # full payload, byte-for-byte
+
+        # Handle is closed before the socket EOF (cleanup order), so it is
+        # reliably closed by the time recv_all returns.
+        assert src.last_handle is not None
+        self.assertTrue(src.last_handle.closed)
+
+        # Eviction happens just after the socket EOF (the next cleanup line),
+        # so poll briefly for it rather than asserting on a knife-edge.
+        self.assertTrue(
+            _wait_until(lambda: session_id not in server._sessions),
+            "session was not evicted after natural EOF",
+        )
+
+    # -- lifecycle: a second media socket can't hijack a claimed session ----
+
+    def test_double_claim_is_rejected(self):
+        # Two media sockets racing the same session id must not start two
+        # pumps on one handle (which would corrupt the stream). The first to
+        # bind wins; the second is refused.
+        total = _GatedHandle.CHUNK * 6
+        data = bytes([i & 0xFF for i in range(total)])
+        src = GatedSource(data)
+        server = self._start_server(
+            src, chunk_size=_GatedHandle.CHUNK, prebuffer_bytes=0
+        )
+        client = _Client(server)
+        self.addCleanup(client.close)
+
+        client.send(proto.make(proto.MSG_PLAY, id="gated:clip"))
+        session_id = client.recv_msg()["session_id"]
+        client.open_media(session_id)  # socket #1 claims + binds
+
+        # Prove socket #1 is the live (bound) pump before racing a second
+        # claim, so the winner is deterministic.
+        src.handle.feed(_GatedHandle.CHUNK)
+        self.assertEqual(
+            len(client.media_recv(_GatedHandle.CHUNK)), _GatedHandle.CHUNK
+        )
+
+        # Socket #2: claim the SAME session id. bind_media() rejects it, so
+        # after the (already-sent) preamble the connection is closed -> recv
+        # returns b"" rather than a second slice of the stream.
+        sock2 = socket.create_connection(server.media_address, timeout=5.0)
+        self.addCleanup(sock2.close)
+        sock2.settimeout(5.0)
+        sock2.sendall(
+            json.dumps({"type": "claim", "session_id": session_id}).encode()
+            + b"\n"
+        )
+        # Read past the preamble line, then assert the socket is closed.
+        buf = b""
+        got_eof = False
+        while True:
+            chunk = sock2.recv(65536)
+            if not chunk:
+                got_eof = True
+                break
+            buf += chunk
+        self.assertTrue(got_eof, "second claimant was not rejected")
+
+        # Socket #1's stream is intact (single pump): the next fed chunk flows.
+        src.handle.feed(_GatedHandle.CHUNK)
+        self.assertEqual(
+            len(client.media_recv(_GatedHandle.CHUNK)), _GatedHandle.CHUNK
+        )
+
+    # -- lifecycle: shutdown reaps an idle control connection ---------------
+
+    def test_shutdown_reaps_idle_control_connection(self):
+        # An accepted control socket does not inherit the listener's timeout;
+        # without an explicit settimeout its recv() blocks forever and the
+        # handler thread can never observe shutdown -> it leaks. Verify the
+        # handler thread is reaped by shutdown().
+        ps = _build_ps()
+        server = self._start_server(FakeSource(ps))
+        # Connect but send nothing -> the handler sits in recv().
+        idle = socket.create_connection(server.control_address, timeout=5.0)
+        self.addCleanup(idle.close)
+
+        ctrl_thread = _wait_for_thread(server, "ctrl-conn")
+        self.assertIsNotNone(ctrl_thread, "control handler never started")
+
+        server.shutdown()
+        # With the timeout fix the handler wakes, sees _running False, exits.
+        # (addCleanup will call shutdown again; it is idempotent.)
+        ctrl_thread.join(timeout=3.0)
+        self.assertFalse(
+            ctrl_thread.is_alive(),
+            "idle control handler was not reaped by shutdown",
+        )
+
+
+def _wait_until(pred, timeout=5.0, interval=0.01) -> bool:
+    """Poll ``pred`` until true or timeout. No fixed sleeps in the happy path."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(interval)
+    return pred()
+
+
+def _wait_for_thread(server, name_prefix, timeout=5.0):
+    """Return the first live worker thread whose name starts with prefix."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for t in list(server._threads):
+            if t.name.startswith(name_prefix) and t.is_alive():
+                return t
+        time.sleep(0.01)
+    return None
 
 
 if __name__ == "__main__":

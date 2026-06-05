@@ -4,6 +4,7 @@ import service.tests._bootstrap  # noqa: F401
 
 import os
 import tempfile
+import threading
 import unittest
 
 from service.sources.base.source import NavInfo, Source
@@ -212,6 +213,72 @@ class DVDCellStreamTest(unittest.TestCase):
             out = h.read(10_000)
             self.assertIn(b"FEATURE", out)
             self.assertNotIn(b"NAVX", out)
+
+    def test_read_and_seek_are_mutually_exclusive(self):
+        # The server's control thread can seek() while the streamer pump is
+        # inside read(); both mutate (_buf, _buf_pos, _span_idx), so without a
+        # lock they race and mix pre-/post-seek bytes (garbled PS). Prove the
+        # handle serializes them: a read() held mid-_fill() must block a
+        # concurrent seek() until the read completes.
+        with tempfile.TemporaryDirectory() as d:
+            s0, s1, s2 = self._three_cell_vob()
+            vob = os.path.join(d, "VTS_05_1.VOB")
+            with open(vob, "wb") as f:
+                f.write(s0 + s1 + s2)
+            cells = [
+                CellPlayback(1, 0x02, 0, 5.0, 0, 0, 0),
+                CellPlayback(2, 0x08, 0, 5.0, 1, 1, 1),
+                CellPlayback(3, 0x0A, 0, 5.0, 2, 2, 2),
+            ]
+            spans = [
+                CellSpan(vob, c.first_sector * SECTOR,
+                         (c.last_sector + 1) * SECTOR, c.cell_nr)
+                for c in cells
+            ]
+            nav = navinfo_from_cells(cells)
+
+            in_fill = threading.Event()
+            release_fill = threading.Event()
+
+            class _BlockingFillHandle(DVDCellStreamHandle):
+                def _fill(self):
+                    # Signal we're inside read()'s critical section, then hold
+                    # it until the test releases us.
+                    in_fill.set()
+                    release_fill.wait(timeout=5.0)
+                    return super()._fill()
+
+            h = _BlockingFillHandle(spans, cells=cells, nav=nav)
+
+            read_done = threading.Event()
+            seek_done = threading.Event()
+
+            def _do_read():
+                h.read(100)
+                read_done.set()
+
+            def _do_seek():
+                h.seek(7.0)
+                seek_done.set()
+
+            reader = threading.Thread(target=_do_read)
+            reader.start()
+            self.assertTrue(in_fill.wait(timeout=5.0))  # read holds the lock
+
+            seeker = threading.Thread(target=_do_seek)
+            seeker.start()
+            # The seek must NOT complete while read holds the lock.
+            self.assertFalse(
+                seek_done.wait(timeout=0.5),
+                "seek() ran concurrently with read() (no mutual exclusion)",
+            )
+
+            # Release read; both should finish promptly and in order.
+            release_fill.set()
+            self.assertTrue(seek_done.wait(timeout=5.0))
+            self.assertTrue(read_done.wait(timeout=5.0))
+            reader.join(timeout=5.0)
+            seeker.join(timeout=5.0)
 
 
 class PlexSourceStubTest(unittest.TestCase):

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from typing import Iterator, Optional
 
 from service.sources.base.source import (
@@ -185,34 +186,43 @@ class DVDStreamHandle(StreamHandle):
             video="mpeg2", audio="ac3", field_cadence="interlaced"
         )
         self._closed = False
+        # Serializes read()/seek()/close() so a control-thread seek() can't
+        # race the pump's read() and mix pre-/post-seek bytes (garbled PS).
+        # read() is in-memory (non-blocking), so holding the lock can't
+        # deadlock a concurrent seek.
+        self._lock = threading.Lock()
 
     def read(self, n: int) -> bytes:
-        if self._closed:
-            raise ValueError("read on a closed handle")
         if n <= 0:
             return b""
-        chunk = self._data[self._pos : self._pos + n]
-        self._pos += len(chunk)
-        return chunk
+        with self._lock:
+            if self._closed:
+                raise ValueError("read on a closed handle")
+            chunk = self._data[self._pos : self._pos + n]
+            self._pos += len(chunk)
+            return chunk
 
     def seek(self, t_seconds: float) -> None:
-        if self._closed:
-            raise ValueError("seek on a closed handle")
-        if self.nav is not None:
-            target = self.nav.nearest_preceding(t_seconds)
-            if target is not None:
-                self._pos = target[1]
-                return
-        # No usable index: clamp to start (a real impl would use the time map).
-        self._pos = 0
+        with self._lock:
+            if self._closed:
+                raise ValueError("seek on a closed handle")
+            if self.nav is not None:
+                target = self.nav.nearest_preceding(t_seconds)
+                if target is not None:
+                    self._pos = target[1]
+                    return
+            # No usable index: clamp to start (a real impl would time-map).
+            self._pos = 0
 
     def close(self) -> None:
-        self._closed = True
-        self._data = b""
+        with self._lock:
+            self._closed = True
+            self._data = b""
 
     # Test/diagnostic helper: bytes remaining from the current position.
     def remaining(self) -> int:
-        return max(0, len(self._data) - self._pos)
+        with self._lock:
+            return max(0, len(self._data) - self._pos)
 
 
 def navinfo_from_cells(cells: list[CellPlayback]) -> NavInfo:
@@ -284,6 +294,14 @@ class DVDCellStreamHandle(StreamHandle):
             video="mpeg2", audio="ac3", field_cadence="interlaced"
         )
         self._closed = False
+        # read()/seek()/close() all mutate (_buf, _buf_pos, _span_idx). The
+        # server's control thread can seek() while the streamer pump is inside
+        # read() -> a data race that mixes pre-/post-seek bytes (garbled PS).
+        # This lock makes them mutually exclusive. read() here never blocks on
+        # external I/O (file reads are local + bounded), so holding it across a
+        # read can't deadlock a concurrent seek (unlike a network/gated handle,
+        # whose own internal sync is its responsibility).
+        self._lock = threading.Lock()
 
     def _fill(self) -> bool:
         """Load + strip the next span into the pending buffer. False at EOF."""
@@ -301,47 +319,50 @@ class DVDCellStreamHandle(StreamHandle):
         return False
 
     def read(self, n: int) -> bytes:
-        if self._closed:
-            raise ValueError("read on a closed handle")
         if n <= 0:
             return b""
-        out = bytearray()
-        while len(out) < n:
-            if self._buf_pos >= len(self._buf):
-                if not self._fill():
-                    break  # EOF
-            take = min(n - len(out), len(self._buf) - self._buf_pos)
-            out += self._buf[self._buf_pos : self._buf_pos + take]
-            self._buf_pos += take
-        return bytes(out)
+        with self._lock:
+            if self._closed:
+                raise ValueError("read on a closed handle")
+            out = bytearray()
+            while len(out) < n:
+                if self._buf_pos >= len(self._buf):
+                    if not self._fill():
+                        break  # EOF
+                take = min(n - len(out), len(self._buf) - self._buf_pos)
+                out += self._buf[self._buf_pos : self._buf_pos + take]
+                self._buf_pos += take
+            return bytes(out)
 
     def seek(self, t_seconds: float) -> None:
-        if self._closed:
-            raise ValueError("seek on a closed handle")
-        target_cell_nr: Optional[int] = None
-        if self.nav is not None and self._cells:
-            # nav entries are (time, raw_offset) per cell, in cell order.
-            best_i = -1
-            for i, (ct, _) in enumerate(self.nav.entries):
-                if ct <= t_seconds:
-                    best_i = i
-                else:
-                    break
-            if best_i >= 0 and best_i < len(self._cells):
-                target_cell_nr = self._cells[best_i].cell_nr
-        if target_cell_nr is None and self._spans:
-            target_cell_nr = self._spans[0].cell_nr
-        if target_cell_nr is not None:
-            self._span_idx = self._cell_first_span.get(target_cell_nr, 0)
-        else:
-            self._span_idx = 0
-        self._buf = b""
-        self._buf_pos = 0
+        with self._lock:
+            if self._closed:
+                raise ValueError("seek on a closed handle")
+            target_cell_nr: Optional[int] = None
+            if self.nav is not None and self._cells:
+                # nav entries are (time, raw_offset) per cell, in cell order.
+                best_i = -1
+                for i, (ct, _) in enumerate(self.nav.entries):
+                    if ct <= t_seconds:
+                        best_i = i
+                    else:
+                        break
+                if best_i >= 0 and best_i < len(self._cells):
+                    target_cell_nr = self._cells[best_i].cell_nr
+            if target_cell_nr is None and self._spans:
+                target_cell_nr = self._spans[0].cell_nr
+            if target_cell_nr is not None:
+                self._span_idx = self._cell_first_span.get(target_cell_nr, 0)
+            else:
+                self._span_idx = 0
+            self._buf = b""
+            self._buf_pos = 0
 
     def close(self) -> None:
-        self._closed = True
-        self._spans = []
-        self._buf = b""
+        with self._lock:
+            self._closed = True
+            self._spans = []
+            self._buf = b""
 
 
 class DVDDumpSource(Source):

@@ -24,15 +24,29 @@ Status legend: ☐ open · ☑ fixed (commit)
 - ☐ **arm/netd.c:113-124 (+netingest.c)** — no transport §4 backpressure: recv() never gates on
   `ni_room()` (dead water marks); `es_to_ring_sink` silently drops overflow ES on the on-target
   sd_* path. **Fix:** gate recv on ring room (reuse realpipe.c §4); make `es_dropped>0` a hard error.
-- ☐ **server.py seek race (218-229 vs 161-187 + dvddump.py:318-339)** — mid-play seek races
-  `handle.read()` (run outside `_lock`) → garbled PS. **Fix:** park the pump before seeking.
+- ◐ **server.py seek race (218-229 vs 161-187 + dvddump.py:318-339)** — mid-play seek races
+  `handle.read()` (run outside `_lock`) → garbled PS. **PARTIALLY FIXED.** The *handle-level* data
+  race (the cited `dvddump.py:318-339`) is fixed: `DVDStreamHandle` + `DVDCellStreamHandle` now guard
+  `read()/seek()/close()` with a per-handle lock (their reads are non-blocking, so this can't
+  deadlock) — red/green via `test_read_and_seek_are_mutually_exclusive`. The "park the pump" framing
+  is NOT viable: the design contract is that `handle.seek()` may run concurrently with a *blocked*
+  `read()` and redirect the in-flight read to post-seek data (the gated/transcode case; see
+  `test_seek_repositions_stream`), so serializing seek behind the pump's read deadlocks. The remaining
+  gap: for a *non-blocking* handle mid-play, `_Session.seek()`→`streamer.seek()`'s `buffer.clear()`
+  can still race the pump's `buffer.extend()` (a pre-seek chunk extended after the clear → leak). A
+  correct fix needs a handle **position-epoch captured atomically with read-extraction** so the
+  streamer can drop only genuinely-stale chunks (epoch alone is ambiguous: an in-flight read across a
+  seek returns *valid* post-seek data). Tracked for the M2 live-path hardening pass.
 - ☐ **dvddump.py:449/517 + ifo.py:392-417** — two titles in one VTS get identical catalog ids,
   both play episode 1 (VTS_PTT_SRPT + all PGCI_SRP never parsed). **Fix:** encode `vts_ttn`, parse
   PTT_SRPT, select the right PGC.
-- ☐ **server.py:161-187 + streamer.py** — source handle never closed on natural EOF/error (leaks an
-  ffmpeg subprocess/fd per finished playback for M3/Plex). **Fix:** close handle in pump finally.
-- ☐ **server.py:484-517 + 571-576** — sessions never evicted on natural EOF → `_sessions` grows
-  unbounded. **Fix:** pump finished-callback evicts + closes (fold with handle-close).
+- ☑ **server.py:161-187 + streamer.py** — source handle never closed on natural EOF/error (leaks an
+  ffmpeg subprocess/fd per finished playback for M3/Plex). **FIXED** (the pump's `finally` now calls
+  an idempotent `_Session._cleanup()` that closes the handle) + `test_natural_eof_closes_handle...`
+  (red/green verified).
+- ☑ **server.py:484-517 + 571-576** — sessions never evicted on natural EOF → `_sessions` grows
+  unbounded. **FIXED** (folded into `_cleanup()`: an `on_finish=Server._evict` callback pops the
+  session from the registry; idempotent w.r.t. `_end_session`) + same regression test.
 
 ## MEDIUM
 - ☐ **arm/ps_demux.c EOF tail-loss** — no `ps_demux_finalize()`; up to 2 withheld `pend_zeros` lost
@@ -40,10 +54,14 @@ Status legend: ☐ open · ☑ fixed (commit)
 - ☑ **arm/ps_demux.c:344-351** — runaway header skip on malformed PES (hdr_len > pkt len) swallows
   the next unit. **FIXED** (stage-0 guard: if `hdr_len > pkt_remaining` on a bounded PES, resync to
   start-code instead of overrunning) + Pass 7 regression test (red/green verified).
-- ☐ **server.py:580-614 + 130-159** — no double-claim guard on session id → two pumps share one
-  handle. **Fix:** atomic pop-or-mark; already-bound check.
-- ☐ **server.py:408-421** — accepted control conn has no `settimeout` → recv hangs forever, defeats
-  shutdown. **Fix:** `settimeout(0.5)` on accepted conn.
+- ☑ **server.py:580-614 + 130-159** — no double-claim guard on session id → two pumps share one
+  handle. **FIXED** (`_Session.bind_media()` sets a `_bound` flag under `_lock`; a second claimant
+  raises `OSError("session already bound")` and its socket is closed) + `test_double_claim_is_rejected`
+  (red/green verified).
+- ☑ **server.py:408-421** — accepted control conn has no `settimeout` → recv hangs forever, defeats
+  shutdown. **FIXED** (`conn.settimeout(0.5)` on the accepted control conn; the existing
+  `socket.timeout`→continue loop now re-checks `_running`) + `test_shutdown_reaps_idle_control...`
+  (red/green verified).
 - ☐ **dvddump.py:288-301** — `_fill()` reads an ENTIRE cell span (~296 MB+) into memory, defeating
   the pull/low-mem design. **Fix:** bounded sector-multiple reads, one fh across same-file spans.
 - ☐ **dvddump.py:218-241 + 318-339** — unspecified-fps cell → 0 duration → non-monotonic seek map →
@@ -52,7 +70,9 @@ Status legend: ☐ open · ☑ fixed (commit)
   **FIXED** (reject at parse with IFOParseError + clamp nr_sectors>=0) + 2 tests (red/green verified).
 
 ## LOW
-- ☐ **server.py:384-404** — `self._threads` grows unbounded (handler threads never pruned).
+- ☑ **server.py:384-404** — `self._threads` grows unbounded (handler threads never pruned).
+  **FIXED** (`Server._register_thread()` prunes dead threads under a new `_threads_lock` on every
+  spawn; `shutdown()` snapshots under the same lock — also closes a prior unlocked-list data race).
 
 ## Completeness (M2/M3)
 - **M2 (live ingest):** control/data plane works at loopback; MISSING real backpressure, the actual
