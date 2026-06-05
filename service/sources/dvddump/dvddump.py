@@ -247,8 +247,35 @@ def navinfo_from_cells(cells: list[CellPlayback]) -> NavInfo:
         entries.append((t, raw_off))
         if cell.playback_time_s is not None:
             t += cell.playback_time_s
+        else:
+            # No PGC playback time for this cell (unspecified/zero fps in the
+            # IFO). Advancing t by 0 would make this and the next cell share an
+            # identical timestamp -> a non-monotonic seek map where a seek into
+            # the gap mis-lands (nearest_preceding can't disambiguate equal
+            # times). Estimate a non-zero duration from the cell's size at a
+            # nominal DVD-Video bitrate so t stays STRICTLY increasing and the
+            # landing is at least proportionate. Coarse by design (see NOTE).
+            t += _estimate_cell_seconds(cell.nr_sectors)
         raw_off += cell.nr_sectors * SECTOR
     return NavInfo(entries=entries)
+
+
+# Nominal DVD-Video program bitrate (bytes/s) for estimating a cell's duration
+# when the IFO gives no playback time. ~5 Mbit/s is a mid-range average (peak is
+# ~10.08 Mbit/s); only used to keep the seek map monotonic, never for A/V sync.
+_NOMINAL_DVD_BYTES_PER_S = 5_000_000 / 8
+
+
+def _estimate_cell_seconds(nr_sectors: int) -> float:
+    """Estimate a cell's playback seconds from its sector count.
+
+    Returns a strictly positive value for any non-empty cell so the cumulative
+    seek-map time advances (preserving monotonicity); 0.0 only for an empty
+    cell (which also adds no byte offset, so the duplicate entry is harmless).
+    """
+    if nr_sectors <= 0:
+        return 0.0
+    return (nr_sectors * SECTOR) / _NOMINAL_DVD_BYTES_PER_S
 
 
 class DVDCellStreamHandle(StreamHandle):

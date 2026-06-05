@@ -67,8 +67,11 @@ Status legend: ☐ open · ☑ fixed (commit)
   (red/green verified).
 - ☐ **dvddump.py:288-301** — `_fill()` reads an ENTIRE cell span (~296 MB+) into memory, defeating
   the pull/low-mem design. **Fix:** bounded sector-multiple reads, one fh across same-file spans.
-- ☐ **dvddump.py:218-241 + 318-339** — unspecified-fps cell → 0 duration → non-monotonic seek map →
-  seek mis-lands. **Fix:** non-zero estimate when `playback_time_s is None`.
+- ☑ **dvddump.py:218-241 + 318-339** — unspecified-fps cell → 0 duration → non-monotonic seek map →
+  seek mis-lands. **FIXED** (`navinfo_from_cells` now advances cumulative time by
+  `_estimate_cell_seconds(nr_sectors)` — a strictly-positive estimate at a nominal DVD bitrate —
+  when `playback_time_s is None`, keeping the time map strictly increasing so the next cell stays
+  reachable) + `test_navinfo_unspecified_fps_keeps_seek_map_monotonic` (red/green verified).
 - ☑ **ifo.py:468-530** — inverted cell (first>last) silently yields 0 spans + negative nr_sectors.
   **FIXED** (reject at parse with IFOParseError + clamp nr_sectors>=0) + 2 tests (red/green verified).
 

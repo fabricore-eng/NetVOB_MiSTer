@@ -214,6 +214,30 @@ class DVDCellStreamTest(unittest.TestCase):
             self.assertIn(b"FEATURE", out)
             self.assertNotIn(b"NAVX", out)
 
+    def test_navinfo_unspecified_fps_keeps_seek_map_monotonic(self):
+        # A cell with no PGC playback time (unspecified/zero fps) must still
+        # advance the cumulative seek-map time, or it and the following cell
+        # collapse to the SAME timestamp -> a non-monotonic map where the next
+        # cell is unreachable by a time seek (it mis-lands on this one).
+        cells = [
+            CellPlayback(1, 0x02, 0, 10.0, 0, 0, 9),    # 10 sectors, real fps
+            CellPlayback(2, 0x02, 0, None, 10, 10, 19),  # 10 sectors, UNSPEC
+            CellPlayback(3, 0x02, 0, 10.0, 20, 20, 29),  # 10 sectors, real fps
+        ]
+        nav = navinfo_from_cells(cells)
+        times = [t for t, _ in nav.entries]
+        # Strictly increasing: no two cells share a timestamp.
+        for a, b in zip(times, times[1:]):
+            self.assertLess(a, b)
+        # Cell 3 is reachable: a seek at its (estimated) start time lands on
+        # cell 3's offset, not cell 2's.
+        self.assertEqual(nav.nearest_preceding(times[2]), nav.entries[2])
+        # The estimate is proportional to size (10 sectors) and small (~0.03s
+        # at the nominal bitrate) — it bridges the gap without distorting the
+        # real-fps cells around it.
+        self.assertGreater(times[2], times[1])
+        self.assertLess(times[2] - times[1], 1.0)
+
     def test_read_and_seek_are_mutually_exclusive(self):
         # The server's control thread can seek() while the streamer pump is
         # inside read(); both mutate (_buf, _buf_pos, _span_idx), so without a
