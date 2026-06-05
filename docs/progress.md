@@ -1347,3 +1347,24 @@ routine; lock-checked reboot (dell_coord.sh devlock mister reboot dvd) + gate-on
 BACKUPS: breakthrough getbits.rbf md5 ea955179; /tmp/mem_shim.sv.working-baseline (= current mem_shim).
 WATCHERS STOPPED + loop NOT re-armed for the weekend. 573 hit red-N milestone (boots past self-test) but
 MAME oracle showed not-yet-booting (garbled) — honest, objective.
+
+## ===== WEDGE ELIMINATED (2026-06-05 ~23:24) — hold-margin approach WORKS; now tuning =====
+The set_min_delay-3.0 hold-fix build (gap-only + SDC) FLASHED + tested. RESULT: the f2sdram WEDGE is
+GONE. UART telemetry is HEALTHY (M:0 U:0 PC:0000, J:0F3B==Z:0F3B all sectors fed, P/RP cycling 3971/B909,
+W:F0AF) — NOT the wedge signature (was J:0021/PC:A0xx/P=RP=0/M:D/U:1). So forcing HOLD margin on the
+mem_shim->terminator command/addr hop ELIMINATED the multi-session placement wedge — the core blocker is
+solved in principle. cockpit build-side confirm: HOLD grew +0.640 -> +1.054ns (addr +1.5-1.66) = set_min_delay
+worked. BUT it OVERSHOT ~10x: SETUP now VIOLATED on the same path +3.97 -> -1.753ns (ram_address[25]->latch,
+intra-clock REAL). So decode is now PARTIAL/jittery (hw_jitter_measure stall rows [3,-1,2,2,2]) = a SETUP
+violation (addr captured late -> corruption), NOT a wedge. Linear model from cockpit's 2 points
+[(setmin 0: +0.640h/+3.97s), (3.0: +1.054h/-1.75s)]: set_min_delay ALONE can't thread it (hold>+1.0 needs
+x>6 -> setup -7.8; setup-positive limit x~1.8 -> hold only ~+0.87, barely above the +0.640 that wedged).
+NEXT (cockpit's call, they have .fit.rpt): (a) BRACKET set_min_delay+set_max_delay (~1.5/4.0) to force a
+near-FIXED delay so the fitter can't over-detour the setup path (SDC-only, no RTL); or (b) keep'd LCELL
+fixed ~0.86ns (adds equally to hold+setup -> hold +1.5, setup +3.11; bulky across addr bus). Lean (a).
+Build with cockpit's recommended values; cockpit re-verifies BOTH hold AND setup positive post-build. Once
+both positive + no wedge -> the read-behind gap should fence the ordering race -> CLEAN FULL FRAME ->
+OBJECTIVE GATE (frame_diff) -> milestone. dell md5 (3.0 build): mem_shim 217b0b6b, framestore 7a1b4185,
+sdc 0e5d998a. holdfix .rbf c0271c5a (setup-violated, partial decode). | advanced: WEDGE ELIMINATED via
+hold-margin; localized residual to set_min_delay setup-overshoot | blocked: SDC value tuning (cockpit) |
+building: nothing.
