@@ -1214,3 +1214,15 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   FULL (all 30 rows decoded, no jitter) the ordering race is FIXED + confirmed; if jitter reduced but
   present, raise VBUF_READ_GAP; if unchanged, mechanism wrong -> pivot. PROBE-FREE /dev/mem only.
   | advanced: ordering-fence fix implemented+lint-clean+building | blocked: nothing | building: fix (bb6z8rxpw).
+- 2026-06-05 (SIM REGRESSION: read-behind gap is CORRECTNESS-NEUTRAL + no deadlock) — Mirrored the
+  vbuf read-behind gap into the sim copy (core/mpeg2fpga, throwaway) and full-drain ran it. Result:
+  builds clean, produces 3 tv_out + 3 framestore frames (NO deadlock/underrun), GBMB getbits at MB
+  225/405/450/495 all identical to golden (bc8529 — decoder reads the same bits). Order-independent
+  checksums compare (excluding cumulative FRAME lines): 62042/62043 golden lines IDENTICAL; 359
+  gap-only lines are TAIL coeffs (IN~1.26M = the gap run decoded slightly further before the
+  non-deterministic 3-frame stop); 1 golden-only boundary artifact. => the gap only shifts
+  timing/interleaving, NEVER the decoded data (as expected: fixed-latency sim DDR makes it a no-op on
+  correctness). So the HW fix carries ZERO regression risk on the decode pipeline. Sim copy reverted
+  (submodule clean). HW build (bb6z8rxpw) still fitting; on land -> flash + warm-reboot +
+  tools/build/hw_jitter_measure.sh 5 20 for the verdict. | advanced: fix regression-validated in sim
+  | blocked: nothing | building: HW gap fix (bb6z8rxpw).
