@@ -721,3 +721,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   degrades in sim with the real clip => reproduced + debuggable in sim. If still bit-identical => the
   FIFO is truly fine and the HW bug is the 276027 dual-clock-RAM read-during-write (fix: force defined
   R/W via explicit altsyncram/ramstyle or restructure mem[]) OR a CDC-timing/other-inference issue.
+
+- 2026-06-05 (FIFO FULLY EXONERATED — bars clip too; pivot to arithmetic/multiplier inference) — re-ran
+  the port-FIFO-vs-baseline sim on the REAL failing clip (test480i_ntsc.m2v bars+timecode, not greyramp):
+  framestore_0001 body BYTE-IDENTICAL, both stddev=56.1 (correct bars). So even on the exact content that
+  degrades to gray on HW, the port Gray FIFO decodes bit-identically to the reference in sim. ⇒ FIFO
+  LOGIC definitively NOT the bug (proven on 2 streams), and Warning 276027 is almost certainly benign
+  (correct async FIFO avoids same-address R/W via synchronizer latency). The HW degradation is a
+  DETERMINISTIC, Verilator-invisible silicon behavior. Remaining candidates: arithmetic/MULTIPLIER
+  inference differences in the IDCT/iquant (signedness/width -> systematic attenuation toward gray fits
+  the "DC/low-freq lost" signature better than RAM), other inferred-RAM init/RDW, or a synthesis-opt
+  difference. NEXT: grep the build log for DSP/multiplier inference; inspect idct.v/iquant.v multiplies
+  for signed/width hazards; consider a targeted HW probe (uart-checksum the IDCT output, or a known-DC
+  block test). Committed through here.
