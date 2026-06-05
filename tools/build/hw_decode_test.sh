@@ -17,7 +17,7 @@
 # Usage: tools/build/hw_decode_test.sh
 set -uo pipefail
 HUB="$HOME/Dev/mister-dev-hub"
-RBF_DELL="~/NetVOB_MiSTer/core/MiSTer_MPEG2/output_files/mpeg2fpga_dvd_lockprobe.rbf"
+RBF_DELL="~/NetVOB_MiSTer/core/MiSTer_MPEG2/output_files/mpeg2fpga_dvd_boundread.rbf"
 # The golden NTSC 480i ES clip — proven to decode in sim (core/sim). Staging THIS to the
 # board removes the file-not-found ambiguity: if the feed is still empty with a confirmed
 # non-zero file on disk, the bug is the mount PULSE (RTL), not a missing/zero-size file.
