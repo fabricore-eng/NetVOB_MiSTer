@@ -11,6 +11,7 @@ import struct
 import unittest
 
 from service.sources.dvddump.ifo import (
+    CellPlayback,
     CellSpan,
     IFOParseError,
     SECTOR,
@@ -318,6 +319,28 @@ class PgcCellOrderTest(unittest.TestCase):
         self.assertEqual(pgc.cells[0].category0, 0x02)
         self.assertTrue(pgc.cells[2].interleaved)  # 0x0A bit1 set
         self.assertFalse(pgc.cells[1].interleaved)  # 0x08 bit1 clear
+
+    def test_inverted_cell_rejected(self):
+        # Corrupt/truncated IFO (scratched/aged dump): a cell with
+        # last_sector < first_sector must be rejected at parse, not silently
+        # yield zero spans + a negative nr_sectors that moves offsets backward.
+        cells = [
+            {"first_sector": 0, "last_sector": 9, "vob_id": 1, "cell_id": 1,
+             "cat0": 0x02},
+            {"first_sector": 1000, "last_sector": 500, "vob_id": 1, "cell_id": 2,
+             "cat0": 0x02},  # INVERTED: last < first
+        ]
+        pgc_bytes = build_pgc(cells, program_map=[1])
+        with self.assertRaises(IFOParseError):
+            parse_pgc(pgc_bytes, 0, pgc_nr=1)
+
+    def test_nr_sectors_clamped_nonnegative(self):
+        # Defense-in-depth: nr_sectors never goes negative even for an inverted cell.
+        c = CellPlayback(
+            cell_nr=1, category0=0, category1=0, playback_time_s=None,
+            first_sector=1000, last_vobu_start_sector=500, last_sector=500,
+        )
+        self.assertEqual(c.nr_sectors, 0)
 
     def test_parse_vtsi_full_exposes_pgc_cells(self):
         buf = build_vtsi_full(self._three_cell_pgc())

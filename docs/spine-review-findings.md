@@ -47,8 +47,8 @@ Status legend: ☐ open · ☑ fixed (commit)
   the pull/low-mem design. **Fix:** bounded sector-multiple reads, one fh across same-file spans.
 - ☐ **dvddump.py:218-241 + 318-339** — unspecified-fps cell → 0 duration → non-monotonic seek map →
   seek mis-lands. **Fix:** non-zero estimate when `playback_time_s is None`.
-- ☐ **ifo.py:468-530** — inverted cell (first>last) silently yields 0 spans + negative nr_sectors.
-  **Fix:** validate `last>=first`, clamp.
+- ☑ **ifo.py:468-530** — inverted cell (first>last) silently yields 0 spans + negative nr_sectors.
+  **FIXED** (reject at parse with IFOParseError + clamp nr_sectors>=0) + 2 tests (red/green verified).
 
 ## LOW
 - ☐ **server.py:384-404** — `self._threads` grows unbounded (handler threads never pruned).

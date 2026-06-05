@@ -201,8 +201,9 @@ class CellPlayback:
 
     @property
     def nr_sectors(self) -> int:
-        """Inclusive sector count of the cell."""
-        return self.last_sector - self.first_sector + 1
+        """Inclusive sector count of the cell (clamped >= 0 as defense against a
+        corrupt/inverted IFO cell where last_sector < first_sector)."""
+        return max(0, self.last_sector - self.first_sector + 1)
 
     # Category byte 0 bitfields (per dvdread cell_playback_t).
     @property
@@ -358,15 +359,26 @@ def parse_pgc(buf: bytes, pgc: int, pgc_nr: int) -> PGC:
             ptime_s, _ = decode_dvd_time(buf[e + 4 : e + 8])
             vob_id = positions[i][0] if i < len(positions) else None
             cell_id = positions[i][1] if i < len(positions) else None
+            first_sector = _u32(buf, e + 0x08)
+            last_sector = _u32(buf, e + 0x14)
+            if last_sector < first_sector:
+                # Corrupt/truncated IFO (e.g. a scratched/aged dump): an inverted
+                # cell range would otherwise yield zero spans + a NEGATIVE sector
+                # count downstream (moving read offsets backward -> mis-routing).
+                # Surface it loudly, matching the parser's other malformation checks.
+                raise IFOParseError(
+                    f"cell {i + 1}: inverted sector range "
+                    f"first={first_sector} > last={last_sector}"
+                )
             out.cells.append(
                 CellPlayback(
                     cell_nr=i + 1,
                     category0=_u8(buf, e + 0),
                     category1=_u8(buf, e + 1),
                     playback_time_s=ptime_s,
-                    first_sector=_u32(buf, e + 0x08),
+                    first_sector=first_sector,
                     last_vobu_start_sector=_u32(buf, e + 0x10),
-                    last_sector=_u32(buf, e + 0x14),
+                    last_sector=last_sector,
                     vob_id=vob_id,
                     cell_id=cell_id,
                 )
