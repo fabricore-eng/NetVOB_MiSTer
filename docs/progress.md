@@ -752,3 +752,25 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   ONLY board-specific remaining bit of deliverable (a) is swapping netd's drain_to_file() for the real
   sd_* service (one sd_rd request -> one ni_get_sector()). Decode-correctness HW-bisect still pending
   (next HW cycle).
+
+- 2026-06-05 (caught up on chat Qs; audited 573's signed-multiplier lead — RTL signedness CORRECT,
+  Altera gotchas HANDLED; localizing now needs the HW-bisect) — FIRST fixed a process miss: several
+  @dvd chat questions weren't surfacing via `chat unread` (answered them: cockpit's UART legend, 573's
+  diagnosis, the human's 'close to CRT?'). 573 gave a gold fingerprint: "DC/mean survives, AC detail
+  killed -> gray attenuation = a SIGN bug in the iquant/IDCT multipliers (Quartus silently builds
+  unsigned if operands aren't both signed; Verilator-invisible)." AUDITED it inline (no build):
+  (1) IDCT butterfly (idct.v): operands cos1..7 + x0..7 + prod regs ALL `reg signed`, full-width
+  products -> correctly signed. (2) Dequant (the real one is in rld.v:410, NOT iquant.v which is just
+  the matrix RAMs): iquant_level_2 `signed[12:0]` * iquant_factor_2_signed `signed[15:0]` + signed
+  correction, `>>>5` arithmetic shift, signed target -> correctly signed. (3) IDCT cos constants are
+  `parameter`s (compile-time, HW-safe), not a ROM. Quartus log: the IDCT transpose RAMs
+  (idct|transpose:col2row/row2col), rld RAMs, motcomp idct_dta_ram all got Warning 276020 "pass-through
+  ADDED to match read-during-write" = RDW HANDLED (573's #1 suspect covered). Two RAMs "uninferred due
+  to inappropriate RAM size" (zigzag_table.v:179, intra_quant_matrix) but zigzag is combinational
+  `casex` (constants -> logic, no init/RDW) and the quant matrix loads via reset -> both HW-safe. ⇒
+  the OBVIOUS Altera inference gotchas are NOT the bug. Remaining: a silent Quartus DSP unsigned-build
+  despite signed RTL (only confirmable via the synth multiplier report or by forcing an explicit signed
+  lpm_mult), OR something subtler. Static analysis EXHAUSTED -> the definitive next step is the HW-BISECT
+  (uart-checksum iquant-OUT and IDCT-OUT separately per 573's plan) to empirically localize, and/or a
+  cheap targeted build that forces explicit signed multiplies. Process fix: read full chat (not just
+  `unread`) each cycle so questions don't get missed.
