@@ -1275,3 +1275,21 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   if it builds non-wedged + decodes clean full-frame on HW = the placement marginality AND the ordering
   race are both fixed = DECODE-CORRECTNESS MILESTONE. | advanced: durable wedge fix implemented +
   co-sim-validated transparent | blocked: nothing | building: combined fix next.
+- 2026-06-05 (combined build WEDGED — cockpit's hold-margin prediction confirmed) — Flashed the combined
+  fix (handoff-register e9ee447e + gap 7a1b4185, default seed) via Sonnet subagent (gated devlock, lock-
+  checked reboot — clean). Result: WEDGED. hw_jitter_measure (now stddev-trustworthy) = [-1,-1,-1,-1,-1]
+  (blank framestore); UART = wedge signature J:0021 / PC:A000 / P=RP=0000 / M:D / U:1 / VL=VN=BL=BN=0.
+  EXACTLY cockpit's build-side prediction: the handoff-register is protocol-correct + improved SETUP
+  (+3.97->+4.89) but the binding constraint is a reg->reg HOLD hop (d_write->terminator|state_write) whose
+  margin is UNCHANGED (+0.644 vs the pre-register +0.640) — a pipeline reg splits setup paths, it does NOT
+  loosen a reg->reg hold hop. So the marginal hold path still tips functional at this placement = wedge,
+  same as gap-only seed-1. CONFIRMED: the register fixed protocol+setup, NOT the placement marginality;
+  the co-sim validated the HANDSHAKE (byte-identical) but is blind to physical hold-marginality. PIVOT
+  (cockpit's lever): add ACTUAL HOLD MARGIN (deterministic delay) to that one reg->reg hop, not another
+  pipeline stage. Engaging cockpit/573 for the concrete Quartus lever (set_min_delay SDC vs explicit
+  delay-cell chain with keep vs hold-multicycle vs fitter hold-fix effort) on the free Web Edition
+  (LogicLock blocked). Open Q: keep the handoff-register (+setup, protocol-OK) + add margin, OR revert to
+  gap-only (less logic/footprint) + add margin. Backups intact: getbits.rbf ea955179,
+  /tmp/mem_shim.sv.working-baseline. 573 hit their red-N milestone (NVRAM byte-drop fix). | advanced:
+  wedge precisely characterized as a HOLD-margin problem (not register-fixable) | blocked: clean build
+  gated on a hold-margin lever (cockpit/573 expertise) | building: nothing.
