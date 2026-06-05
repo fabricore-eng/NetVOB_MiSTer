@@ -1,0 +1,49 @@
+--- /tmp/mem_shim.sv.working-baseline	2026-06-05 14:27:34
++++ core/MiSTer_MPEG2/rtl/mem_shim.sv	2026-06-05 16:36:17
+@@ -55,9 +55,46 @@
+     reg [28:0] ram_address;
+     reg [63:0] ram_writedata;
+ 
++    // -------------------------------------------------------------------------
++    // HOLD-MARGIN DELAY (HW fix 2026-06-05): the mem_shim->f2sdram_safe_terminator command/addr hop
++    // (ram_write->state_write, ram_address->*_latch) is a TRUE same-clock-domain reg->reg HOLD path
++    // (DDRAM_CLK=clk_mem) with only ~+0.64ns hold margin — STA-positive but so tight that placement
++    // re-rolls tip it functional and the f2sdram bridge WEDGES (never accepts a command). Proven on HW:
++    // hold +0.640 = wedged, +1.054 = non-wedge. A pipeline register can't fix a reg->reg hold; and
++    // set_min_delay over-detoured the SETUP path (+3.97->-1.75). FIX (cockpit's lever b): a FIXED ~1ns
++    // combinational delay (keep'd lcell chain) on the command/addr — a fixed delay D adds EQUALLY to the
++    // hold(min) and setup(max) paths: hold +D, setup -D. With setup's +3.97 budget, ~3 lcells (~1ns) ->
++    // hold ~+1.6 (well over the proven +1.054), setup ~+3.0; both positive with margin. Targets read+
++    // write+addr (the marginal hop can move between the 3 terminators on a re-roll). Guarded by `QUARTUS`
++    // so Verilator/sim sees plain wires (the delay is timing-only — functionally a no-op, sim correctness
++    // unaffected). cockpit re-verifies hold AND setup from the .fit.rpt post-build; tune the lcell count.
++    // -------------------------------------------------------------------------
++`ifdef QUARTUS
++    (* keep *) wire dly_rd0, dly_rd1, dly_rd2;
++    lcell u_dly_rd0 (.in(ram_read),  .out(dly_rd0));
++    lcell u_dly_rd1 (.in(dly_rd0),   .out(dly_rd1));
++    lcell u_dly_rd2 (.in(dly_rd1),   .out(dly_rd2));
++    assign ddr3_read = dly_rd2;
++
++    (* keep *) wire dly_wr0, dly_wr1, dly_wr2;
++    lcell u_dly_wr0 (.in(ram_write), .out(dly_wr0));
++    lcell u_dly_wr1 (.in(dly_wr0),   .out(dly_wr1));
++    lcell u_dly_wr2 (.in(dly_wr1),   .out(dly_wr2));
++    assign ddr3_write = dly_wr2;
++
++    (* keep *) wire [28:0] dly_a0, dly_a1, dly_a2;
++    genvar gi;
++    generate for (gi = 0; gi < 29; gi = gi + 1) begin : addr_hold_delay
++        lcell u_dly_a0 (.in(ram_address[gi]), .out(dly_a0[gi]));
++        lcell u_dly_a1 (.in(dly_a0[gi]),      .out(dly_a1[gi]));
++        lcell u_dly_a2 (.in(dly_a1[gi]),      .out(dly_a2[gi]));
++    end endgenerate
++    assign ddr3_addr = dly_a2;
++`else
+     assign ddr3_read       = ram_read;
+     assign ddr3_write      = ram_write;
+     assign ddr3_addr       = ram_address;
++`endif
+     assign ddr3_writedata  = ram_writedata;
+     assign ddr3_burstcnt   = 8'd1;
+     assign ddr3_byteenable = 8'hFF;

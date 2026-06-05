@@ -1368,3 +1368,19 @@ OBJECTIVE GATE (frame_diff) -> milestone. dell md5 (3.0 build): mem_shim 217b0b6
 sdc 0e5d998a. holdfix .rbf c0271c5a (setup-violated, partial decode). | advanced: WEDGE ELIMINATED via
 hold-margin; localized residual to set_min_delay setup-overshoot | blocked: SDC value tuning (cockpit) |
 building: nothing.
+- 2026-06-05 (LCELL hold-delay build — cockpit lever b, the one-build lock attempt) — set_min_delay-3.0
+  ELIMINATED the wedge (hold +0.640->+1.054, telemetry healthy) but OVERSHOT setup (+3.97->-1.75). cockpit's
+  call: go (b) FIXED keep'd LCELL delay (deterministic: hold+D/setup-D, unlike set_min_delay's asymmetric
+  over-detour). Functional anchor: hold +1.054=proven non-wedge, +0.640=wedged; aim hold>=+1.2 & setup>=+1.0.
+  IMPLEMENTED in mem_shim.sv: a 3-deep keep'd `lcell` chain (~1ns) on ram_read/ram_write/ram_address[*] ->
+  ddr3_*, QUARTUS-guarded (Verilator/sim sees plain wires; delay is timing-only no-op). Disabled the
+  set_min_delay SDC. SYNTAX-CHECKED via quartus_map on dell BEFORE building: 0 errors, lcell valid, QUARTUS
+  branch active, lcell chains CONFIRMED present (mem_shim_inst|addr_hold_delay[N].u_dly_a0/a1/a2 on real addr
+  bits + dly_rd/dly_wr; stuck upper addr bits 22-28 fold = expected). Build launched. dell md5: mem_shim
+  8207573e, framestore 7a1b4185, sdc f21c9f95 (set_min disabled). Patch
+  core/patches/hw/mpeg2fpga-memshim-lcell-holddelay.patch. WHEN DONE: cockpit re-pulls hold+setup (target
+  ~+1.6h/~+3.0s both positive) -> flash -> hw_jitter_measure (stddev) -> if clean structured row 29 + healthy
+  telemetry = the read-behind gap fenced the ordering race on a non-wedged non-setup-violated build =
+  DECODE-CORRECTNESS -> OBJECTIVE frame_diff gate -> milestone. If lcell delay too low (hold<+1.2)/high
+  (setup tight) -> tune lcell count (2 or 4). | advanced: lcell hold-delay implemented + syntax-verified +
+  building | blocked: nothing | building: lcell hold-delay.
