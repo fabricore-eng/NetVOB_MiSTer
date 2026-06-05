@@ -1053,3 +1053,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (silent drop) or it TOOK+still-wedged => flip to LOCKED w/ hard LL_ORIGIN (573 step 2). | advanced:
   PTT_SRPT feature (spine 100% swept) + LogicLock+rawdump build queued | blocked: nothing | building:
   LogicLock+rawdump (bhfqxzxzs).
+- 2026-06-05 (LogicLock BLOCKED — license; redirect to getbits probe) — The LogicLock+rawdump build
+  finished but Quartus STRIPPED the region: Warning 292013 + Critical Warning 140003 — LogicLock is a
+  SUBSCRIPTION feature, raetro/quartus:17.0 is the free Web Edition. 573 confirms design-partition is
+  also subscription-blocked; set_location for individual PINS works but there's no clean license-free
+  region-pin. So the build == unpinned raw-dump == wedges; not loaded. Reverted the dead LogicLock qsf
+  block. REDIRECT (team-aligned, license-free): (1) getbits-OUTPUT probe — tap getbits[23:0] (effective
+  bitstream vld decodes, VLD region AWAY from the bridge → clean-probe-able like the dct_coeff VLD
+  probe; first getbits=000001b3 if intact) = the ordering-vs-corruption cut; (2) probe-free CPU
+  /dev/mem dump of the vbuf bitstream DDR region on the CLEAN VLD-probe build (zero-probe cross-check);
+  (3) durable wedge fix = register the mem_shim↔bridge handoff in our RTL (573). Plan + node paths +
+  results in docs/hw-bridge-wedge-fix-plan.md. | advanced: LogicLock ruled out (license); next-probe
+  redirect documented + team-aligned | blocked: bridge-pinning unavailable on Web Edition | building:
+  nothing.

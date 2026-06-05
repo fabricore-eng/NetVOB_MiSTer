@@ -39,7 +39,32 @@ Verdict from the raw words:
 - HW words 0..3 MATCH sim but BL diverged at ~90 => corruption starts mid-stream (later word), not at
   the start — capture words near index 90 next.
 
-## Step 2 (if Step 1 still wedges): LogicLock-pin the bridge region (573)
+## ⛔ STEP 1 + STEP 2 RESULTS (2026-06-05)
+- **Step 1 (source-register) FAILED:** the raw-dump still wedged (J:0021/W:0007/PC:A000, BN=0).
+  cockpit's diagnosis: a capture reg fed by `vbr_rd_dta` is PLACED by its INPUT locality — the placer
+  drops it in the bridge neighborhood to reach the source net, so decoupling the OUTPUT route treats
+  the wrong half. The reg itself is the intruder.
+- **Step 2 (LogicLock) BLOCKED — no license:** `raetro/quartus:17.0` is the free WEB EDITION.
+  LogicLock needs a subscription → Quartus emits Warning 292013 + Critical Warning 140003 and SILENTLY
+  REMOVES all LogicLock regions. 573's keywords were correct; the LICENSE blocks the feature. So
+  LogicLock is unavailable for this toolchain. (Open Q for cockpit: does the free edition also block
+  set_location_assignment / PARTITION-based floorplanning, or just LogicLock?)
+
+## LICENSE-FREE NEXT OPTIONS (preferred order)
+1. **getbits-OUTPUT probe (VLD region, away from the bridge).** Tap the effective bitstream vld
+   decodes (`getbits[23:0]` + advance/align) instead of bridge-adjacent `vbr_rd_dta`. getbits sits in
+   the vld region (one stage past the bridge-adjacent vbr fifo), so it should feed clean like the
+   dct_coeff VLD probe did. First getbits should be the `000001b3` start code if the bitstream is
+   intact, shuffled if not. This is the most promising — clean-probe-able AND shows the effective bits.
+2. **CPU-side /dev/mem dump of the vbuf bitstream DDR region**, probe-free, on the CLEAN VLD-probe
+   build (feeds the full clip, no wedge). Compare to the clip: match => write/storage clean, corruption
+   is in the FPGA read path; mismatch => write-path corrupts (pattern shows ordering vs corruption).
+   Needs the vbuf DDR base address (find in mem_addr.v / framestore allocation; framestore is 0x30000000).
+3. **573's handoff register:** add a pipeline/register stage on MY side of the mem_shim↔bridge handoff
+   to add hold margin so the marginal path stops mattering (no license needed). Fixes the WEDGE so any
+   probe can run, but doesn't directly answer ordering-vs-corruption.
+
+## Step 2 (SUPERSEDED — license-blocked): LogicLock-pin the bridge region (573)
 573's snippet — UNVERIFIED in-tree (no Konami_System_573/psx qsf uses LogicLock; it's Quartus-17.0
 knowledge). **Sanity-check the keyword spellings against the 17.0 handbook before trusting placement.**
 
