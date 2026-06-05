@@ -214,6 +214,50 @@ class DVDCellStreamTest(unittest.TestCase):
             self.assertIn(b"FEATURE", out)
             self.assertNotIn(b"NAVX", out)
 
+    def test_bounded_chunk_read_matches_whole_span(self):
+        # The handle reads each cell span in bounded sector-aligned chunks (not
+        # the whole ~hundreds-of-MB cell at once). Forcing a tiny chunk size so
+        # a multi-sector cell spans several _fill() calls, the concatenated
+        # nav-stripped output must be byte-identical to stripping the whole
+        # span in one go (DVD packs are sector-sized, so chunk boundaries fall
+        # on pack boundaries).
+        from service.sources.dvddump.dvddump import (
+            DVDCellStreamHandle,
+            strip_nav_packets,
+        )
+
+        with tempfile.TemporaryDirectory() as d:
+            sectors = b"".join(
+                _sector(
+                    _pes(0xE0, bytes([i]) + b"VID" * 8),
+                    _pes(0xBF, b"NAV" + bytes([i])),  # nav -> must be stripped
+                )
+                for i in range(6)
+            )
+            vob = os.path.join(d, "VTS_05_1.VOB")
+            with open(vob, "wb") as f:
+                f.write(sectors)
+            cells = [CellPlayback(1, 0x02, 0, 5.0, 0, 0, 5)]  # 6 sectors
+            spans = [CellSpan(vob, 0, 6 * SECTOR, 1)]
+            whole = strip_nav_packets(sectors)  # reference: strip the whole span
+
+            class _SmallChunk(DVDCellStreamHandle):
+                _READ_BYTES = SECTOR  # 1 sector/_fill -> forces multi-chunk
+
+            h = _SmallChunk(spans, cells=cells, nav=navinfo_from_cells(cells))
+            try:
+                out = bytearray()
+                while True:
+                    chunk = h.read(100)  # small reads also exercise buf slicing
+                    if not chunk:
+                        break
+                    out += chunk
+            finally:
+                h.close()
+            self.assertEqual(bytes(out), whole)  # chunked == whole-span strip
+            self.assertNotIn(b"NAV", bytes(out))
+            self.assertIn(b"VID", bytes(out))
+
     def test_navinfo_unspecified_fps_keeps_seek_map_monotonic(self):
         # A cell with no PGC playback time (unspecified/zero fps) must still
         # advance the cumulative seek-map time, or it and the following cell

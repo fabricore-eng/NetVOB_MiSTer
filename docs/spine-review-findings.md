@@ -65,8 +65,13 @@ Status legend: ☐ open · ☑ fixed (commit)
   shutdown. **FIXED** (`conn.settimeout(0.5)` on the accepted control conn; the existing
   `socket.timeout`→continue loop now re-checks `_running`) + `test_shutdown_reaps_idle_control...`
   (red/green verified).
-- ☐ **dvddump.py:288-301** — `_fill()` reads an ENTIRE cell span (~296 MB+) into memory, defeating
-  the pull/low-mem design. **Fix:** bounded sector-multiple reads, one fh across same-file spans.
+- ☑ **dvddump.py:288-301** — `_fill()` reads an ENTIRE cell span (~296 MB+) into memory, defeating
+  the pull/low-mem design. **FIXED** (`_fill()` now reads bounded sector-aligned chunks
+  (`_READ_BYTES=64*SECTOR`) advancing within the span across calls; one fh reused across same-file
+  spans via `_open_span_fh`, closed at natural EOF and in `close()`. Sector-aligned chunks fall on DVD
+  pack boundaries so per-chunk nav-strip concatenates byte-identically to the old whole-span strip) +
+  `test_bounded_chunk_read_matches_whole_span` (forces 1-sector chunks; red/green verified via an
+  off-by-one). Existing byte-for-byte cell/seek tests still pass.
 - ☑ **dvddump.py:218-241 + 318-339** — unspecified-fps cell → 0 duration → non-monotonic seek map →
   seek mis-lands. **FIXED** (`navinfo_from_cells` now advances cumulative time by
   `_estimate_cell_seconds(nr_sectors)` — a strictly-positive estimate at a nominal DVD bitrate —

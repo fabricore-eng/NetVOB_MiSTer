@@ -313,6 +313,9 @@ class DVDCellStreamHandle(StreamHandle):
         for i, sp in enumerate(spans):
             self._cell_first_span.setdefault(sp.cell_nr, i)
         self._span_idx = 0
+        self._span_off = 0  # bytes already read from the current span
+        self._fh = None  # reused file handle across same-file spans
+        self._fh_path: Optional[str] = None
         self._buf = b""  # stripped bytes pending delivery
         self._buf_pos = 0
         self.duration_s = duration_s
@@ -330,19 +333,65 @@ class DVDCellStreamHandle(StreamHandle):
         # whose own internal sync is its responsibility).
         self._lock = threading.Lock()
 
+    # Bytes pulled per _fill(). Sector-aligned so each chunk holds whole DVD
+    # packs (every 2048-byte sector is one self-contained pack) -> strip works
+    # chunk-by-chunk and the concatenation is byte-identical to stripping the
+    # whole span. 64 sectors = 128 KiB keeps peak memory bounded vs the old
+    # "read the entire ~hundreds-of-MB cell span at once".
+    _READ_BYTES = 64 * SECTOR
+
+    def _open_span_fh(self, sp: "CellSpan"):
+        """Return an open handle for ``sp.vob_file``, reusing it across
+        consecutive spans that share the same file."""
+        if self._fh is None or self._fh_path != sp.vob_file:
+            if self._fh is not None:
+                self._fh.close()
+            self._fh = open(sp.vob_file, "rb")
+            self._fh_path = sp.vob_file
+        return self._fh
+
     def _fill(self) -> bool:
-        """Load + strip the next span into the pending buffer. False at EOF."""
+        """Load + strip the NEXT bounded chunk into the pending buffer.
+
+        Reads at most ``_READ_BYTES`` (sector-aligned) from the current span,
+        advancing within it across calls, then rolls to the next span. Returns
+        ``False`` only when all spans are exhausted (EOF).
+        """
         while self._span_idx < len(self._spans):
             sp = self._spans[self._span_idx]
-            self._span_idx += 1
-            with open(sp.vob_file, "rb") as fh:
-                fh.seek(sp.start)
-                raw = fh.read(sp.length)
+            remaining = sp.length - self._span_off
+            if remaining <= 0:
+                # Span done; advance to the next one.
+                self._span_idx += 1
+                self._span_off = 0
+                continue
+            fh = self._open_span_fh(sp)
+            fh.seek(sp.start + self._span_off)
+            raw = fh.read(min(remaining, self._READ_BYTES))
+            if not raw:
+                # Short file / truncated dump: don't spin on this span.
+                self._span_idx += 1
+                self._span_off = 0
+                continue
+            self._span_off += len(raw)
+            if self._span_off >= sp.length:
+                self._span_idx += 1
+                self._span_off = 0
             clean = strip_nav_packets(raw)
             if clean:
                 self._buf = clean
                 self._buf_pos = 0
                 return True
+            # All-nav chunk stripped to nothing; loop for the next chunk.
+        # All spans exhausted (EOF): release the file handle now rather than
+        # holding it open until close() (frees the fd at natural end-of-stream).
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+            self._fh_path = None
         return False
 
     def read(self, n: int) -> bytes:
@@ -382,6 +431,9 @@ class DVDCellStreamHandle(StreamHandle):
                 self._span_idx = self._cell_first_span.get(target_cell_nr, 0)
             else:
                 self._span_idx = 0
+            # Restart at the new span's beginning; the open fh (if any) is kept
+            # and re-seeked by the next _fill().
+            self._span_off = 0
             self._buf = b""
             self._buf_pos = 0
 
@@ -390,6 +442,13 @@ class DVDCellStreamHandle(StreamHandle):
             self._closed = True
             self._spans = []
             self._buf = b""
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
+                self._fh = None
+                self._fh_path = None
 
 
 class DVDDumpSource(Source):
