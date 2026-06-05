@@ -1,5 +1,5 @@
 diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
-index 33f3c2a..0385eda 100644
+index 33f3c2a..183f6c0 100644
 --- a/rtl/mem_shim.sv
 +++ b/rtl/mem_shim.sv
 @@ -80,6 +80,21 @@ module mem_shim (
@@ -127,3 +127,54 @@ index 33f3c2a..0385eda 100644
                      ram_read      <= 0;
                      ram_write     <= 0;
                      state         <= 0;
+@@ -235,6 +296,42 @@ module mem_shim (
+         end
+     end
+ 
++    // =========================================================================
++    // Bridge-LOCK probe (HW debug, observe-only — decode path untouched)
++    // Catches the moment the HPS f2sdram waitrequest sticks high while a command
++    // is asserted (the bridge stops accepting). Surfaced on the (previously unused)
++    // debug_read_pend_cycles -> uart PC field as a packed snapshot:
++    //   PC = {wedged(1), lock_cmd(2)={read,write}, lock_outstanding(6), recovery_count(7)}
++    // wedged (PC bit15 / PC>=0x8000) = bridge locked; lock_cmd tells read-vs-write at the
++    // lock; lock_outstanding = reads in flight then; recovery_count>0 = real dropped
++    // responses occurred (so the lock is drop-related) vs ==0 (a command-specific lock).
++    // =========================================================================
++    reg [11:0] wr_stall_cnt;
++    reg        wedged;
++    reg  [1:0] lock_cmd;
++    reg  [5:0] lock_outstanding;
++    reg  [6:0] recovery_count;
++    always @(posedge clk) begin
++        if (!rst_n) begin
++            wr_stall_cnt <= 0; wedged <= 0; lock_cmd <= 0; lock_outstanding <= 0; recovery_count <= 0;
++        end else begin
++            // consecutive cycles the bridge refuses an asserted command (waitrequest high)
++            if (state && (ram_read || ram_write) && ddr3_waitrequest) begin
++                if (!(&wr_stall_cnt)) wr_stall_cnt <= wr_stall_cnt + 1'b1;
++            end else begin
++                wr_stall_cnt <= 0;
++            end
++            // sustained refusal (>=256 cyc) = LOCK -> latch the condition, sticky
++            if (wr_stall_cnt >= 12'd256 && !wedged) begin
++                wedged           <= 1'b1;
++                lock_cmd         <= {ram_read, ram_write};
++                lock_outstanding <= outstanding_reads;
++            end
++            // count genuine lost responses recovered (resp_timeout synthesized one)
++            if (resp_timeout && !(&recovery_count)) recovery_count <= recovery_count + 1'b1;
++        end
++    end
++
+     // =========================================================================
+     // Debug telemetry
+     // =========================================================================
+@@ -258,6 +355,6 @@ module mem_shim (
+     assign debug_rd_count         = rd_count;
+     assign debug_wr_count         = wr_count;
+     assign debug_rsp_count        = rsp_count;
+-    assign debug_read_pend_cycles = 16'd0;
++    assign debug_read_pend_cycles = {wedged, lock_cmd, lock_outstanding, recovery_count};
+ 
+ endmodule

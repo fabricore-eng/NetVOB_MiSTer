@@ -516,3 +516,26 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   reliably -> eliminate the drops -> no lock -> sustained decode. Alternatives if that doesn't suffice:
   add a registered/retimed stage on the f2sdram readdatavalid/inputs; or bound outstanding reads.
   Board returned to MENU + released; v2 is a committed rollback point.
+- 2026-06-05 (STA RULES OUT timing — do NOT lower clk_mem; the bridge lock is a LOGICAL/handshake
+  corner) — per 573's "prove it's timing before fixing timing" discipline, ran quartus_sta on the v2
+  post-fit netlist (no rebuild). RESULT: the worst REAL clk_mem->clk_mem path (levels=3) CLOSES at
+  +1.496ns (mem_request_fifo dout -> mem_shim ram_writedata); clk_sys closes +22ns. EVERY negative-slack
+  path is a levels=1 ARTIFACT (-88..-92ns) at the HPS f2sdram boundary (f2sdram_safe_terminator /
+  ram_write / outstanding_reads -> f2sdram~FF_*) — the bogus clock-relationship math, NOT real delay.
+  ⇒ the DDR interface MEETS timing; lowering clk_mem to 81MHz is CANCELLED (would cost throughput and
+  fix nothing). The ~0.05% lost responses / bridge waitrequest-lock are a LOGICAL/handshake corner, not
+  marginal timing. OPEN QUESTION: is P-RP=6 a steady drip of drops over the 12735 reads, or just the 6
+  reads in-flight at the instant the bridge locked? Can't tell from one snapshot. NEXT (principled, not
+  guessing): INSTRUMENT the lock onset — latch {state, ram_address, saved_cmd, outstanding_reads, the
+  P-RP gap, FC} at the FIRST cycle ddr3_waitrequest sticks high (and whether P-RP grows during normal
+  decode) -> pins whether it's drops-over-time vs a lock event + the exact command/address that wedges.
+  Rebuild with that, reboot-retest, read the latched lock-condition. (573 saved a wasted build here.)
+- 2026-06-05 (lock-onset PROBE added — observe-only; building) — added a bridge-lock probe to mem_shim
+  (repurposed the unused debug_read_pend_cycles -> uart PC field): counts consecutive
+  waitrequest-high-while-command-asserted cycles; at >=256 (sustained refusal=LOCK) latches a sticky
+  {wedged, lock_cmd={read,write}, lock_outstanding} + a saturating recovery_count (how many synthetic
+  responses the timeout injected = genuine dropped responses). PC decode: bit15=wedged, [14:13]=cmd
+  (10=read 01=write), [12:7]=outstanding-at-lock, [6:0]=recovery_count. recovery_count>0 = the lock is
+  drop-related; ==0 = a command-specific lock. memshim sim still decodes greyramp correctly (observe-
+  only, decode path untouched). NEXT: build, reboot-retest, read PC -> pins the lock cause -> targeted
+  fix. Auto-logging the HW result to the shared testlog this cycle too (human wants dashboard visibility).
