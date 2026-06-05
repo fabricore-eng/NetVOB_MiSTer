@@ -1119,3 +1119,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   cockpit will map MB-row->byte-offset + run the build watcher when the per-MB + per-byte probe is built.
   | advanced: next-probe framing sharpened to a 2-way bisect (mem-value-corruption vs vld-internal) |
   blocked: nothing | building: nothing.
+- 2026-06-05 (cockpit HW-only filter — sharpens the 2 branches) — Since SIM decodes past slice 10 clean
+  (it's the golden), a PURE deterministic logic/structural bug (getbits refill off-by-one, vld slice/VLC
+  mishandling) would reproduce in sim — it DOESN'T, so the root cause MUST have an HW-only trigger. The
+  answer lives in the HW/sim DELTA. So the two branches collapse to HW-flavored forms:
+    Branch 1 (getbits DIVERGES @ byte N): NOT a plain refill off-by-one (sim would catch) — a refill that
+      latches a STALE/EARLY word because real-DDR read latency at that consumption point differs from
+      sim's modeled latency (a timing-dependent handshake that doesn't wait for `valid`).
+    Branch 2 (getbits MATCHES through desync, decode still desyncs): NOT vld mishandling the construct
+      (sim would too) — the slice-10 construct is the FIRST to exercise an UNINITIALIZED/X reg that sim
+      auto-zeros (init/X-prop gap).
+  => don't chase a deterministic logic bug sim would've caught; the per-byte getbits-vs-sim compare
+  decides (i)-timing-stale-word vs (ii)-uninit/X. | advanced: branches sharpened to HW/sim-delta forms |
+  blocked: nothing | building: nothing (per-byte getbits probe next).
