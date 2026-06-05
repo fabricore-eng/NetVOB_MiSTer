@@ -426,3 +426,32 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   read-response timeout/recovery; (3) rebuild with the fix, reboot fresh, retest -> success = W climbs
   past 189 + a full frame decodes. Board returned to MENU + released after the test (no flicker).
   REBOOT IS USER-AUTHORIZED (shared HW); routine device hand-off stays session-to-session.
+- 2026-06-04 (FIX crafted + SIM-VALIDATED: serialize mem_shim reads to stop the f2sdram re-stall) —
+  root cause of the W:189 re-stall = mem_shim's 2-state FSM advances on command ACCEPTANCE not read
+  RESPONSE, so it issued a WRITE on top of an outstanding READ; on real HW that wedges the HPS f2sdram
+  (waitrequest stuck) and a lost/misordered response permanently desyncs the response stream (uart
+  P:84 reads vs RP:83 responses) — the exact UNFIXED hang the overnight memshim sim flagged under
+  +ddr_drop. FIX (mem_shim.sv): single-outstanding-read serialization — a read_pending flag set when a
+  read is ACCEPTED, cleared on its readdatavalid; while set, S_IDLE holds off issuing the next command
+  AND stops pulling the request FIFO (no command lost). SIM-VALIDATED in core/sim/memshim: still decodes
+  greyramp correctly through the REAL mem_shim (2 framestore + 3 tv_out frames; framestore_0000 = I
+  frame, mean=128 greyramp, nonzero) — serialization does NOT break decode. Also fixed run_memshim.sh
+  (set -u + macOS bash3.2 empty-array crash on no-plusargs). Patch:
+  core/patches/hw/mpeg2fpga-memshim-serialize-reads.patch. NEXT: sync mem_shim.sv -> dell, build
+  detached, then (USER-AUTHORIZED reboot) reload-core-first + retest -> expect W to climb past 189 and a
+  full frame to land in the framestore = DECODE-ON-HW COMPLETE.
+- 2026-06-04 (drift reconciled: Mac mem_shim was MISSING the collision-guard that dell had) — while
+  syncing the serialize fix to dell, the diff exposed that the dell build tree had an ADDR_ERR
+  "COLLISION GUARD" (don't let a synthetic-0 ADDR_ERR response overwrite a real same-cycle
+  readdatavalid -> would corrupt a reference -> garbage) that the Mac tree never had — it was added on
+  dell only (the candidate .rbf included it). Reconciled by adding the collision guard to the Mac
+  mem_shim too (now the complete source of truth = addrerr + collision-guard + serialize), re-validated
+  in the memshim sim (2 framestore + 3 tv_out, I-frame mean=128 — decode still correct with BOTH fixes),
+  re-synced Mac->dell (now identical), regenerated the patch (now contains both). Lesson: the dell tree
+  can drift ahead of the Mac; always diff before overwriting. Launching the build with the complete
+  tree (480i + confstr + emu instrumentation + mem_shim addrerr+guard+serialize).
+- 2026-06-05 (serialize+guard build DONE rc=0; .rbf ready; awaiting reboot for the retest) — the
+  mem_shim serialize-reads + collision-guard build finished (32:14, rc=0); converted .sof ->
+  mpeg2fpga_dvd_serialize.rbf (~3MB); pointed hw_decode_test.sh at it. The f2sdram is currently WEDGED
+  from the prior test, so the clean retest needs a user-authorized warm reboot. Expected on retest: W
+  climbs past 189 and keeps going (no re-stall) + a full frame decodes = decode-on-HW complete.
