@@ -1152,3 +1152,15 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   each MB target — strictly increasing, per-MB-distinct, count-alignable HW-vs-sim) for an unambiguous
   localization. HW build pid 1287525 (watcher bxtaflsdf) still fitting. | advanced: sim golden captured +
   read-interpretation + fallback probe defined | blocked: nothing | building: per-MB probe (bxtaflsdf).
+- 2026-06-05 (per-MB probe build LANDED + clip-match verified — reading next) — Build DONE rc=0
+  19:03:07Z (.sof 19:01, ref rtl md5 a6fb9e0f confirmed on dell). quartus_cpf -> mpeg2fpga_dvd_gbmb.rbf
+  (md5 ce1e615e), staged mister:/media/fat/mpeg2fpga_dvd.rbf (md5 verified). KEY VALIDITY CHECK before
+  trusting any HW-vs-sim compare: confirmed sim and HW decode the SAME bitstream — mister test.mpg
+  (md5 b715222e, 1995850B) == local tools/testclips/test480i_ntsc.m2v, and sim stream.dat is its
+  per-byte hex expansion (NOT greyramp, despite the prep_stream default). Re-ran sim golden in run_gbmb:
+  GBMB T0_225=T1_405=T2_450=T3_495=bc8529 (reproduces the structural constant). So the matched golden is
+  all-bc8529; HW read interpretation: 00000000=MB unreached (desync before it, localizes the row),
+  00bc8529=reached+matched (clean), 00xxxxxx!=bc8529=reached+diverged (Branch 1 stale/early-word latch).
+  warm-rebooting mister to clear any inherited f2sdram wedge, then load mpeg2_test.mgl + read UART
+  ttyS1 115200 VL/VN/BL/BN (=gb@225/405/450/495). | advanced: probe bitstream staged + clip-identity
+  proven + golden re-confirmed | blocked: nothing | building: nothing (HW read in progress).
