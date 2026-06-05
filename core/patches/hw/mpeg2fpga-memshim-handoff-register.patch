@@ -1,0 +1,114 @@
+--- /tmp/mem_shim.sv.working-baseline	2026-06-05 14:27:34
++++ core/MiSTer_MPEG2/rtl/mem_shim.sv	2026-06-05 14:30:49
+@@ -55,10 +55,28 @@
+     reg [28:0] ram_address;
+     reg [63:0] ram_writedata;
+ 
+-    assign ddr3_read       = ram_read;
+-    assign ddr3_write      = ram_write;
+-    assign ddr3_addr       = ram_address;
+-    assign ddr3_writedata  = ram_writedata;
++    // -------------------------------------------------------------------------
++    // HANDOFF REGISTER (HW fix 2026-06-05): pull the marginal command-accept hop
++    // (ram_write -> f2sdram_safe_terminator|state_write, the single tightest HOLD
++    // path at +0.640ns per cockpit's bridge STA) OUT of the placement lottery by
++    // registering the command/addr/data ONE more stage right before the terminator.
++    // The long combinational route ram_* -> terminator becomes two shorter registered
++    // hops (ram_* -> d_* -> terminator), each with its own hold margin, so placement
++    // stops tipping it functional (the wedge/marginal-noise we kept re-rolling). Adds
++    // +1 cycle of command latency (absorbed by the single-outstanding FSM + the vbuf
++    // read-behind gap). Validated protocol-correct in core/sim/memshim (harsh waitrequest
++    // regimes: rd_issued==rd_responded, no tag desync, frame-identical to baseline).
++    reg        d_read;
++    reg        d_write;
++    reg [28:0] d_address;
++    reg [63:0] d_writedata;
++    wire       d_busy     = d_read | d_write;               // a command is presented to the terminator
++    wire       d_accepted = d_busy & ~ddr3_waitrequest;     // terminator took it this cycle
++
++    assign ddr3_read       = d_read;
++    assign ddr3_write      = d_write;
++    assign ddr3_addr       = d_address;
++    assign ddr3_writedata  = d_writedata;
+     assign ddr3_burstcnt   = 8'd1;
+     assign ddr3_byteenable = 8'hFF;
+ 
+@@ -92,7 +110,7 @@
+     //  because the f2sdram needs the pipeline moving to return responses.)
+     reg  [5:0]  outstanding_reads;   // reads accepted but not yet responded
+     reg  [16:0] resp_timer;          // cycles since last response while reads are outstanding
+-    wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
++    wire        read_accepted_now = d_read && !ddr3_waitrequest;   // registered command accepted by terminator
+     wire        resp_timeout      = (outstanding_reads != 0) && !ddr3_readdatavalid && (&resp_timer);
+ 
+     // The HPS f2sdram has an outstanding-READ throttle: HW lock-probe caught the bridge
+@@ -266,12 +284,15 @@
+             end
+             else begin
+                 // =============================================================
+-                // S_WAIT: Hold ram_read/write until bridge accepts
++                // S_WAIT: Hold ram_read/write until the REGISTERED command (d_*)
++                // is accepted by the terminator (d_accepted), not raw !waitrequest —
++                // the command only reaches the terminator one hop later via d_*.
+                 // =============================================================
+-                if (!ddr3_waitrequest) begin
+-                    // Command accepted. (A read accepted here is counted via
+-                    // read_accepted_now in the response/recovery block above — pipelined,
+-                    // not blocked.) Resume pulling the next command immediately.
++                if (d_accepted) begin
++                    // Registered command accepted. (A read accepted here is counted via
++                    // read_accepted_now = d_read & ~waitrequest in the response/recovery block
++                    // above — pipelined, not blocked.) Resume pulling the next command; d_* is
++                    // now clearing in lockstep so it is idle for the next issue.
+                     ram_read      <= 0;
+                     ram_write     <= 0;
+                     state         <= 0;
+@@ -291,6 +312,28 @@
+     end
+ 
+     // =========================================================================
++    // Handoff register stage (drives the terminator one registered hop after the FSM)
++    // =========================================================================
++    // Latches the FSM's command (ram_*) and presents it to the terminator. Single-outstanding
++    // is preserved: the FSM stays in S_WAIT (holding ram_*) until d_accepted, which also clears
++    // d_* — so d_* is always idle when the FSM issues the next command (no overlap). Clearing on
++    // d_accepted deasserts the command the cycle after acceptance, so the terminator sees exactly
++    // one transaction (no double-accept).
++    always @(posedge clk) begin
++        if (!rst_n) begin
++            d_read <= 1'b0; d_write <= 1'b0; d_address <= 29'd0; d_writedata <= 64'd0;
++        end else if (d_accepted) begin
++            d_read <= 1'b0; d_write <= 1'b0;                 // accepted -> deassert next cycle
++        end else if (!d_busy) begin
++            d_read      <= ram_read;                         // stage idle -> latch FSM's current command
++            d_write     <= ram_write;
++            d_address   <= ram_address;
++            d_writedata <= ram_writedata;
++        end
++        // else (d_busy & waitrequest): hold the presented command stable until accepted
++    end
++
++    // =========================================================================
+     // Debug counters
+     // =========================================================================
+     reg [15:0] rd_count;
+@@ -331,8 +374,8 @@
+         if (!rst_n) begin
+             wr_stall_cnt <= 0; wedged <= 0; lock_cmd <= 0; lock_outstanding <= 0; recovery_count <= 0;
+         end else begin
+-            // consecutive cycles the bridge refuses an asserted command (waitrequest high)
+-            if (state && (ram_read || ram_write) && ddr3_waitrequest) begin
++            // consecutive cycles the bridge refuses the PRESENTED (registered) command
++            if (d_busy && ddr3_waitrequest) begin
+                 if (!(&wr_stall_cnt)) wr_stall_cnt <= wr_stall_cnt + 1'b1;
+             end else begin
+                 wr_stall_cnt <= 0;
+@@ -340,7 +383,7 @@
+             // sustained refusal (>=256 cyc) = LOCK -> latch the condition, sticky
+             if (wr_stall_cnt >= 12'd256 && !wedged) begin
+                 wedged           <= 1'b1;
+-                lock_cmd         <= {ram_read, ram_write};
++                lock_cmd         <= {d_read, d_write};
+                 lock_outstanding <= outstanding_reads;
+             end
+             // count genuine lost responses recovered (resp_timeout synthesized one)

@@ -1258,3 +1258,20 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   checked reboot helper (devlock mister reboot dvd) adopted + used cleanly. | advanced: honest result +
   trustworthy metric + strategy locked on handoff-register | blocked: clean gap eval gated on a
   non-marginal build | building: nothing.
+- 2026-06-05 (HANDOFF-REGISTER implemented + VALIDATED in memshim co-sim) — Implemented the durable
+  wedge fix in mem_shim.sv: a register stage (d_read/d_write/d_address/d_writedata) between the FSM's
+  command regs (ram_*) and the terminator, splitting cockpit's marginal hop (ram_write ->
+  f2sdram_safe_terminator|state_write, +0.640ns single tightest HOLD) into two shorter registered hops
+  (ram_* -> d_* -> terminator) so placement stops tipping it functional. d_accepted = d_busy &
+  ~waitrequest drives the FSM acceptance + clears d_* the cycle after accept (no double-accept);
+  single-outstanding preserved; +1 cycle latency (absorbed by the read-behind gap). VALIDATED in the
+  core/sim/memshim co-sim (real mem_shim + behavioral Avalon DDR3 w/ harsh waitrequest): FRAME_0 Y plane
+  BYTE-IDENTICAL to baseline golden (md5 41b4b17d, mean 124.44 clean greyramp) under run_wait; NO $stop
+  (no tag desync), NO watchdog stall, 3 frames in run_harsh (lat20/wait8/jitter7). framestore_0001 md5
+  differs only by snapshot-rotation offset (+1 cycle), pixels identical. => protocol-correct + functionally
+  transparent, will NOT break the working DDR path. Patch core/patches/hw/mpeg2fpga-memshim-handoff-register.patch.
+  Reverted SEED 2 from qsf (clean test that the handoff-register alone makes placement reliable). NEXT:
+  build COMBINED fix (handoff-register mem_shim + read-behind-gap framestore_request, default seed) ->
+  if it builds non-wedged + decodes clean full-frame on HW = the placement marginality AND the ordering
+  race are both fixed = DECODE-CORRECTNESS MILESTONE. | advanced: durable wedge fix implemented +
+  co-sim-validated transparent | blocked: nothing | building: combined fix next.
