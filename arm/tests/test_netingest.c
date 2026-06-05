@@ -142,6 +142,39 @@ int main(void)
            (unsigned long long)s2->es_to_ring, (unsigned long long)s2->es_dropped);
     ni_free(&ni2);
 
+    /* === Test 3: the netd recv-gate invariant — capping each feed at
+     * ni_room() PS bytes (video ES <= PS) means the ring NEVER overflows, so
+     * es_dropped stays 0 even with a ring far smaller than the total ES. This
+     * is exactly netd.c's backpressure loop (drain, then recv<=ni_room()); the
+     * gate paces the producer instead of dropping. === */
+    netingest ni3;
+    assert(ni_init(&ni3, 256, SECTOR) == 0);       /* 256-byte ring << total ES */
+    uint8_t got3[4096]; size_t glen = 0;
+    for (size_t off = 0; off < b.len; ) {
+        /* drain first (consumer), exactly like netd's drain_to_file */
+        uint8_t sec[16];
+        while (ni_get_sector(&ni3, sec) == SECTOR) { memcpy(got3 + glen, sec, SECTOR); glen += SECTOR; }
+        size_t room = ni_room(&ni3);
+        assert(room > 0);                          /* always true right after a drain */
+        /* Offer the WHOLE remaining stream each step (recv would happily give a
+         * big chunk); the gate alone keeps it from overflowing the tiny ring.
+         * Without the `want > room` cap this single feed drops -> es_dropped>0. */
+        size_t want = b.len - off;
+        if (want > room) want = room;              /* the gate: recv <= ni_room() */
+        ni_feed(&ni3, b.p + off, want);
+        off += want;
+        assert(ni_get_stats(&ni3)->es_dropped == 0);  /* gate => never drops */
+    }
+    { uint8_t sec[16]; while (ni_get_sector(&ni3, sec) == SECTOR) { memcpy(got3 + glen, sec, SECTOR); glen += SECTOR; } }
+    const ni_stats *s3 = ni_get_stats(&ni3);
+    assert(s3->es_dropped == 0);                   /* the headline invariant */
+    assert(s3->video_es_bytes == elen);
+    size_t whole3 = (elen / SECTOR) * SECTOR;
+    assert(glen == whole3);
+    assert(memcmp(got3, expect, whole3) == 0);     /* ES byte-exact, in order */
+    printf("netingest: room-gated feed (netd backpressure) never drops, ES intact OK\n");
+    ni_free(&ni3);
+
     printf("ALL NETINGEST TESTS PASSED\n");
     return 0;
 }

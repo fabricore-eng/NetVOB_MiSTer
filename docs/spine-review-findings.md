@@ -21,9 +21,14 @@ Status legend: ☐ open · ☑ fixed (commit)
   (PTS / PTS+DTS / STD+PTS / stuffing+PTS / 0x0F), red/green verified.
 
 ## HIGH — live-path + lifecycle
-- ☐ **arm/netd.c:113-124 (+netingest.c)** — no transport §4 backpressure: recv() never gates on
+- ☑ **arm/netd.c:113-124 (+netingest.c)** — no transport §4 backpressure: recv() never gates on
   `ni_room()` (dead water marks); `es_to_ring_sink` silently drops overflow ES on the on-target
-  sd_* path. **Fix:** gate recv on ring room (reuse realpipe.c §4); make `es_dropped>0` a hard error.
+  sd_* path. **FIXED** (netd's recv loop now caps each recv at `ni_room()` bytes — since video ES ≤
+  the PS fed, the ring can't overflow → no silent drop; a full ring (consumer stalled) skips recv +
+  yields 1 ms so TCP backpressures the sender; and `es_dropped>0` is now a FATAL exit, not silent) +
+  netingest Test 3 (whole-stream feed gated only by `ni_room()` into a ring far smaller than the ES
+  never drops; red/green verified by removing the cap). No-op in the current file-drain stub
+  (the file always drains the ring), correct for the real sd_* consumer.
 - ◐ **server.py seek race (218-229 vs 161-187 + dvddump.py:318-339)** — mid-play seek races
   `handle.read()` (run outside `_lock`) → garbled PS. **PARTIALLY FIXED.** The *handle-level* data
   race (the cited `dvddump.py:318-339`) is fixed: `DVDStreamHandle` + `DVDCellStreamHandle` now guard

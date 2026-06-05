@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define DEF_SECTOR 2048u
@@ -111,9 +112,23 @@ int main(int argc, char **argv)
     if (!buf) { close(fd); if (out) fclose(out); ni_free(&ni); return 1; }
 
     for (;;) {
-        /* Consume first so the ring has room (TCP backpressure when it doesn't). */
+        /* Consume first so the ring has room (real path: the sd_* pull drains;
+         * file-stub: the file always accepts, so the ring empties fully). */
         drain_to_file(&ni, sector, out);
-        ssize_t n = recv(fd, buf, RECV_CHUNK, 0);
+        /* Backpressure (transport.md §4): never recv more than the ring can
+         * hold. Video ES <= the PS bytes fed (nav/headers are stripped), so
+         * capping recv at ni_room() guarantees ni_feed() can't overflow the
+         * ring -> no silent ES drop that would desync the HW decoder. If the
+         * ring is full (consumer not draining), don't recv at all so TCP
+         * backpressures the sender; yield 1 ms to avoid a busy-spin. */
+        size_t room = ni_room(&ni);
+        if (room == 0) {
+            struct timespec ts = { 0, 1000000L };  /* 1 ms */
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        size_t want = room < RECV_CHUNK ? room : RECV_CHUNK;
+        ssize_t n = recv(fd, buf, want, 0);
         if (n == 0) break;                 /* peer closed */
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -121,6 +136,17 @@ int main(int argc, char **argv)
             break;
         }
         ni_feed(&ni, buf, (size_t)n);
+        if (ni_get_stats(&ni)->es_dropped > 0) {
+            /* The room gate makes this impossible; if it fires the ring is
+             * mis-sized vs the ES/PS ratio. Fail loudly rather than feed a
+             * desynced (gap-corrupted) stream to the decoder. */
+            fprintf(stderr,
+                "netd: FATAL es_dropped=%llu — ring overflow despite the "
+                "backpressure gate\n",
+                (unsigned long long)ni_get_stats(&ni)->es_dropped);
+            free(buf); close(fd); if (out) fclose(out); ni_free(&ni);
+            return 2;
+        }
     }
     drain_to_file(&ni, sector, out);       /* final flush of whole sectors */
 
