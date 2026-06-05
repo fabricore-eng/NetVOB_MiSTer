@@ -1106,3 +1106,16 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   the desync to a bitstream offset. (getbits_valid is continuous/cycle-based — gate on a per-byte event.)
   | advanced: desync localized to a mid-frame slice (~10/30); wrap/lost-response/from-start eliminated |
   blocked: nothing | building: nothing (per-byte getbits probe next).
+- 2026-06-05 (team refinement: slice-boundary desync + two-way-bisect framing) — 573: MB-row 10/30 = a
+  SLICE boundary (each slice ~1 MB-row) => the desync is at the ~10th slice_start_code => points at
+  bitstream-STRUCTURE handling. cockpit: periodic sector(512B)/word(8B) boundaries ALSO ruled out (a
+  per-boundary bug fires at boundary #1, not #N) => only a SPECIFIC non-periodic mid-frame event fits.
+  KEY FRAMING (cockpit) — the per-byte getbits-vs-sim compare is a clean TWO-WAY BISECT:
+    Branch 1: getbits HW DIVERGES from sim at byte N => mem path delivered a wrong word (HW-only VALUE
+      corruption); the divergent byte's DDR address = the corruption locus. [leading hypothesis]
+    Branch 2: getbits HW == sim THROUGH the desync, yet decode still desyncs => bitstream delivery is
+      CLEAN; the desync is vld-INTERNAL HW-only = uninitialized-reg / X-prop / timing (sim-modeling gap)
+      => totally different fix, do NOT chase the mem path. [keep live]
+  cockpit will map MB-row->byte-offset + run the build watcher when the per-MB + per-byte probe is built.
+  | advanced: next-probe framing sharpened to a 2-way bisect (mem-value-corruption vs vld-internal) |
+  blocked: nothing | building: nothing.
