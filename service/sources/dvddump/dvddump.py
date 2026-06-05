@@ -55,6 +55,7 @@ from service.sources.dvddump.ifo import (
     CellPlayback,
     CellSpan,
     IFOParseError,
+    parse_pgc_for_ttn,
     parse_vmgi,
     parse_vtsi,
     read_ifo,
@@ -553,7 +554,11 @@ class DVDDumpSource(Source):
                 label += " (main feature)"
             entries.append(
                 CatalogEntry(
-                    id=f"dvddump:VTS_{t.vts_nr:02d}_1",
+                    # Encode the title-WITHIN-VTS number (vts_ttn), not a
+                    # hardcoded 1 — else two titles in one VTS collide on the
+                    # same id (and open() can't tell them apart -> both play the
+                    # first PGC). open() resolves the ttn to the right PGC.
+                    id=f"dvddump:VTS_{t.vts_nr:02d}_{t.vts_ttn}",
                     title=label,
                     kind="title",
                     duration_s=durations[i],
@@ -624,11 +629,12 @@ class DVDDumpSource(Source):
         m = self._VTS_ID_RE.match(stem)
         if m:
             vts_nr = int(m.group(1))
+            vts_ttn = int(m.group(2))  # title-within-VTS -> selects the PGC
             # Ordered-cell path only when the VTS IFO is present (a real dump).
             # Without it we cannot know PGC/cell order, so fall through to the
             # legacy single-VOB path (also what the synthetic VOB tests rely on).
             if vts_ifo_path(self.root, vts_nr) is not None:
-                return self._open_title(vts_nr)
+                return self._open_title(vts_nr, vts_ttn)
 
         full = os.path.join(self.root, f"{stem}.VOB")
         if not os.path.isfile(full):
@@ -644,14 +650,16 @@ class DVDDumpSource(Source):
         return self.open_bytes(clean)
 
     def cell_spans_for_title(
-        self, vts_nr: int
+        self, vts_nr: int, vts_ttn: int = 1
     ) -> tuple[list[CellPlayback], list[CellSpan]]:
         """Resolve a VTS title to its ordered (cells, per-file byte spans).
 
-        Parses ``VTS_<nn>_0.IFO``'s first PGC, then maps each cell's
+        Parses ``VTS_<nn>_0.IFO`` and selects the PGC for ``vts_ttn`` (the
+        title-within-VTS number) via the VTS_PTT_SRPT, then maps each cell's
         VTS-relative sector range onto the on-disk ``VTS_<nn>_1.VOB`` .. set.
         Returns the cells (PGC order) and the flat span list ``open()`` streams.
-        Raises ``FileNotFoundError`` / ``IFOParseError`` on missing IFO/VOBs.
+        ``vts_ttn`` defaults to 1 (the common one-title-per-VTS case). Raises
+        ``FileNotFoundError`` / ``IFOParseError`` on missing IFO/VOBs.
         """
         if not self.root:
             raise FileNotFoundError("no dump root configured")
@@ -660,21 +668,23 @@ class DVDDumpSource(Source):
             raise FileNotFoundError(
                 f"no VTS_{vts_nr:02d}_0.IFO under {self.root!r}"
             )
-        vtsi = parse_vtsi(read_ifo(ifo_path))
-        if not vtsi.is_valid or vtsi.pgc is None or not vtsi.pgc.cells:
+        pgc = parse_pgc_for_ttn(read_ifo(ifo_path), vts_ttn)
+        if not pgc.cells:
             raise IFOParseError(
-                f"VTS {vts_nr} has no parseable PGC cells"
+                f"VTS {vts_nr} title {vts_ttn} (PGC {pgc.pgc_nr}) has no cells"
             )
         parts = vts_vob_parts(self.root, vts_nr)
         if not parts:
             raise FileNotFoundError(
                 f"no VTS_{vts_nr:02d}_1.VOB title VOBs under {self.root!r}"
             )
-        spans = resolve_cell_spans(vtsi.pgc.cells, parts)
-        return vtsi.pgc.cells, spans
+        spans = resolve_cell_spans(pgc.cells, parts)
+        return pgc.cells, spans
 
-    def _open_title(self, vts_nr: int) -> DVDCellStreamHandle:
-        cells, spans = self.cell_spans_for_title(vts_nr)
+    def _open_title(
+        self, vts_nr: int, vts_ttn: int = 1
+    ) -> DVDCellStreamHandle:
+        cells, spans = self.cell_spans_for_title(vts_nr, vts_ttn)
         ifo_path = vts_ifo_path(self.root, vts_nr)
         vtsi = parse_vtsi(read_ifo(ifo_path)) if ifo_path else None
         nav = navinfo_from_cells(cells)

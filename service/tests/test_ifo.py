@@ -17,9 +17,11 @@ from service.sources.dvddump.ifo import (
     SECTOR,
     decode_dvd_time,
     parse_pgc,
+    parse_pgc_for_ttn,
     parse_vmgi,
     parse_vtsi,
     resolve_cell_spans,
+    vts_ttn_to_pgcn,
 )
 
 
@@ -186,6 +188,71 @@ def build_vtsi_full(pgc_bytes, *, pgcit_sector=2):
     return bytes(buf)
 
 
+def build_vts_ptt_srpt(ttn_to_pgcn):
+    """Craft a VTS_PTT_SRPT mapping each 1-based vts_ttn to a PGC number.
+
+    ``ttn_to_pgcn`` is a list where entry i (0-based) is the PGC number for
+    vts_ttn i+1. Layout matches :func:`ifo.vts_ttn_to_pgcn`:
+      +0x00 u16 nr_of_srpts, +0x02 u16 zero, +0x04 u32 last_byte,
+      +0x08 u32 ttu_offset[nr] (from table start) -> ptt_info{u16 pgcn, u16 pgn}.
+    """
+    nr = len(ttn_to_pgcn)
+    header_len = 8 + 4 * nr
+    body = bytearray()
+    ttu_offsets = []
+    for pgcn in ttn_to_pgcn:
+        ttu_offsets.append(header_len + len(body))
+        body += _u16(pgcn) + _u16(1)  # first PTT: pgcn, pgn=1
+    out = bytearray()
+    out += _u16(nr) + b"\x00\x00" + _u32(header_len + len(body))
+    for off in ttu_offsets:
+        out += _u32(off)
+    out += body
+    return bytes(out)
+
+
+def build_vtsi_multi(pgc_list, ttn_to_pgcn, *, pgcit_sector=2, ptt_srpt_sector=1):
+    """Craft a VTSI with MULTIPLE PGCs + a VTS_PTT_SRPT (multi-title VTS).
+
+    ``pgc_list`` is a list of full PGC byte blobs (from :func:`build_pgc`);
+    ``ttn_to_pgcn`` maps each title to its 1-based PGC number.
+    """
+    mat = bytearray(SECTOR)
+    mat[0:12] = b"DVDVIDEO-VTS"
+    mat[0xC8:0xCC] = _u32(ptt_srpt_sector)
+    mat[0xCC:0xD0] = _u32(pgcit_sector)
+
+    nr_pgci = len(pgc_list)
+    srp_table_len = nr_pgci * 8
+    pgc_blob = bytearray()
+    starts = []
+    for pgc_bytes in pgc_list:
+        starts.append(8 + srp_table_len + len(pgc_blob))  # from PGCIT start
+        pgc_blob += pgc_bytes
+    pgcit = bytearray()
+    pgcit += _u16(nr_pgci) + b"\x00\x00" + _u32(0)
+    for i in range(nr_pgci):
+        srp = bytearray(8)
+        srp[0] = 0x81 if i == 0 else 0x80
+        srp[4:8] = _u32(starts[i])
+        pgcit += srp
+    pgcit += pgc_blob
+
+    ptt = build_vts_ptt_srpt(ttn_to_pgcn)
+
+    buf = bytearray(mat)
+
+    def _place(sector, blob):
+        base = sector * SECTOR
+        if len(buf) < base + len(blob):
+            buf.extend(bytes(base + len(blob) - len(buf)))
+        buf[base : base + len(blob)] = blob
+
+    _place(ptt_srpt_sector, ptt)
+    _place(pgcit_sector, pgcit)
+    return bytes(buf)
+
+
 class DvdTimeTest(unittest.TestCase):
     def test_decode_ntsc(self):
         # 01:21:25 + 24 frames @ 29.97 (fps code 0b11): real KUNGPOW value.
@@ -279,6 +346,46 @@ class VtsiTest(unittest.TestCase):
         vtsi = parse_vtsi(bytes(buf))
         self.assertEqual(vtsi.nr_of_pgcs, 0)
         self.assertIsNone(vtsi.duration_s)
+
+    def test_ptt_srpt_selects_correct_pgc_per_title(self):
+        # Two titles in ONE VTS: vts_ttn 1 -> PGC 1, vts_ttn 2 -> PGC 2. Each PGC
+        # has a distinguishable cell (different first_sector). Verifies the
+        # PTT_SRPT mapping resolves each title to ITS OWN PGC, not always PGC 1.
+        pgc1 = build_pgc(
+            [{"first_sector": 100, "last_sector": 199, "cell_id": 1}],
+            program_map=[1],
+        )
+        pgc2 = build_pgc(
+            [{"first_sector": 5000, "last_sector": 5099, "cell_id": 1}],
+            program_map=[1],
+        )
+        buf = build_vtsi_multi([pgc1, pgc2], ttn_to_pgcn=[1, 2])
+
+        # PTT_SRPT mapping itself.
+        self.assertEqual(vts_ttn_to_pgcn(buf), [1, 2])
+
+        # Title 1 resolves to PGC 1 (cell at sector 100).
+        p1 = parse_pgc_for_ttn(buf, 1)
+        self.assertEqual(p1.pgc_nr, 1)
+        self.assertEqual(p1.cells[0].first_sector, 100)
+
+        # Title 2 resolves to PGC 2 (cell at sector 5000) — NOT PGC 1.
+        p2 = parse_pgc_for_ttn(buf, 2)
+        self.assertEqual(p2.pgc_nr, 2)
+        self.assertEqual(p2.cells[0].first_sector, 5000)
+
+    def test_pgc_for_ttn_no_ptt_srpt_falls_back_to_ttn(self):
+        # A VTS with no PTT_SRPT (sector 0): ttn 1 must still resolve to PGC 1.
+        buf = build_vtsi_full(
+            build_pgc(
+                [{"first_sector": 7, "last_sector": 9, "cell_id": 1}],
+                program_map=[1],
+            )
+        )
+        self.assertEqual(vts_ttn_to_pgcn(buf), [])  # no PTT_SRPT
+        p = parse_pgc_for_ttn(buf, 1)
+        self.assertEqual(p.pgc_nr, 1)
+        self.assertEqual(p.cells[0].first_sector, 7)
 
 
 class PgcCellOrderTest(unittest.TestCase):

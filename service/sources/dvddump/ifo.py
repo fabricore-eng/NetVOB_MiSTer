@@ -429,6 +429,89 @@ def parse_vtsi(buf: bytes) -> VTSI:
     return out
 
 
+def vts_ttn_to_pgcn(buf: bytes) -> list[int]:
+    """Map each *title within this VTS* (1-based vts_ttn) to its PGC number.
+
+    Reads ``VTS_PTT_SRPT`` (offset 0xC8 -> sector). Layout (``vts_ptt_srpt_t``
+    in dvdread), all relative to the table's start byte:
+      +0x00 u16  nr_of_srpts (titles within this VTS)
+      +0x04 u32  last_byte
+      +0x08 u32  ttu_offset[nr_of_srpts] — byte offset (from table start) to
+                 each title's PTT array (``ptt_info_t[]``, 4 bytes each:
+                 +0x00 u16 pgcn, +0x02 u16 pgn). The title's FIRST PTT gives the
+                 PGC that plays the whole title.
+    Returns ``[pgcn_for_ttn1, pgcn_for_ttn2, ...]``. Empty list if there is no
+    PTT_SRPT (one-PGC-per-VTS discs that omit it) — callers then default ttn->ttn.
+    """
+    ptt_srpt_sector = _u32(buf, 0xC8)
+    if ptt_srpt_sector == 0:
+        return []
+    base = ptt_srpt_sector * SECTOR
+    if base + 8 > len(buf):
+        raise IFOParseError(
+            f"VTS_PTT_SRPT sector {ptt_srpt_sector} (byte {base}) past end "
+            f"({len(buf)} bytes)"
+        )
+    nr_srpts = _u16(buf, base)
+    pgcns: list[int] = []
+    for i in range(nr_srpts):
+        off_pos = base + 8 + 4 * i
+        if off_pos + 4 > len(buf):
+            raise IFOParseError("VTS_PTT_SRPT ttu_offset table truncated")
+        ttu_off = _u32(buf, off_pos)
+        if base + ttu_off + 2 > len(buf):
+            raise IFOParseError("VTS_PTT_SRPT ptt entry past end")
+        pgcns.append(_u16(buf, base + ttu_off))
+    return pgcns
+
+
+def parse_pgc_for_ttn(buf: bytes, vts_ttn: int) -> PGC:
+    """Parse the PGC that plays *title-within-VTS* ``vts_ttn`` (1-based).
+
+    Resolves vts_ttn -> PGCN via :func:`vts_ttn_to_pgcn` (VTS_PTT_SRPT), then
+    fetches that PGC's PGCI_SRP entry from VTS_PGCIT and parses it. Fixes the
+    "two titles in one VTS both play the first PGC" bug. Falls back to
+    ``pgcn == vts_ttn`` (clamped) when no PTT_SRPT is present, so a single-title
+    VTS (ttn 1) still resolves to PGC 1.
+    """
+    if vts_ttn < 1:
+        raise IFOParseError(f"vts_ttn must be >= 1, got {vts_ttn}")
+    if len(buf) < 0xD0:
+        raise IFOParseError(f"VTSI too small: {len(buf)} bytes")
+
+    pgcns = vts_ttn_to_pgcn(buf)
+    if pgcns:
+        if vts_ttn > len(pgcns):
+            raise IFOParseError(
+                f"vts_ttn {vts_ttn} > nr_of_srpts {len(pgcns)}"
+            )
+        pgcn = pgcns[vts_ttn - 1]
+    else:
+        pgcn = vts_ttn  # no PTT_SRPT: title N -> PGC N (clamped below)
+
+    vts_pgcit_sector = _u32(buf, 0xCC)
+    if vts_pgcit_sector == 0:
+        raise IFOParseError("VTSI has no VTS_PGCIT")
+    pgcit = vts_pgcit_sector * SECTOR
+    if pgcit + 8 > len(buf):
+        raise IFOParseError(
+            f"VTS_PGCIT sector {vts_pgcit_sector} past end ({len(buf)} bytes)"
+        )
+    nr_pgci = _u16(buf, pgcit)
+    if nr_pgci == 0:
+        raise IFOParseError("VTS_PGCIT has no PGCs")
+    if pgcn < 1 or pgcn > nr_pgci:
+        # Out-of-range PGCN (corrupt PTT or the ttn-fallback overshooting a
+        # single-PGC VTS): clamp to the last real PGC rather than fail.
+        pgcn = min(max(pgcn, 1), nr_pgci)
+
+    srp = pgcit + 8 + (pgcn - 1) * 8
+    if srp + 8 > len(buf):
+        raise IFOParseError(f"PGCI_SRP[{pgcn}] past end")
+    pgc_start_byte = _u32(buf, srp + 4)
+    return parse_pgc(buf, pgcit + pgc_start_byte, pgc_nr=pgcn)
+
+
 # A DVD title VOB file (VTS_nn_1.VOB ..) is capped at 1 GB. The cell address
 # space is the byte-concatenation of those files in order; a global sector maps
 # into a specific file by integer division, EXCEPT the cap is in *bytes* not a

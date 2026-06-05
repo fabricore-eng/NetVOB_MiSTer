@@ -15,7 +15,7 @@ from service.sources.dvddump.dvddump import (
 )
 from service.sources.dvddump.ifo import SECTOR, CellPlayback, CellSpan
 from service.sources.plex.plex import PlexSource
-from service.tests.test_ifo import build_pgc, build_vtsi_full
+from service.tests.test_ifo import build_pgc, build_vtsi_full, build_vtsi_multi
 
 
 PREFIX = b"\x00\x00\x01"
@@ -213,6 +213,36 @@ class DVDCellStreamTest(unittest.TestCase):
             out = h.read(10_000)
             self.assertIn(b"FEATURE", out)
             self.assertNotIn(b"NAVX", out)
+
+    def test_two_titles_in_one_vts_open_their_own_pgc(self):
+        # Two titles in ONE VTS (vts_ttn 1 & 2 -> PGC 1 & 2 via PTT_SRPT) must
+        # stream DIFFERENT content. Pre-fix, both ids collapsed to VTS_07_1 and
+        # both played PGC 1 (episode 1). PGC1 -> cell @ sector 0 (EP1), PGC2 ->
+        # cell @ sector 1 (EP2).
+        with tempfile.TemporaryDirectory() as d:
+            s0 = _sector(_pes(0xE0, b"EP1-VID"), _pes(0xBF, b"NAV0"))
+            s1 = _sector(_pes(0xE0, b"EP2-VID"), _pes(0xBF, b"NAV1"))
+            with open(os.path.join(d, "VTS_07_1.VOB"), "wb") as f:
+                f.write(s0 + s1)
+            pgc1 = build_pgc(
+                [{"first_sector": 0, "last_sector": 0, "cell_id": 1}],
+                program_map=[1],
+            )
+            pgc2 = build_pgc(
+                [{"first_sector": 1, "last_sector": 1, "cell_id": 1}],
+                program_map=[1],
+            )
+            with open(os.path.join(d, "VTS_07_0.IFO"), "wb") as f:
+                f.write(build_vtsi_multi([pgc1, pgc2], ttn_to_pgcn=[1, 2]))
+            src = DVDDumpSource(root=d)
+
+            ep1 = src.open("dvddump:VTS_07_1").read(10_000)
+            self.assertIn(b"EP1-VID", ep1)
+            self.assertNotIn(b"EP2-VID", ep1)
+
+            ep2 = src.open("dvddump:VTS_07_2").read(10_000)
+            self.assertIn(b"EP2-VID", ep2)   # title 2 -> PGC 2, NOT PGC 1
+            self.assertNotIn(b"EP1-VID", ep2)
 
     def test_bounded_chunk_read_matches_whole_span(self):
         # The handle reads each cell span in bounded sector-aligned chunks (not

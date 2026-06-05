@@ -8,12 +8,11 @@ lifecycle leaks/races.*
 
 Status legend: ☐ open · ◐ partial · ☑ fixed (all fixes red/green-verified)
 
-**SWEEP STATUS (2026-06-05):** 13 ☑ fixed · 1 ◐ partial · 1 ☐ open. All HIGH/MEDIUM/LOW lifecycle +
-demux + backpressure + seek-map + memory-bound items are done and red/green-verified across the
-server/handle/demux/ingest layers. **◐ Remaining-partial:** the server.py seek vs streamer-buffer
-race for a *non-blocking* handle mid-play (handle-level race fixed; the streamer-buffer flush needs a
-handle position-epoch contract — deferred to M2). **☐ Remaining-open:** the one true *feature* gap
-below (title-within-VTS / PTT_SRPT), not a hardening bug.
+**SWEEP STATUS (2026-06-05):** 14 ☑ fixed · 1 ◐ partial · 0 ☐ open. All HIGH/MEDIUM/LOW lifecycle +
+demux + backpressure + seek-map + memory-bound items AND the title-within-VTS (PTT_SRPT) feature are
+done and red/green-verified across the server/handle/demux/ingest layers. **◐ Remaining-partial
+(only):** the server.py seek vs streamer-buffer race for a *non-blocking* handle mid-play (handle-level
+race fixed; the streamer-buffer flush needs a handle position-epoch contract — deferred to M2).
 
 ## HIGH — ES-corrupting (fix first; they desync the decoder)
 - ☑ **arm/ps_demux.c:377-387** — unbounded-PES matched-prefix path drops payload `0x00` bytes
@@ -49,9 +48,14 @@ below (title-within-VTS / PTT_SRPT), not a hardening bug.
   correct fix needs a handle **position-epoch captured atomically with read-extraction** so the
   streamer can drop only genuinely-stale chunks (epoch alone is ambiguous: an in-flight read across a
   seek returns *valid* post-seek data). Tracked for the M2 live-path hardening pass.
-- ☐ **dvddump.py:449/517 + ifo.py:392-417** — two titles in one VTS get identical catalog ids,
-  both play episode 1 (VTS_PTT_SRPT + all PGCI_SRP never parsed). **Fix:** encode `vts_ttn`, parse
-  PTT_SRPT, select the right PGC.
+- ☑ **dvddump.py:449/517 + ifo.py:392-417** — two titles in one VTS get identical catalog ids,
+  both play episode 1 (VTS_PTT_SRPT + all PGCI_SRP never parsed). **FIXED.** ifo.py gained
+  `vts_ttn_to_pgcn()` (parses VTS_PTT_SRPT) + `parse_pgc_for_ttn()` (resolves ttn→PGCN, fetches that
+  PGC from the multi-PGC PGCIT, falls back to ttn→PGC when no PTT_SRPT). `browse()` now ids titles
+  `VTS_<nn>_<vts_ttn>` (distinct); `open()` extracts the ttn and `cell_spans_for_title(vts_nr, ttn)`
+  streams the correct PGC's cells. + 3 tests (PTT_SRPT mapping/selection, no-PTT fallback, and an
+  end-to-end two-titles-in-one-VTS open() that streams EP1 vs EP2 from PGC1 vs PGC2) — red/green
+  verified. Synthetic IFO fixtures only (no real multi-title DVD dump yet to validate against).
 - ☑ **server.py:161-187 + streamer.py** — source handle never closed on natural EOF/error (leaks an
   ffmpeg subprocess/fd per finished playback for M3/Plex). **FIXED** (the pump's `finally` now calls
   an idempotent `_Session._cleanup()` that closes the handle) + `test_natural_eof_closes_handle...`
