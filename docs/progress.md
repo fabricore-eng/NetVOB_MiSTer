@@ -1310,3 +1310,40 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   Build launched. WHEN DONE: flash via Sonnet subagent + hw_jitter_measure 5 20; cockpit will pull the
   post-build .fit.rpt to confirm the hold margin actually GREW (not relocated). | advanced: hold-margin
   lever implemented, clock domain confirmed same | blocked: nothing | building: hold-fix.
+
+## ===== WEEKEND STAND-DOWN — PARKED 2026-06-05 ~23:00 UTC (resume Monday) =====
+DECODE STATUS: root cause = Branch-1 f2sdram posted-write commit-visibility ORDERING RACE on the vbuf
+ring (write byte-perfect, desync jitters). Two fixes: (1) READ-BEHIND GAP (framestore_request.v
+VBUF_READ_GAP=256, md5 7a1b4185) — sim-validated correctness-neutral, fences the race; (2) HOLD-MARGIN
+lever for the placement wedge: the marginal mem_shim->terminator command/addr hop is a SAME-CLOCK-DOMAIN
+reg->reg HOLD path (DDRAM_CLK=clk_mem), +0.644ns (STA-positive but placement-tips-functional). The
+handoff-register attempt WEDGED (a pipeline reg splits SETUP not HOLD) -> REVERTED (mem_shim back to
+baseline 217b0b6b). Current lever = set_min_delay 3.0 SDC (mpeg2fpga_holdfix.sdc, ref in
+core/patches/hw/) on ALL 3 f2sdram_safe_terminators' command/addr hops to force the fitter to insert
+HOLD delay (room at 36% ALM; setup +4.9 absorbs it).
+
+IN-FLIGHT (left to land on dell, detached): the HOLD-FIX build (gap-only + set_min_delay 3.0, NO
+handoff-register). .sof -> output_files/mpeg2fpga.sof. dell md5: mem_shim 217b0b6b, framestore 7a1b4185,
+qsf e50e93db, sdc 0e5d998a. Was ~38/45min at park; CHECK its rc Monday before flashing.
+
+MONDAY RESUME (instant):
+ 1. ssh dell: confirm hold-fix build DONE rc=0 (tail /tmp/dellbuild-dvd.log); quartus_cpf mpeg2fpga.sof
+    -> mpeg2fpga_dvd.rbf (docker --entrypoint quartus_cpf raetro/quartus:17.0 -c -o bitstream_compression=on).
+ 2. GATED flash (Sonnet subagent): acquire devlock mister (if BUSY stand down + @573), scp ->
+    mister:/media/fat/mpeg2fpga_dvd.rbf (md5-verify), dell_coord.sh devlock mister reboot dvd, wait up,
+    re-acquire, tools/build/hw_jitter_measure.sh 5 20 (stddev), UART read.
+ 3. INTERPRET (stddev = WEDGE-vs-DECODE only, NOT correctness): wedge (J:0021/PC:A0xx/P=RP=0/[-1]x5) ->
+    set_min_delay 3.0 insufficient: raise to 4-5ns OR add cockpit lever (b) keep'd delay-cells on
+    ram_write/ram_address, rebuild (ask cockpit exact short-path delay + post-build .fit.rpt confirm
+    margin GREW, not relocated). clean structured to row 29 -> WEDGE FIXED, go to step 4.
+ 4. OBJECTIVE GATE (HARD GATE per the manager/human — NO milestone on a vision read): render HW framestore
+    -> PNG (render_framestore.py); render the mpeg2fpga REFERENCE decode of the same clip -> PNG
+    (run_gbmb framestore, animated testsrc2 so best-match across frames OR use a static frame);
+    ~/Dev/mister-dev-hub/tools/frame_diff.py REFERENCE TEST --json -> MATCH (SSIM>=0.95, %diff<=2). Emit
+    'dell_coord.sh testlog dvd mister --shot --data verify=PASS --data golden=md5:<hash> "clean full-frame"'
+    (cockpit's VERIFIED badge). ONLY THEN claim the decode milestone (@the manager showcase, @human).
+STANDARDS ACTIVE: objective-verify hard gate; chat MENTIONS-only; ultracode DISCRETIONARY; Sonnet for
+routine; lock-checked reboot (dell_coord.sh devlock mister reboot dvd) + gate-on-acquire.
+BACKUPS: breakthrough getbits.rbf md5 ea955179; /tmp/mem_shim.sv.working-baseline (= current mem_shim).
+WATCHERS STOPPED + loop NOT re-armed for the weekend. 573 hit red-N milestone (boots past self-test) but
+MAME oracle showed not-yet-booting (garbled) — honest, objective.
