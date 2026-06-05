@@ -1293,3 +1293,20 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   /tmp/mem_shim.sv.working-baseline. 573 hit their red-N milestone (NVRAM byte-drop fix). | advanced:
   wedge precisely characterized as a HOLD-margin problem (not register-fixable) | blocked: clean build
   gated on a hold-margin lever (cockpit/573 expertise) | building: nothing.
+- 2026-06-05 (HOLD-FIX build: gap-only + set_min_delay, clock domain CONFIRMED same) — Resolved 573's
+  decisive fork by checking the RTL: mem_shim and f2sdram_safe_terminator are the SAME clock domain
+  (emu.sv: assign DDRAM_CLK=clk_mem with comment "eliminates the CDC between the f2sdram bridge and our
+  FSM"; mem_shim .clk(clk_mem); terminator clocked by that clk). So the marginal hop is a TRUE intra-clock
+  reg->reg HOLD path (matches cockpit's STA "intra-clock = real, not CDC"), NOT a CDC -> 573's same-domain
+  branch -> set_min_delay is the right lever (Web-Edition allowed). ACTION (cockpit+573 aligned): REVERTED
+  the handoff-register (mem_shim back to working baseline 217b0b6b; it bought protocol+setup but not hold,
+  and ADDS bridge-neighborhood perturbation) -> gap-only base (gap still in framestore_request 7a1b4185).
+  Added mpeg2fpga_holdfix.sdc: set_min_delay 3.0 -from mem_shim ram_write/ram_address -to ALL THREE
+  f2sdram_safe_terminators' state_write/write_address_latch/write_burstcount_latch/write_terminate_counter
+  (cockpit's node patterns; ALL 3 terminators because the marginal hop MOVES between them on a re-roll).
+  Forces the fitter to insert hold delay (room at 36% ALM; setup +4.9ns absorbs it). Registered SDC_FILE in
+  qsf (e50e93db). Doing lever (a) set_min_delay ALONE first (NOT cockpit's optional (b) keep'd delay-cells
+  — those add the bridge-neighborhood perturbation that's the failure mode; add only if (a) insufficient).
+  Build launched. WHEN DONE: flash via Sonnet subagent + hw_jitter_measure 5 20; cockpit will pull the
+  post-build .fit.rpt to confirm the hold margin actually GREW (not relocated). | advanced: hold-margin
+  lever implemented, clock domain confirmed same | blocked: nothing | building: hold-fix.
