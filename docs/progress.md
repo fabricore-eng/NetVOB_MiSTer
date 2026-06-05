@@ -622,3 +622,24 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   inter-prediction/motion-comp reference fetch; if no, intra reconstruction (IDCT/coeff) is wrong on
   HW. (2) examine whether f2sdram READ data is correct (not just present): the reference reads may
   return wrong-but-not-dropped data under the throttle. (3) compare sim-vs-HW same frame.
+
+- 2026-06-05 (ALL-INTRA HW test: intra decode is ALSO degraded -> the gate is HW decode-CORRECTNESS,
+  likely a pre-existing port bug in the memory datapath) — fed the all-I clip (tools/testclips/
+  test480i_ntsc_allI.m2v, 90 I-frames, ffmpeg stddev~65 every frame) and read back the framestore.
+  RESULT: still degraded — FRAME_1 stddev=21 (FRAME_0=10.5; FRAME_2/3 flat = unused, as expected for
+  all-intra), mostly gray+scattered noise with only the intra TIMECODE box clean, NO bars. So the
+  degradation is NOT confined to inter-prediction: INTRA RECONSTRUCTION loses content on HW (the large
+  flat-DC bar regions wash to gray). U:0/M:0/PC:0000 (no lock, no mem drops, recovery never fired), G:0
+  (no VLD errors). Since the SAME RTL decodes this clip correctly in sim, the bug is HW-SPECIFIC, and
+  most likely a PRE-EXISTING port decode-correctness bug in the memory datapath (the biggest sim-vs-HW
+  difference) that was simply never observable before because the decoder always LOCKED first — i.e.
+  the bound-reads fix removed the lock and exposed the next layer (consistent with the port's documented
+  'no confirmed video output'). VBUF (bitstream ring buffer @ word 0x1c0000 / phys 0x30E00000) readback
+  anomaly: only 101 start codes (97 picture-starts) vs the source clip's 3150 (mostly slices) — HINTS
+  the f2sdram may return correct-COUNT-but-wrong read DATA, corrupting the bitstream the VLD reads back
+  (which would explain valid-but-wrong decode with G:0). INCONCLUSIVE (ring-buffer state at snapshot).
+  Dumps saved: /tmp/dvd_shots/fs_allI.bin, fs_allI_big.bin (16MB incl VBUF). Board MENU, released.
+  NEXT: root-cause workflow — (a) is f2sdram READ DATA correct (not just count)? design a memory
+  round-trip integrity test through the FPGA; (b) trace VBUF-read→VLD→IQ/IDCT→framestore-write for what
+  yields DC/low-freq-lost gray on HW only; (c) is the degradation correlated with the mem_shim recovery/
+  throttle or pre-existing? Then a targeted fix (likely a build).
