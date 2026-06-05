@@ -500,3 +500,19 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   .sof -> mpeg2fpga_dvd_readrecovery.rbf (~3MB); pointed hw_decode_test.sh at it. Standing-authorized
   reboot test next (clear the f2sdram + load v2 first). Expected: W climbs past the old 189 stall and
   keeps going = decode-on-HW.
+- 2026-06-05 (MILESTONE: decoder genuinely DECODING on HW — v2 ran 49x further; remaining = rare
+  f2sdram read-response loss) — v2 (pipelined + read-response timeout-recovery) clean-boot test:
+  W:23E8 (9192 DDR writes, was 189), P:31BF (12735 reads, was 84), RP:31B9 (12729 responses),
+  J:008B (139 sectors fed). The decoder did ~22k real DDR ops (reading/writing reference frames) =
+  the decode PIPELINE WORKS ON HARDWARE. Still freezes at W:9192 (U:1 waitrequest stuck, M:D
+  state-1 holding a WRITE). KEY: P:12735 vs RP:12729 = 6 read responses LOST out of 12735 (~0.05% —
+  a RARE random loss, hallmark of MARGINAL TIMING on the 108MHz f2sdram interface, not a systematic
+  bug). When a lost response coincides with a pending write, the HPS f2sdram waitrequest-LOCKS (the
+  illegal state the safe_terminator docs say only an HPS reset clears); the RTL recovery keeps the
+  decoder alive across losses but cannot un-lock the bridge. So v2 is a big step but not full decode.
+  The readdatavalid path is synchronous to clk_mem (no CDC) -> a synchronous 0.05% drop = a real
+  setup/hold marginal path at 108MHz. NEXT LEAD: LOWER clk_mem / DDRAM_CLK (108 -> ~100MHz or less,
+  keeping a clean ratio to clk_sys 27MHz and the mem FIFOs) to make the f2sdram interface meet timing
+  reliably -> eliminate the drops -> no lock -> sustained decode. Alternatives if that doesn't suffice:
+  add a registered/retimed stage on the f2sdram readdatavalid/inputs; or bound outstanding reads.
+  Board returned to MENU + released; v2 is a committed rollback point.
