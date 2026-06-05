@@ -1007,3 +1007,22 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   build. RTL snapshot: core/patches/hw/mpeg2fpga-hw-bisect-vld+byte-probe.patch (re-appliable, verified).
   | advanced: byte-probe bisect queued (HW+sim building) | blocked: nothing | building: HW byte-probe
   (by0qh3q4k), sim golden (bo4hfsal9).
+- 2026-06-05 (BYTE-PROBE bisect — MAJOR localization: bug is in the HW bitstream-delivery path) — The
+  BL/BN byte probe build WEDGED (vbr_rd_dta tap is in the f2sdram/mem_shim bridge neighborhood → re-rolled
+  the marginal placement-sensitive bridge path; team correction: NOT congestion, core is 36% ALM; durable
+  fix = LogicLock-pin the f2sdram/mem_shim region; hub LESSONS 946eeaa). BUT the wedged build gave a
+  PRE-WEDGE partial read: HW BL=B1AA024E@BN=0x5A, VL=FFFFFE30@VN=0x22D. Count-aligned to the sim (fine
+  early logging): sim BL=c6f07360@0x5A, VL=fffffde4@0x22D — BOTH DIVERGE from the very start. So the
+  bitstream WORD getbits reads differs HW-vs-sim by word ~90, and decode diverges by coeff ~557 (→ the
+  catastrophic HW VL=+782995 vs sim −15094 by VN=0x18288). vld/getbits/vbuf RTL byte-identical sim-vs-port;
+  vbuf packs first-byte→MSB (identical); both feed the SAME 000001b3 video ES; mem_shim is byte-lane
+  passthrough (mem_res<=ddr3_readdata, no swap) EXCEPT a 64'd0 inject on rare resp_timeout. => the
+  divergence is in the HW-ONLY path: mpg_streamer (sd_*→stream_data) and/or mem_shim/f2sdram DDR roundtrip
+  (address/lane/zero-inject) — the sim has neither (feeds stream.dat→vbuf_write→mem_ctl directly). Leading
+  hypothesis: byte/word-ordering or address mismatch in the HW bitstream roundtrip. NEXT: (A) read
+  mpg_streamer cache addressing + vbuf write/read address mapping thru mem_shim vs the sim's vbuf path
+  (free); (B) LogicLock-pin the f2sdram/mem_shim region (durable wedge fix, unblocks all probing); (C) on
+  a pinned build, dump RAW first vbr_rd_dta words HW-vs-sim (byte-permutation=ordering bug; unrelated=
+  corruption). | advanced: decode bug localized rld-iquant → VLD-output → HW bitstream-delivery path (huge
+  narrowing); byte probe + sim BL/VL goldens built | blocked: byte-region probing needs the LogicLock pin
+  (else wedge) | building: nothing.
