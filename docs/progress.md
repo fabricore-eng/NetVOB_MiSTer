@@ -1445,3 +1445,21 @@ building: nothing.
   (cockpit): ram_write->terminator constrained on ALL dests incl burstcounter (no -76) + setup>+0.5 + hold>0,
   then flash. | advanced: lcell lever killed w/ full-path proof + pivot to cockpit's no-lcell bracket (b) |
   blocked: nothing | building: baseline(217b0b6b)+gap(7a1b4185)+bracket-sdc.
+- 2026-06-05 (NEW WORKSTREAM: scanout-to-CRT video timing — the human's CRT report) — the human (eyes on the CRT)
+  reported the CRT NEVER shows a correct picture even when my grabs look right: only the MiSTer info-overlay
+  (res/refresh) flashing on/off + black, and the OSD menu SQUISHED to the top half with every-other-line
+  skipped. BLIND-SPOT EXPOSED: my decode gate + grabs read the decoder framestore straight from DDR
+  (0x30000000 /dev/mem) = decoder-wrote-correct-MEMORY; they NEVER validate scanout. 3 layers: (1) decoder->DDR
+  (my gate), (2) DDR->HDMI scaler (MiSTer `screenshot`), (3) core VGA_*->ADV7125->CRT (what the human sees). 573
+  added the key fact: the human's MiSTer.ini vga_scaler=0 -> CRT gets the core's RAW scan timing (scaler bypassed)
+  -> the bug is in MY CORE's emitted 480i timing, decode-independent (the OSD is framework-drawn yet squished).
+  FINDINGS: syncgen.v == prior-working-config (unchanged 2007 upstream, authored for a DIRECT DAC); the
+  interlaced mode is NEW (prior-working used MODELINE_VGA 640x480 PROGRESSIVE 31kHz; current = MODELINE_NTSC_INTERL
+  720x480i 13.5MHz VID_MODE=001). modeline numbers correct on paper (525-line, HALFLINE=428 half-line offset).
+  emu.sv: VGA_SCALER=0 raw passthrough, core owns the interlace (own HALFLINE + VGA_F1=~v_pos[0]) -> never
+  CRT-validated. NEXT (gather data before guess-fixing): (a) the human menu isolation test — main MiSTer menu clean
+  on CRT? clean=>analog path OK, bug=my core timing; squished=>global analog cfg. (b) on next flash, HDMI
+  `screenshot` of OSD: also squished=>raster/interlace (fix syncgen), fine=>analog-specific. Likely fix area =
+  syncgen interlace vs MiSTer's interlace contract (study CDi_MiSTer ref — NOT currently vendored). Memory:
+  scanout-blind-spot-ddr-vs-crt. | advanced: root-caused the CRT blind spot + opened scanout workstream w/
+  triangulation plan | blocked: triangulation data (the human menu test + HDMI OSD grab) | building: (decode) bracket.
