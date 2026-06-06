@@ -1415,3 +1415,16 @@ building: nothing.
   OR lcell + set_max_delay to re-constrain ram_write. Engaging cockpit. dell LCELL build wedged .rbf d4a4ea0e.
   | advanced: REFRAME wedge=unconstrained-path (constraint is the lever, not hold-margin) | blocked: next
   constraint approach (cockpit) | building: nothing.
+- 2026-06-06 (RE-CONSTRAINED build: lcell + set_max/min_delay on ram_write — cockpit's exact fix) — Per the
+  reframe (wedge=unconstrained command-accept path), cockpit's exact re-constraint: the keep'd lcell DROPPED
+  STA's auto-constraint on ram_write->terminator (all 12 worst -89 setup paths = ram_write ONLY; addr/read
+  fine). FIX (B): KEEP the lcell (hold +2.31) + RE-IMPOSE timing via SDC: set_max_delay 9.259 (=general[1]
+  period @108MHz, single-cycle setup -> fitter times+places it = THE wedge fix; setup lands ~+2.3) +
+  set_min_delay 0.5 (hold floor the lcell already clears, no overshoot) -from ram_write -to
+  f2sdram_safe_terminator. Added to mpeg2fpga_holdfix.sdc (md5 08fab627). mem_shim KEEPS lcell (8207573e),
+  framestore gap (7a1b4185). Build launched. @cockpit verifies go/no-go: ram_write->terminator CONSTRAINED
+  (no -89 artifact) + setup>+0.5 + hold>0. WHEN DONE + verified: flash -> hw_jitter_measure (clean to row 29
+  + healthy telemetry = wedge fixed + gap fenced race = DECODE-CORRECTNESS) -> OBJECTIVE GATE (recipe ready
+  115a405: frame_diff HW vs sim_ref bars SSIM>=0.95) -> verify=PASS -> milestone. the manager stop-loss: if a
+  PROPERLY-CONSTRAINED build STILL wedges, step back. | advanced: cockpit's exact re-constraint applied +
+  building | blocked: nothing | building: re-constrained lcell+gap.

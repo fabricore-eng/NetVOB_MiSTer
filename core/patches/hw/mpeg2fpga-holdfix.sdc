@@ -18,6 +18,18 @@
 # Value 3.0ns ~= 1-1.5ns above the current short-path delay (cockpit to confirm/refine the exact
 # value + node list from the post-build .fit.rpt and verify the hold margin actually GREW).
 
-set_min_delay -from [get_keepers {*mem_shim:mem_shim_inst|ram_write *mem_shim:mem_shim_inst|ram_address[*]}] \
-              -to   [get_keepers {*f2sdram_safe_terminator*|state_write *f2sdram_safe_terminator*|write_address_latch[*] *f2sdram_safe_terminator*|write_burstcount_latch[*] *f2sdram_safe_terminator*|write_terminate_counter[*]}] \
-              3.0
+# [DISABLED 2026-06-05, replaced by LCELL hold-delay] set_min_delay -from [get_keepers {*mem_shim:mem_shim_inst|ram_write *mem_shim:mem_shim_inst|ram_address[*]}] \
+# [DISABLED 2026-06-05, replaced by LCELL hold-delay]               -to   [get_keepers {*f2sdram_safe_terminator*|state_write *f2sdram_safe_terminator*|write_address_latch[*] *f2sdram_safe_terminator*|write_burstcount_latch[*] *f2sdram_safe_terminator*|write_terminate_counter[*]}] \
+# [DISABLED 2026-06-05, replaced by LCELL hold-delay]               3.0
+
+# set_min_delay disabled — the hold margin is now added by a fixed keep'd LCELL delay chain
+# on the command/addr in mem_shim.sv (cockpit lever b), which grows hold without over-detouring setup.
+
+# ===== Re-constrain the LCELL'd command-accept path (cockpit, 2026-06-06) =====
+# The keep'd lcell on ram_write DROPPED STA's auto-constraint on ram_write->terminator -> that path
+# went UNCONSTRAINED -> the fitter didn't time/place it -> WEDGE (even at hold +2.31). Root cause was
+# CONSTRAINED-vs-UNCONSTRAINED, not hold-magnitude. Re-impose the normal single-cycle requirement so the
+# fitter times+places it deterministically (period general[1]=9.259ns @108MHz=clk_mem). All 12 worst -89
+# paths are ram_write-only; ram_address/ram_read stay constrained (+2.3) so they DON'T need this.
+set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
+set_min_delay 0.5   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
