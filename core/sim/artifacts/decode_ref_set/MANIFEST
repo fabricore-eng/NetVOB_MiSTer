@@ -1,0 +1,11 @@
+# NetVOB_MiSTer decode_ref_set manifest
+# 6 distinct animation phases of testsrc2 test480i NTSC MPEG-2
+# All are 720x480 grayscale Y-plane PNGs from mpeg2fpga sim.
+# ref_frame_01.png Y-md5 868c34a8 matches sim_ref_full_frame.png (the golden reference).
+# Format: filename  Y-md5
+ref_frame_01.png  868c34a88acd7fc22c53566c653bc31a
+ref_frame_02.png  571a4371f5d15662b29f9944fae774a3
+ref_frame_03.png  e473519ff55f605cf94ce6d3cbeeadb7
+ref_frame_04.png  ad418a80008189fbe075e61abed710fa
+ref_frame_05.png  c688efb158e876456c32466aef38d6d7
+ref_frame_06.png  715a383961d6a5ab369ef37bc4524177

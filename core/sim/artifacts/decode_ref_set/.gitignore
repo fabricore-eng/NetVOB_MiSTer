@@ -1,0 +1,3 @@
+# Intermediate sim dumps — only the deduplicated golden refs are tracked.
+*.gray
+fs2_*.png
