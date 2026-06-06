@@ -1485,3 +1485,22 @@ building: nothing.
   read-after-write ordering, NOT a decoder gate. Memories: gap-fix-hw-stalls-decoder, scanout-blind-spot.
   | advanced: de-confounded the verdict, root-caused the blocker to the GAP fix (timing ruled out), pivot
   to first-visible-frame | blocked: board (573 re-testing) + build | building: revert-gap+no-lever+video-fix.
+- 2026-06-06 (REVERT+VIDEO flashed: gap=stall CONFIRMED, but working-tree DRIFT broke decode; breakthrough
+  REPRODUCES via getbits.rbf) — Flashed the revert-gap+no-lever+video(HALFLINE=0) build (warm-reboot-first).
+  RESULT: HEALTHY feed/mem telemetry (J=Z=0F3B, PC:0000, M:0 U:0, P/RP flowing, W=0xD60F writes, full clip
+  consumed) = the GAP REVERT FIXED THE STALL (gap was the blocker, confirmed: gap->stall, no-gap->healthy).
+  BUT the framestore came back BLANK (FRAME_0 1.6-2.3% !=128, all MB-rows flat ~128) — and a SETTLE-CHECKED
+  re-dump (dump1==dump2, hw_settle_dump.sh) proved it's REAL, not dump-timing. So the current working tree
+  decodes-to-framestore = nothing, despite consuming the feed. ANCHOR TEST (decisive): flashed the known-good
+  getbits.rbf (ea955179) settle-dumped -> partial decode rows 0-16 = 100% (top ~57%, SETTLED) = breakthrough
+  REPRODUCES; board+tooling+clip GOOD; the desync row jitters run-to-run (Branch-1 readback race). CONCLUSION:
+  the blank is WORKING-TREE DRIFT in a decode-path file (NOT gap[reverted]/framestore[restored to getbits's
+  exact ver, only diff was the gap]/HALFLINE[output-only]) — mem_shim/mpeg2video/rld/uart_debug drifted since
+  the 17:35 getbits build (VL=VN=BL=BN probe collapse corroborates). RE-BASELINE PLAN (next cycle, deliberate):
+  reconstruct the getbits decode config from core/patches/hw/ + apply ONLY HALFLINE=0 -> rebuild -> getbits-level
+  partial decode + un-squished video = the human's first VISIBLE frame (success test per @human: HDMI screenshot
+  finally MATCHES the CRT — both render a framework-valid raster). Then desync at mem_shim. Added
+  tools/build/hw_settle_dump.sh (warm-reboot-first dual-dump settle check). Core stays 480i NTSC (HALFLINE=0
+  is still 480i — framework owns the weave). the manager stop-loss: pausing the HW marathon, re-baseline is
+  careful diff/patch work for a fresh cycle. | advanced: gap=stall CONFIRMED + breakthrough reproduces +
+  isolated the blank to working-tree drift | blocked: re-baseline (reconstruct getbits config) | building: none.
