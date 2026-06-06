@@ -55,3 +55,8 @@ tools/discid/cache.json.tmp
 
 # Claude Code session scheduler lock
 .claude/scheduled_tasks.lock
+
+# Transient HW capture/render artifacts (keep committed evidence: sim_ref_*, hwfs_breakthrough/)
+core/sim/artifacts/hwclip_*
+core/sim/artifacts/vldprobe_hw/
+core/sim/artifacts/*_decoded.png

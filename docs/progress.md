@@ -1399,3 +1399,19 @@ building: nothing.
   bars region (frame-invariant) or best-match across reference frames. | advanced: objective gate ready +
   HW-decode-correct-where-it-decodes proven | blocked: nothing | building: nothing (LCELL build done,
   flashing).
+- 2026-06-06 (LCELL build WEDGED despite hold +2.31 -> REFRAME: wedge = UNCONSTRAINED path, not hold-margin) —
+  cockpit confirmed HOLD +2.31 (addr hops +2.3-2.5, well over proven-nonwedge +1.054) but the LCELL build
+  WEDGED on HW ([-1]x5, J:0021/PC:A000/P=RP=0/M:D/U:1, framestore all-zero). This CONTRADICTS the hold-margin
+  theory. Reconciliation (from cockpit's -89 SETUP artifact): the keep'd lcell on ram_write DROPPED STA's
+  constraint on ram_write->terminator (all 30 worst setup paths = ram_write->terminator -89ns / 7 logic
+  levels = the path went UNCONSTRAINED). REFRAME: the wedge is the command-accept path (ram_write->state_write)
+  being UNCONSTRAINED (fitter doesn't time it -> placement-marginal -> wedge) vs CONSTRAINED (set_min_delay
+  forced the fitter to time it -> deterministic NON-wedge). Evidence: set_min_delay-3.0 CONSTRAINED -> non-wedged
+  (telemetry healthy, just setup-overshot); LCELL DROPPED the constraint -> wedged. So the LEVER is CONSTRAINING
+  the path, NOT adding fixed hold delay (the +1.054-vs-+0.640 hold correlation was a RED HERRING; the real cause
+  is constrained-vs-unconstrained). The original gap-only-seed1 + breakthrough were both UNCONSTRAINED =
+  placement-marginal (one wedged, one lucky). PROPOSED FIX: REVERT the lcell, go back to set_min_delay at a
+  LOWER value (~1.0-1.5) that CONSTRAINS the path (non-wedge) + modest hold + setup positive (no 3.0 overshoot);
+  OR lcell + set_max_delay to re-constrain ram_write. Engaging cockpit. dell LCELL build wedged .rbf d4a4ea0e.
+  | advanced: REFRAME wedge=unconstrained-path (constraint is the lever, not hold-margin) | blocked: next
+  constraint approach (cockpit) | building: nothing.
