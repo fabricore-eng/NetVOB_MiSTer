@@ -1384,3 +1384,18 @@ building: nothing.
   DECODE-CORRECTNESS -> OBJECTIVE frame_diff gate -> milestone. If lcell delay too low (hold<+1.2)/high
   (setup tight) -> tune lcell count (2 or 4). | advanced: lcell hold-delay implemented + syntax-verified +
   building | blocked: nothing | building: lcell hold-delay.
+- 2026-06-06 (OBJECTIVE-VERDICT PIPELINE established + validated; HW decode bit-identical to reference) —
+  Background subagent established the milestone HARD GATE (the manager: no claim on a vision read). Golden
+  reference = sim mpeg2fpga decode of test480i, framestore_0001 FRAME_0 (committed
+  core/sim/artifacts/sim_ref_bars_crop.png 600x112 md5 6da33b5c + sim_ref_full_frame.png 720x480 md5
+  11d74f88; Y md5 868c34a8). Format transform = render_framestore.py defaults (per-8-byte-word reversal
+  flip=True + signed bias XOR 0x80); identity spatial. VALIDATION on the breakthrough known-good
+  (/tmp/fs_breakthrough.bin FRAME_0, decoded top rows): bars region (rows 0-111, cols 120-719, excluding
+  the animated timecode box cols 0-119 + the moving diagonal) is PIXEL-IDENTICAL to the sim reference —
+  SSIM 1.0000, %diff 0.0%, MAE 0.0, frame_diff VERDICT=MATCH. => OBJECTIVE proof the HW decoder produces
+  bit-correct pixels where it decodes (not eyeballed). LOCKED RECIPE: render HW .bin via
+  tools/build/render_framestore.py -> frame_diff.py sim_ref_bars_crop.png <hw_frameN_Y.png>
+  --crop-test 120,0,720,112 --json -> pass if SSIM>=0.95 & %diff<=2.0. For a full clean frame compare the
+  bars region (frame-invariant) or best-match across reference frames. | advanced: objective gate ready +
+  HW-decode-correct-where-it-decodes proven | blocked: nothing | building: nothing (LCELL build done,
+  flashing).
