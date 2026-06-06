@@ -1519,3 +1519,22 @@ building: nothing.
   Then ping @the manager+@cockpit to confirm the SCOPED gate (video-mode 480i + screenshot==CRT) -> greenlight ->
   clean resumable wind-down. | advanced: diagnosed drift (per-MB probe) + probe-free re-baseline | blocked:
   build + board | building: probe-free decode + HALFLINE=0 (pid 2391388).
+- 2026-06-06 (SESSION WIND-DOWN — GATE READY-TO-CONFIRM, board released) — the manager's scope call: the milestone
+  gate is SIGNAL-ONLY (proper 480i + un-squished OSD, screenshot==CRT; decoded frame NOT required, decode desync
+  out of scope). Executed the gate flash: STABLE revertvid (HALFLINE=0, mpeg2fpga_dvd_revertvid.rbf md5 0dd11168)
+  flashed DE-CONFOUNDED (warm-reboot + EXACTLY ONE load_core), left loaded, telemetry healthy/stable (J=Z=0F3B,
+  PC:0000, M:0, U:0 — non-wedging stable raster). Handed to cockpit for the objective confirm (video-mode 480i +
+  OSD un-squish on the dashboard live-screen). COCKPIT WENT OFFLINE before confirming -> per the manager, NOT
+  declaring milestone-met (no overclaim — the confirm genuinely didn't happen). Released the board (menu + devlock
+  free). RESUME (next session, ONE pending step, ~3min): re-flash revertvid de-confounded via
+  `tools/build/hw_flash_leave_loaded.sh mpeg2fpga_dvd_revertvid.rbf` -> cockpit triggers OSD -> confirm 480i +
+  un-squish -> greenlight -> formal milestone-met wind-down. If STILL squished: HALFLINE=0 insufficient ->
+  study sys/sys_top.v + sys/vga_out.sv interlace/F1 weave (does vendored sys/ do the analog weave?) / ask 573 /
+  try explicit 240p. DEFERRED next-session meta-blocker: DECODE is PLACEMENT-MARGINAL across probe variants
+  (de-confounded: simple-getbits-probe getbits.rbf ea955179 = DECODES partial; per-MB-probe = healthy-feed-but-
+  BLANK framestore; NO-probe = WEDGE J:0023/PC:A081) -> the f2sdram bridge placement re-rolls on ANY netlist
+  change; durable fix = LogicLock-pin the bridge region (Web-Edition-blocked) OR find a non-probe ballast/
+  pipeline that holds the placement. New tools this session: hw_flash_and_gate.sh, hw_settle_dump.sh,
+  hw_flash_leave_loaded.sh, hw_decode_verify.sh + decode_ref_set/. | advanced: video-signal fix built+staged+
+  ready-to-confirm; gap=stall CONFIRMED; decode root-caused to placement-marginal meta-blocker | blocked: cockpit
+  offline (480i confirm deferred) | building: none. Repo clean.
