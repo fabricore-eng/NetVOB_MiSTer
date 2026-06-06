@@ -48,5 +48,10 @@
 # into the setup-negative region (3.0-ALONE overshot to setup -1.75). Net: delay forced into
 # [3.0, 9.259] -> hold ~+1.05, setup ~positive. No keep'd buffers -> no cut artifact. Re-verify next
 # build: ram_write->terminator CONSTRAINED on ALL dests incl burstcounter (no -76), setup>+0.5, hold>0.
-set_min_delay 3.0   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
-set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
+# [DISABLED 2026-06-06] The timing-constraint WEDGE THEORY was DISPROVEN on HW: a constrained
+# (no -76, hold +1.88) + warm-rebooted (clean bridge) bracket build STILL produced an all-zero
+# framestore. Root cause turned out to be the read-behind GAP fix HW-stalling the decoder (now
+# reverted), NOT timing/placement. The breakthrough decode was bare-baseline (NO lever). So no
+# bridge-timing lever is used — the path is auto-constrained by clk_mem and decodes fine bare.
+# set_min_delay 3.0   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
+# set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]

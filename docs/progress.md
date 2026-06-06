@@ -1463,3 +1463,25 @@ building: nothing.
   syncgen interlace vs MiSTer's interlace contract (study CDi_MiSTer ref — NOT currently vendored). Memory:
   scanout-blind-spot-ddr-vs-crt. | advanced: root-caused the CRT blind spot + opened scanout workstream w/
   triangulation plan | blocked: triangulation data (the human menu test + HDMI OSD grab) | building: (decode) bracket.
+- 2026-06-06 (DE-CONFOUNDED VERDICT: GAP FIX is the blocker, NOT timing; revert + video fix -> first
+  VISIBLE frame) — Flashed the bracket build TWICE. Run 1 (load_core only) FAILED with the wedge
+  signature (framestore all-zero, J:0021/PC:A000/P=RP=0/M:D) but was CONFOUNDED: load_core inherits the
+  prior session's HPS f2sdram bridge state (573 had just run a freeze-probe that wedges the bridge); our
+  lesson = warm-reboot clears the wedge, core-reload does NOT. Fixed hw_flash_and_gate.sh to WARM-REBOOT
+  FIRST. Run 2 (reboot-first, CLEAN bridge): STILL all-zero (state changed M:D->F, W:0004->0160 = reboot
+  took, so REAL not stale). => TIMING-CONSTRAINT WEDGE THEORY DISPROVEN (constrained, hold +1.88,
+  rebooted, still no decode). ROOT CAUSE (single-variable): the breakthrough bin (pre-gap, 12:14) = FULL
+  non-zero frame (mean 125.8, decoder WORKED, desynced); +GAP fix => all-zero. The read-behind GAP
+  (framestore_request.v vbuf_fill>=256 gate) HW-STALLS the decoder (gate deadlocks; sim-invisible). The
+  whole lcell/bracket/constraint saga chased a MISATTRIBUTED symptom. cockpit owns + steps back from the
+  timing thread; warm-reboot-before-verdict -> hub LESSONS (8802bf6). PIVOT (the manager's "another path"):
+  reverted the gap (framestore -> prior-working, md5 a132c934) + dropped the timing lever (SDC no-op) +
+  applied 573's video fix (modeline HALFLINE 428->0: a MiSTer core must NOT do its own analog half-line
+  offset — it double-weaved vs vga_out.sv => the human's squished/line-skip OSD; emit 240 lines/field + toggle
+  VGA_F1, framework weaves). Build LAUNCHED (pid 2182296, watcher b5x7fqva1). When done + board free:
+  warm-reboot-first flash -> DDR gate vs BREAKTHROUGH bin should PASS (decode restored) + vs sim golden
+  FAILs (desync remains) + CRT should show UN-SQUISHED video = the manager's "FIRST REAL decoded video on
+  HW (desynced, fix in progress)" VISIBLE milestone, distinct from verified-correct. Desync next: mem_shim
+  read-after-write ordering, NOT a decoder gate. Memories: gap-fix-hw-stalls-decoder, scanout-blind-spot.
+  | advanced: de-confounded the verdict, root-caused the blocker to the GAP fix (timing ruled out), pivot
+  to first-visible-frame | blocked: board (573 re-testing) + build | building: revert-gap+no-lever+video-fix.

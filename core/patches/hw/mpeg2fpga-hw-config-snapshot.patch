@@ -14,10 +14,10 @@ index c7c3f68..6111bf9 100644
 +set_global_assignment -name SDC_FILE mpeg2fpga_holdfix.sdc
 diff --git a/mpeg2fpga_holdfix.sdc b/mpeg2fpga_holdfix.sdc
 new file mode 100644
-index 0000000..638cea8
+index 0000000..5ce765e
 --- /dev/null
 +++ b/mpeg2fpga_holdfix.sdc
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,57 @@
 +# mpeg2fpga_holdfix.sdc — HW hold-margin fix for the f2sdram command/addr hop (2026-06-05)
 +#
 +# Problem: the mem_shim -> f2sdram_safe_terminator command/addr hop (ram_write -> state_write,
@@ -68,8 +68,13 @@ index 0000000..638cea8
 +# into the setup-negative region (3.0-ALONE overshot to setup -1.75). Net: delay forced into
 +# [3.0, 9.259] -> hold ~+1.05, setup ~positive. No keep'd buffers -> no cut artifact. Re-verify next
 +# build: ram_write->terminator CONSTRAINED on ALL dests incl burstcounter (no -76), setup>+0.5, hold>0.
-+set_min_delay 3.0   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
-+set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
++# [DISABLED 2026-06-06] The timing-constraint WEDGE THEORY was DISPROVEN on HW: a constrained
++# (no -76, hold +1.88) + warm-rebooted (clean bridge) bracket build STILL produced an all-zero
++# framestore. Root cause turned out to be the read-behind GAP fix HW-stalling the decoder (now
++# reverted), NOT timing/placement. The breakthrough decode was bare-baseline (NO lever). So no
++# bridge-timing lever is used — the path is auto-constrained by clk_mem and decodes fine bare.
++# set_min_delay 3.0   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
++# set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
 diff --git a/rtl/emu.sv b/rtl/emu.sv
 index aa9bf0d..b9328d8 100644
 --- a/rtl/emu.sv
@@ -504,58 +509,8 @@ index 33f3c2a..0e67e94 100644
 +    assign debug_read_pend_cycles = {wedged, lock_cmd, lock_outstanding, recovery_count};
  
  endmodule
-diff --git a/rtl/mpeg2/framestore_request.v b/rtl/mpeg2/framestore_request.v
-index 99e5394..d0f821a 100644
---- a/rtl/mpeg2/framestore_request.v
-+++ b/rtl/mpeg2/framestore_request.v
-@@ -463,7 +463,35 @@ module framestore_request(rst, clk,
-     else vbuf_empty <= next_vbuf_empty;
- 
-   /*
--   * Priority scheme: 
-+   * READ-BEHIND SAFETY GAP (HW fix 2026-06-05).
-+   * The HPS f2sdram POSTS writes (mem_shim has no writeresponsevalid / commit ack), so a vbuf
-+   * READ issued just behind the WRITE frontier can return DDR data whose write has not yet
-+   * committed -> the decoder gets STALE ring content -> a mid-frame decode desync that JITTERS
-+   * run-to-run with DDR latency (refresh / ARM contention). It is invisible in Verilator
-+   * (fixed-latency modeled DDR = deterministic ordering) and at a /dev/mem dump (writes long since
-+   * landed). The race is worst at decode START, when the ring is nearly empty so the read frontier
-+   * sits right on the write frontier — which is exactly why the desync lands in the top MB rows and
-+   * its row jitters [observed 1,6,7,10] across reloads of a BYTE-PERFECT bitstream (write path
-+   * confirmed 100% intact via vbuf DDR dump).
-+   * FIX: keep the decoder's vbuf read frontier >= VBUF_READ_GAP words behind the write frontier so
-+   * every word it reads is committed-readable. Track fill with a counter advanced by the SAME
-+   * conditions as the vbuf_wr/rd address pointers, and gate do_vbr on it. The gap (words) covers
-+   * worst-case write-commit latency and is tiny vs the ~1.47MB ring (256 words = 2 KiB = 4 sectors;
-+   * the streamer trivially stays that far ahead, so no throughput/deadlock cost in steady state).
-+   * Tunable: if jitter persists, raise VBUF_READ_GAP; if it is gone, this confirms the ordering race.
-+   */
-+  localparam [22:0] VBUF_READ_GAP = 23'd256;
-+  reg  [22:0] vbuf_fill;                                               // words written but not yet read
-+  wire        vbuf_did_wr = (previous == STATE_VBW) && vbw_rd_valid;   // == next_vbuf_wr_addr advance condition
-+  wire        vbuf_did_rd = (previous == STATE_VBR) && ~vbuf_empty;    // == next_vbuf_rd_addr advance condition
-+  wire        vbuf_gap_ok = (vbuf_fill >= VBUF_READ_GAP);             // >= GAP words committed-readable
-+  always @(posedge clk)
-+    if (~rst)          vbuf_fill <= 23'd0;
-+    else if (vb_flush) vbuf_fill <= 23'd0;
-+    else               vbuf_fill <= vbuf_fill + (vbuf_did_wr ? 23'd1 : 23'd0) - (vbuf_did_rd ? 23'd1 : 23'd0);
-+
-+  /*
-+   * Priority scheme:
-    *  refresh >  display frame read > forward frame read > backward frame read > reconstructed frame write > osd write
-    *
-    * Note we do not treat requests for a 'reader' when the data fifo is "almost full".
-@@ -478,7 +506,7 @@ module framestore_request(rst, clk,
-  
-   assign do_refresh = (refresh_cnt == 0)                    && REFRESH_EN                 && ~mem_req_wr_almost_full;
-   assign do_disp    = ~disp_rd_addr_empty                   && ~disp_wr_dta_almost_full   && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
--  assign do_vbr     = ~vbuf_empty          && ~vbuf_holdoff &&  vbr_rd_almost_empty       && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
-+  assign do_vbr     = ~vbuf_empty && vbuf_gap_ok && ~vbuf_holdoff &&  vbr_rd_almost_empty   && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
-   assign do_fwd     = ~fwd_rd_addr_empty                    && ~fwd_wr_dta_almost_full    && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
-   assign do_bwd     = ~bwd_rd_addr_empty                    && ~bwd_wr_dta_almost_full    && ~mem_req_wr_almost_full && ~tag_wr_almost_full;
-   assign do_recon   =                                          ~recon_rd_empty            && ~mem_req_wr_almost_full;
 diff --git a/rtl/mpeg2/modeline.v b/rtl/mpeg2/modeline.v
-index 4669b03..f5836f3 100644
+index 4669b03..fe2391e 100644
 --- a/rtl/mpeg2/modeline.v
 +++ b/rtl/mpeg2/modeline.v
 @@ -28,7 +28,9 @@
@@ -569,7 +524,7 @@ index 4669b03..f5836f3 100644
  `endif
  `endif
  `endif
-@@ -106,6 +108,47 @@
+@@ -106,6 +108,52 @@
      VID_MODE       = 3'b000;
  `endif
  
@@ -608,10 +563,15 @@ index 4669b03..f5836f3 100644
 +    VERT_SYNC_STRT = 243,
 +    VERT_SYNC_END  = 246,
 +    VERT_LEN       = 261,
-+    HALFLINE       = 428;
++    // HALFLINE 428 -> 0 (573 video fix, 2026-06-06): a MiSTer core must NOT do its own analog
++    // interlace half-line offset — it emits 240 lines/field + toggles VGA_F1 and the FRAMEWORK
++    // (vga_out.sv) owns the weave + half-line. Our 2007-direct-DAC HALFLINE=428 DOUBLE-weaved
++    // against the framework -> fields collided -> "squished top half / every-other-line skipped"
++    // on the CRT (the human). 0 = no core offset; VGA_F1 (emu.sv ~v_pos[0]) still toggles per field.
++    HALFLINE       = 0;
 +
 +  parameter [2:0]
-+    VID_MODE       = 3'b001;   // {clip_display_size, pixel_repetition, interlaced}
++    VID_MODE       = 3'b001;   // {clip_display_size, pixel_repetition, interlaced} — keep interlaced (VGA_F1 toggles)
 +`endif
 +
  `ifdef MODELINE_SIF
