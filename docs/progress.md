@@ -1504,3 +1504,18 @@ building: nothing.
   is still 480i — framework owns the weave). the manager stop-loss: pausing the HW marathon, re-baseline is
   careful diff/patch work for a fresh cycle. | advanced: gap=stall CONFIRMED + breakthrough reproduces +
   isolated the blank to working-tree drift | blocked: re-baseline (reconstruct getbits config) | building: none.
+- 2026-06-06 (RE-BASELINE: probe-FREE decode + HALFLINE=0, building) — Diagnosed the working-tree drift that
+  blanked decode: the current mpeg2video.v carried the PER-MB getbits probe (GB_T0..T3, reusing the VL/VN/BL/BN
+  ports) = a LATER probe distinct from the breakthrough getbits.rbf's simpler one; dot_ce confirmed
+  decode-relevant (gates mpeg2video's internal video pipeline @1105-1206, KEEP). FIX = probe-FREE: surgically
+  removed the per-MB getbits probe from mpeg2video.v (ports 61/91-94 + logic 552-609) keeping dot_ce; emu.sv
+  tied core_vl_chksum/vl_cnt/bl_chksum/bn_cnt to 32'd0 + dropped the 4 mpeg2video probe connections (uart_debug
+  reads 0 now). mpeg2video.v diff vs prior-working dropped 79->17 lines = clean dot_ce-only NTSC480i. KEPT:
+  emu.sv NTSC480i video-out, mem_shim baseline 217b0b6b, framestore no-gap a132c934, modeline NTSC_INTERL +
+  HALFLINE=0 (573 video fix), rld $signed (harmless). SDC no-op. Syntax-clean (only MODMISSING in lint = my
+  invocation missing wrappers, not real). Build LAUNCHED (pid 2391388). When done + board free: flash
+  warm-reboot-first (hw_flash_and_gate.sh rebaseline) -> EXPECT: DDR partial decode restored (rows 0-N like
+  getbits, N jitters = desync, OUT of scope) + HALFLINE=0 -> un-squished 480i, HDMI screenshot MATCHES CRT.
+  Then ping @the manager+@cockpit to confirm the SCOPED gate (video-mode 480i + screenshot==CRT) -> greenlight ->
+  clean resumable wind-down. | advanced: diagnosed drift (per-MB probe) + probe-free re-baseline | blocked:
+  build + board | building: probe-free decode + HALFLINE=0 (pid 2391388).
