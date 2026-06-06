@@ -1428,3 +1428,20 @@ building: nothing.
   115a405: frame_diff HW vs sim_ref bars SSIM>=0.95) -> verify=PASS -> milestone. the manager stop-loss: if a
   PROPERLY-CONSTRAINED build STILL wedges, step back. | advanced: cockpit's exact re-constraint applied +
   building | blocked: nothing | building: re-constrained lcell+gap.
+- 2026-06-06 (RE-CONSTRAINED build = NO-GO; LCELL LEVER ABANDONED; pivot to no-lcell bracket) — Re-constrained
+  build done (rc=0, sof 01:08:51Z). report_timing on ram_write->f2sdram_safe_terminator: HOLD +56.7 (overkill),
+  but SETUP -76.198 VIOLATED (data delay 84.820ns on a 9.259ns path). -detail full_path PROVED the cause: the
+  keep'd LCELL chain injects ~78ns of pure INTERCONNECT — 6 hops of 10-15ns each between scattered keep'd
+  buffers (u_dly_wr0->dly_wr0->u_dly_wr1->...->dly_wr2), cells ~0.08ns but routing 10-15ns/hop. The set_max
+  constrained ram_write->write_address_latch but couldn't reach PAST the lcell-created intermediate startpoint
+  to write_burstcounter -> that dest stayed unconstrained -> -76. LCELL HOLD-DELAY LEVER = DEAD (unconstrained
+  wedges; constrained blows setup). cockpit reached the identical conclusion independently (the keep'd lcell is
+  the cut culprit) + confirmed the no-lcell set_min_delay-3.0 build was CLEANLY constrained (real -1.75 setup,
+  no artifact). REFRAME refined: a bare reg->reg hop within clk_mem is AUTO-constrained by the 9.259ns clock --
+  the "-89 unconstrained artifact" was CREATED BY the lcell, not intrinsic. FIX = cockpit's BRACKET (b), NO
+  lcell: mem_shim restored to baseline 217b0b6b (lcell removed), SDC = set_min_delay 3.0 + set_max_delay 9.259
+  on ram_write->terminator (forces delay into [3.0,9.259] -> hold ~+1.05 @ proven-nonwedge point, setup
+  ~positive, no keep'd buffers = no cut). Build LAUNCHED (pid 2076430, watcher bn5ok551l). RE-VERIFY GATE
+  (cockpit): ram_write->terminator constrained on ALL dests incl burstcounter (no -76) + setup>+0.5 + hold>0,
+  then flash. | advanced: lcell lever killed w/ full-path proof + pivot to cockpit's no-lcell bracket (b) |
+  blocked: nothing | building: baseline(217b0b6b)+gap(7a1b4185)+bracket-sdc.

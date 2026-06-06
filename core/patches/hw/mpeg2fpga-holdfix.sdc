@@ -25,11 +25,28 @@
 # set_min_delay disabled — the hold margin is now added by a fixed keep'd LCELL delay chain
 # on the command/addr in mem_shim.sv (cockpit lever b), which grows hold without over-detouring setup.
 
-# ===== Re-constrain the LCELL'd command-accept path (cockpit, 2026-06-06) =====
-# The keep'd lcell on ram_write DROPPED STA's auto-constraint on ram_write->terminator -> that path
-# went UNCONSTRAINED -> the fitter didn't time/place it -> WEDGE (even at hold +2.31). Root cause was
-# CONSTRAINED-vs-UNCONSTRAINED, not hold-magnitude. Re-impose the normal single-cycle requirement so the
-# fitter times+places it deterministically (period general[1]=9.259ns @108MHz=clk_mem). All 12 worst -89
-# paths are ram_write-only; ram_address/ram_read stay constrained (+2.3) so they DON'T need this.
+# ===== LCELL LEVER ABANDONED — full-path proof, 2026-06-06 =====
+# report_timing -detail full_path on the re-constrained build proved the keep'd LCELL chain injects
+# ~78ns of pure INTERCONNECT routing: 6 hops of 10-15ns each between scattered keep'd buffers
+# (u_dly_wr0..dly_wr2). Result: setup -76.198 (VIOLATED, data delay 84.820ns on a 9.259ns path).
+# Unconstrained the same chain WEDGED. Both states non-viable -> LCELL hold-delay lever is DEAD.
+#
+# Reframe: a bare reg->reg hop ram_write->f2sdram_safe_terminator lives entirely within clk_mem
+# (general[1], 9.259ns) and is therefore AUTO-CONSTRAINED by that clock — it was NEVER truly
+# unconstrained. cockpit's "-89 unconstrained artifact" was created BY the lcell (the keep'd buffer
+# chain broke STA's clock association on that net), not an intrinsic property of the path. On the bare
+# working-baseline mem_shim (217b0b6b) this path measured setup +4.9 / hold +0.64 — STA-clean — and
+# that build PARTIALLY DECODED (the bars-region breakthrough). So NO timing lever is needed here.
+#
+# Therefore: lcell removed from mem_shim.sv (restored 217b0b6b). With no lcell, ram_write->terminator
+# is a clean intra-clk_mem reg->reg path that set_min/max_delay can constrain on ALL dests (incl
+# write_burstcounter — the lcell-created intermediate startpoint that blocked the -from reach is gone).
+#
+# ===== cockpit's BRACKET (b), 2026-06-06 — no lcell, hedge both axes =====
+# set_min_delay 3.0 targets the PROVEN-nonwedge hold (+1.054) by forcing >=3.0ns onto the path's MIN
+# (fast) corner; set_max_delay 9.259 (= clk_mem period) caps the added delay so it can't over-detour
+# into the setup-negative region (3.0-ALONE overshot to setup -1.75). Net: delay forced into
+# [3.0, 9.259] -> hold ~+1.05, setup ~positive. No keep'd buffers -> no cut artifact. Re-verify next
+# build: ram_write->terminator CONSTRAINED on ALL dests incl burstcounter (no -76), setup>+0.5, hold>0.
+set_min_delay 3.0   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
 set_max_delay 9.259 -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
-set_min_delay 0.5   -from [get_keepers {*mem_shim:mem_shim_inst|ram_write}] -to [get_keepers {*f2sdram_safe_terminator*}]
