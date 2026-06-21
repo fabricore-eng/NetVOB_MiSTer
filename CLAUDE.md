@@ -94,9 +94,9 @@ Full operational playbook (carried over from a sibling MiSTer core, adapted):
 [`docs/dev-workflow.md`](docs/dev-workflow.md). Key facts:
 
 - **Shared dev hub (MULTI-SESSION — read first):** Shared MiSTer tooling + lessons + the
-  build/device-lock protocol live in **`~/Dev/mister-dev-hub`** (`PROTOCOL.md`); `dell` + the
+  build/device-lock protocol live in **`~/Dev/tools`** (`PROTOCOL.md`); `dell` + the
   test HW are **shared with the 573 session** — honor the locks + shared board. Build via
-  `~/Dev/mister-dev-hub/tools/dell_build.sh` (`DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga
+  `~/Dev/tools/tools/dell_build.sh` (`DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga
   DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2`, run `--who` first; namespaces container `quartus-dvd`).
   Lock a test device before use: `tools/dell_coord.sh devlock mister acquire dvd` … test … `release dvd`.
   Put **generic** lessons in the hub's `LESSONS.md`; **core-specifics** in your own session memory.

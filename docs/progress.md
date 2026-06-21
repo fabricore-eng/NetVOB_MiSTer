@@ -66,7 +66,7 @@ at-a-glance state a fresh context (or a human) reads to resume **without re-deri
   (3) fan out cycle-3 sim/service/ARM depth *during* the 30-min build (interleave, never idle).
 - 2026-06-03 (cycle 4 — shared-hub integration) — **first `mpeg2fpga` `.rbf` built successfully**
   on the Dell (Full Compilation OK, ~30 min CPU, device 5CSEBA6U23I7) — M0 build milestone.
-  Then **wired NetVOB into the shared MiSTer dev hub** (`~/Dev/mister-dev-hub`, mirrored
+  Then **wired NetVOB into the shared MiSTer dev hub** (`~/Dev/tools`, mirrored
   `dell:~/mister-shared/`) so `dell` + `mister` are shared with the **573 session** without
   collision: read PROTOCOL.md + LESSONS.md; added the `dvd` row to `registry/projects.md`
   (pushed to the hub); added the shared-tooling/lock note to CLAUDE.md. **Retired my
@@ -1339,7 +1339,7 @@ MONDAY RESUME (instant):
  4. OBJECTIVE GATE (HARD GATE per the manager/human — NO milestone on a vision read): render HW framestore
     -> PNG (render_framestore.py); render the mpeg2fpga REFERENCE decode of the same clip -> PNG
     (run_gbmb framestore, animated testsrc2 so best-match across frames OR use a static frame);
-    ~/Dev/mister-dev-hub/tools/frame_diff.py REFERENCE TEST --json -> MATCH (SSIM>=0.95, %diff<=2). Emit
+    ~/Dev/tools/tools/frame_diff.py REFERENCE TEST --json -> MATCH (SSIM>=0.95, %diff<=2). Emit
     'dell_coord.sh testlog dvd mister --shot --data verify=PASS --data golden=md5:<hash> "clean full-frame"'
     (cockpit's VERIFIED badge). ONLY THEN claim the decode milestone (@the manager showcase, @human).
 STANDARDS ACTIVE: objective-verify hard gate; chat MENTIONS-only; ultracode DISCRETIONARY; Sonnet for

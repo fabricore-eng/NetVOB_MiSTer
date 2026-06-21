@@ -42,7 +42,7 @@
 # Dependencies (all present in this repo's dev environment):
 #   python3, PIL/Pillow, numpy
 #   tools/build/render_framestore.py   (this repo)
-#   mister-dev-hub/tools/frame_diff.py (hub tool)
+#   tools/tools/frame_diff.py (hub tool)
 #
 # Authors: NetVOB_MiSTer project (noreply@fabricore.ai)
 # =============================================================================
@@ -53,7 +53,7 @@ set -euo pipefail
 # --------------------------------------------------------------------------- #
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-HUB_ROOT="${HUB_ROOT:-${HOME}/Dev/mister-dev-hub}"
+HUB_ROOT="${HUB_ROOT:-${HOME}/Dev/tools}"
 
 RENDER_PY="${REPO_ROOT}/tools/build/render_framestore.py"
 FRAME_DIFF_PY="${HUB_ROOT}/tools/frame_diff.py"
@@ -339,7 +339,7 @@ if [[ "${VERDICT}" == "PASS" ]]; then
     echo ""
     if [[ "${LOG_CMD}" -eq 1 ]]; then
         echo "Testlog command:"
-        echo "  ~/Dev/mister-dev-hub/tools/dell_coord.sh testlog dvd mister \\"
+        echo "  ~/Dev/tools/tools/dell_coord.sh testlog dvd mister \\"
         echo "    --data verify=PASS --data golden=md5:${BEST_REF_MD5} \\"
         echo "    \"clean full-frame decode\""
     fi
