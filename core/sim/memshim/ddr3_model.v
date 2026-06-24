@@ -110,6 +110,10 @@ module ddr3_model (
   integer mode_drop;
   integer mode_dup;
   integer late_after_reset;
+  integer lock_threshold;     // REALISTIC: the f2sdram bridge WEDGES (waitrequest stuck
+                              // high, responses stop) once this many reads are outstanding
+                              // (on-silicon lock-probe caught it locking at 6 in flight).
+                              // 0 = off. This models the REAL failure, not an artificial drop.
 
   // LFSR for pseudo-random jitter / waitrequest phase
   reg [31:0] lfsr;
@@ -124,6 +128,7 @@ module ddr3_model (
     mode_drop    = 0;
     mode_dup     = 0;
     late_after_reset = 0;
+    lock_threshold = 0;
     lfsr         = 32'hACE1_2345;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
@@ -134,11 +139,12 @@ module ddr3_model (
     if ($value$plusargs("ddr_drop=%d", mode_drop));
     if ($value$plusargs("ddr_dup=%d", mode_dup));
     if ($value$plusargs("ddr_late_after_reset=%d", late_after_reset));
+    if ($value$plusargs("ddr_lock_threshold=%d", lock_threshold));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
-    $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d",
-             mode_reorder, mode_drop, mode_dup, late_after_reset);
+    $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d lock_threshold=%0d",
+             mode_reorder, mode_drop, mode_dup, late_after_reset, lock_threshold);
   end
 
   always @(posedge clk) lfsr <= {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
@@ -153,6 +159,7 @@ module ddr3_model (
   // waitrequest is only meaningful while a command is asserted, but we drive it
   // unconditionally (Avalon legal) so the master sees realistic backpressure.
   // ---------------------------------------------------------------------------
+  reg        locked;          // sticky over-issue lock (set in the always block below)
   reg [15:0] wait_phase;
   always @(posedge clk)
     if (rst) wait_phase <= 0;
@@ -160,7 +167,8 @@ module ddr3_model (
     else if (wait_phase == (wait_period[15:0]-16'd1)) wait_phase <= 0;
     else wait_phase <= wait_phase + 16'd1;
 
-  assign ddr3_waitrequest = (wait_period <= 1) ? 1'b0 : (wait_phase != 16'd0);
+  assign ddr3_waitrequest = locked ? 1'b1 :
+                            (wait_period <= 1) ? 1'b0 : (wait_phase != 16'd0);
 
   wire cmd_accept_rd = ddr3_read  && !ddr3_waitrequest;
   wire cmd_accept_wr = ddr3_write && !ddr3_waitrequest;
@@ -190,6 +198,10 @@ module ddr3_model (
 
   integer    cur_lat;
 
+  // realistic over-issue lock instrumentation
+  reg [31:0] outstanding_peak;          // max in-flight reads over the run
+  wire [31:0] outstanding_now = rd_issued - rd_responded;
+
   // Non-conformant bookkeeping
   reg [31:0] drain_count;        // # of drain opportunities (a response became ready)
   reg [31:0] post_reset_cycles;  // mem_clk cycles since reset deassert
@@ -215,6 +227,8 @@ module ddr3_model (
       dropped            <= 0;
       duped              <= 0;
       reordered          <= 0;
+      locked             <= 1'b0;
+      outstanding_peak   <= 0;
       for (k = 0; k < PIPE; k = k + 1) begin
         rsp_pending[k]   <= 1'b0;
         rsp_countdown[k] <= 0;
@@ -223,6 +237,20 @@ module ddr3_model (
     end
     else begin
       ddr3_readdatavalid <= 1'b0;   // default: no response this cycle
+
+      // ---- REALISTIC over-issue lock (faithful to the HW failure, NOT a fake drop) ----
+      // The HW f2sdram bridge wedges (waitrequest stuck high, responses stop) once too
+      // many reads are outstanding (on-silicon probe: locked at 6). Sticky like HW.
+      if (outstanding_now > outstanding_peak) begin
+        outstanding_peak <= outstanding_now;
+        $display("[ddr3_model %0t] peak in-flight reads = %0d", $time, outstanding_now);
+        $fflush;
+      end
+      if (!locked && lock_threshold != 0 && outstanding_now >= lock_threshold[31:0]) begin
+        locked <= 1'b1;
+        $display("[ddr3_model %0t] *** LOCK: f2sdram wedged -- %0d reads outstanding >= threshold %0d (waitrequest stuck, responses stop) ***",
+                 $time, outstanding_now, lock_threshold);
+      end
 
       // ---- accept a WRITE ----
       if (cmd_accept_wr) begin
@@ -300,7 +328,7 @@ module ddr3_model (
         end
 
         // 2) emit a pending DUPLICATE first (extra response, contract violation).
-        if (dup_pending) begin
+        if (dup_pending && !locked) begin
           ddr3_readdatavalid <= 1'b1;
           ddr3_readdata      <= dup_data;
           dup_pending        <= 1'b0;
@@ -310,7 +338,7 @@ module ddr3_model (
         end
 
         // 3) otherwise, normal/non-conformant emission of a ready response.
-        if (!emitted && ready0 >= 0 &&
+        if (!emitted && !locked && ready0 >= 0 &&
             (late_after_reset == 0 || post_reset_cycles >= late_after_reset[31:0])) begin
           drain_count <= drain_count + 1;
 
@@ -359,6 +387,8 @@ module ddr3_model (
                rd_issued, rd_responded, wr_issued, oob_seen, badwin_seen, $time);
       $display("[ddr3_model] NONCONF FINAL: dropped=%0d duped=%0d reordered=%0d (rd_issued-rd_responded=%0d)",
                dropped, duped, reordered, rd_issued - rd_responded);
+      $display("[ddr3_model] LOCK/PEAK FINAL: locked=%0d outstanding_peak=%0d lock_threshold=%0d",
+               locked, outstanding_peak, lock_threshold);
     end
   endtask
 
