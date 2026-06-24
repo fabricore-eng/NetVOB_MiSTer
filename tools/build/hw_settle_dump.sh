@@ -6,7 +6,7 @@
 # Usage: tools/build/hw_settle_dump.sh [TAG]
 set -uo pipefail
 TAG="${1:-settle}"
-HUB="$HOME/Dev/tools"
+HUB="${FABRICORE_HUB:-$HOME/Dev/fabricore/tools}"; [ -d "$HUB" ] || HUB="$HOME/Dev/tools"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DUMP_PY="$ROOT/tools/build/dump_framestore.py"
 OUT="/tmp/hw_settle_${TAG}"; mkdir -p "$OUT"

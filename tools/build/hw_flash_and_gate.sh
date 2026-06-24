@@ -16,7 +16,7 @@
 # Prints raw numbers + the gate VERDICT. Does NOT claim a milestone — the human/orchestrator does.
 set -uo pipefail
 TAG="${1:-bracket}"
-HUB="$HOME/Dev/tools"
+HUB="${FABRICORE_HUB:-$HOME/Dev/fabricore/tools}"; [ -d "$HUB" ] || HUB="$HOME/Dev/tools"
 REPO_DELL="~/NetVOB_MiSTer/core/MiSTer_MPEG2"
 SOF_DELL="$REPO_DELL/output_files/mpeg2fpga.sof"
 RBF_NAME="mpeg2fpga_dvd_${TAG}.rbf"

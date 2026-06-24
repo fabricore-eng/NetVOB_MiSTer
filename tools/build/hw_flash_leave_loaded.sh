@@ -3,12 +3,12 @@
 # with the devlock HELD, for an external inspector (cockpit dashboard) to verify the video
 # signal. De-confounded = warm-reboot (clean HPS f2sdram bridge) + EXACTLY ONE load_core.
 # Does NOT cleanup-unload and does NOT release the lock — caller releases after confirmation:
-#   ~/Dev/tools/tools/dell_coord.sh devlock mister release dvd
+#   ~/Dev/fabricore/tools/tools/dell_coord.sh devlock mister release dvd
 #
 # Usage: tools/build/hw_flash_leave_loaded.sh [RBF_BASENAME]   (default: mpeg2fpga_dvd_revertvid.rbf)
 set -uo pipefail
 RBF="${1:-mpeg2fpga_dvd_revertvid.rbf}"
-HUB="$HOME/Dev/tools"
+HUB="${FABRICORE_HUB:-$HOME/Dev/fabricore/tools}"; [ -d "$HUB" ] || HUB="$HOME/Dev/tools"
 REPO_DELL="~/NetVOB_MiSTer/core/MiSTer_MPEG2"
 RBF_DELL="$REPO_DELL/output_files/${RBF}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -48,5 +48,5 @@ cat <<'NEXT'
 The mpeg2fpga_dvd core (HALFLINE=0) is loaded on a DE-CONFOUNDED bridge (warm-reboot + ONE load_core).
 The devlock is HELD (dvd) so it stays up + undisturbed. cockpit: inspect the dashboard live-screen +
 read the video-mode. To release when done:
-  ~/Dev/tools/tools/dell_coord.sh devlock mister release dvd
+  ~/Dev/fabricore/tools/tools/dell_coord.sh devlock mister release dvd
 NEXT
