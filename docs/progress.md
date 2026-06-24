@@ -1571,3 +1571,29 @@ building: nothing.
   fitter-seed lock. | advanced: tooling fixed; getbits anchor objective+reproduced; mem_shim recovery PROVEN in
   sim (liveness); placement-marginal re-confirmed on HW | blocked: recovery un-testable on HW (placement);
   no capture card (480i signal gate) | building: none.
+- 2026-06-24 (cont.) (ROOT CAUSE of the placement-marginal blank NAILED on HW + the no-mask rule made binding) —
+  THE HUMAN'S #1 RULE (now PROTOCOL rule 9, all agents, via tools): NEVER mask a fault with fake data —
+  fix the root cause; accuracy-to-hardware is the goal. Triggered by the mem_shim resp_timeout zero-fill
+  "recovery" (a liveness band-aid that corrupts the dropped word). Added to hub LESSONS.md (#1 doctrine) +
+  my memory [[never-mask-faults-with-fake-data]]. ROOT-CAUSE WORK:
+  (a) SIM (memshim oracle extended to model the REAL f2sdram over-issue lock — wedge at N-in-flight, not the
+      artificial +ddr_drop): with READ_LIMIT=4 the in-flight reads peak at EXACTLY 4 across rd_latency=30..200
+      (throttle is load-bearing); lock@6 never fires (margin 2) => no read lost, resp_timeout never needed.
+      Bracket: lock@4 wedges (0 frames), lock@5 safe. So correct PACING is the real fix, fake-fill is dead weight.
+  (b) HW build-free triage (deploy rebaseline, decode UART PC): the blank build shows P:4 RP:0 (reads accepted,
+      ZERO responses), M:D U:1 (wedged on a write, waitrequest stuck) -> blank is a DEAD READ-RESPONSE path,
+      not a desync.
+  (c) HW COUNTER-PROBE (added emu.sv top-level counters on raw DDRAM_* in clk_mem -> VL/VN/BL/BN uart fields;
+      built rc=0; bug REPRODUCED [not a Heisenbug-vanish]): VL=0 (raw DDRAM_DOUT_READY pulses = 0, confirms the
+      bridge is SILENT on reads, NOT a mem_shim counter miss), VN=2 (reads accepted), BN~2.03M (WRITES WORK — the
+      startup framestore clear completes), BL climbing into 100Ms (DDRAM_BUSY stuck high ~100%). VERDICT: in a bad
+      placement the HPS f2sdram bridge's READ-RETURN path is DEAD — writes complete, reads get accepted but never
+      answered, then the bus jams busy-forever. It's a PHYSICAL placement/routing fragility of the fabric<->HPS
+      interface, NOT a logic/capture bug (so pinning placement is a LEGIT fix, not masking).
+  (d) VERIFIED Quartus is 17.0.2 LITE Edition + (web-evidence) LogicLock regions ARE available in Lite (the
+      "blocked in Web Edition" note conflated old Quartus II); the durable placement-pin path is OPEN.
+  NEXT (building now): seed-varied recovery build (SEED 5, keeps the counter-probe) = a shot at a good-placement
+  build that, WITH the recovery, gives the first FULL HW decode. If blank -> LogicLock-pin the bridge region near
+  the HPS (deterministic). | advanced: no-mask=PROTOCOL rule 9; pacing PROVEN in sim; blank ROOT-CAUSED on HW to
+  the HPS bridge read-return path (physical placement); LogicLock-in-Lite verified available | blocked: need a
+  good-placement build to validate full decode | building: seed-varied recovery rbf (SEED 5).
