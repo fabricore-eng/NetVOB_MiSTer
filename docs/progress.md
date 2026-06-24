@@ -1597,3 +1597,22 @@ building: nothing.
   the HPS (deterministic). | advanced: no-mask=PROTOCOL rule 9; pacing PROVEN in sim; blank ROOT-CAUSED on HW to
   the HPS bridge read-return path (physical placement); LogicLock-in-Lite verified available | blocked: need a
   good-placement build to validate full decode | building: seed-varied recovery rbf (SEED 5).
+- 2026-06-24 (CORRECTIONS + handoff banked) — Two corrections to the entry above (a verification workflow +
+  the board caught them):
+  (1) SEED-5 did NOT decode. Deployed it: flat framestore (rows 0-63 BLACK, rest the 128 clear value),
+      P:0000 RP:0000 (ZERO reads issued), write-side wedge (PC:A000). I briefly mis-called it a decode from
+      hw_decode_verify's flat-field SSIM 0.70 + the Step-2 auto-pick "looks like real image" — the objective
+      VERDICT=FAIL was right. Lesson re-banked: trust the numeric VERDICT (SSIM>=0.95 AND %diff<=2) + the
+      bridge counters + LOOK at the frame; never the auto-pick. So 3 placements this session = 3 distinct
+      bridge failures; seed-roulette is unreliable.
+  (2) "LogicLock-in-Lite verified available" is WRONG. LogicLock is license-BLOCKED on raetro/quartus:17.0
+      (free Lite): Warning 292013 + Critical Warning 140003 -> regions SILENTLY removed (already recorded in
+      our own docs/hw-bridge-wedge-fix-plan.md, hit 2026-06-05). My "verified" was general web docs, not our
+      tool. CORRECTED FIX PLAN (license-free): (A) register the mem_shim<->bridge handoff (DDRAM read-return
+      inputs) for HOLD MARGIN = placement-independent, recommended, untried (hw-bridge-wedge-fix-plan Step
+      2-alt; targets the read-return-dead finding); (B) back-annotate location-assignments to freeze a good
+      placement (build recovery -> gate -> back-annotate THE GOOD ONE; getbits's CDB is GONE so can't
+      back-annotate it directly). FULL next-session brief: docs/HANDOFF-2026-06-24-placement-fix.md. Memories
+      banked: bridge-placement-marginal-root-cause, placement-fix-no-logiclock, dell-build-mechanics-no-push,
+      + consolidated the stale feed-gate saga. | advanced: root cause confirmed + corrected fix plan + handoff
+      + memories banked | blocked: placement (the bridge interface) | building: none.
