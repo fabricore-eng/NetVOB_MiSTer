@@ -1538,3 +1538,36 @@ building: nothing.
   hw_flash_leave_loaded.sh, hw_decode_verify.sh + decode_ref_set/. | advanced: video-signal fix built+staged+
   ready-to-confirm; gap=stall CONFIRMED; decode root-caused to placement-marginal meta-blocker | blocked: cockpit
   offline (480i confirm deferred) | building: none. Repo clean.
+- 2026-06-24 (SESSION: tooling-fix + getbits anchor + mem_shim recovery PROVEN IN SIM + placement-marginal
+  RE-CONFIRMED on HW) — Board powered on mid-session (no capture card, so decode verdict = DDR framestore dump
+  vs golden decode_ref_set, capture-free). WORK:
+  (1) TOOLING FIX (committed a1c0004): 6 hw_*.sh build/flash scripts hardcoded the pre-migration HUB path
+      ~/Dev/tools (now ~/Dev/fabricore/tools) — every dell_coord.sh call would have failed mid-run + could
+      leave the FPGA wedged. Repointed to ${FABRICORE_HUB:-~/Dev/fabricore/tools} + fallback. Follow-up to fa59576.
+  (2) getbits.rbf ANCHOR (objective, reproduced, live toolchain validated): settle-dump SETTLED (dump1==dump2);
+      partial decode top 3 MB-rows (per-MB-row 91/100/100/27/0...) this run vs ~17 MB-rows in the prior log =
+      DECODE EXTENT JITTERS run-to-run (same rbf md5 ea955179, same clip) = lost-read-response desync confirmed
+      as the live blocker. Decoded rows are GENUINELY CORRECT vs sim golden ref_frame_01: top-48 MAD=3.51,
+      94.9% within +/-2. Full-frame gate VERDICT=FAIL (correct — partial can't pass). getbits LACKS the
+      mem_shim recovery (NOT in committed HEAD 11d1aa2) -> explains the desync-stop.
+  (3) mem_shim RECOVERY PROVEN IN SIM (the key result): the resp_timeout + READ_LIMIT=4 hardening is UNCOMMITTED
+      working-tree only (126 lines on top of HEAD). memshim co-sim oracle (core/sim/memshim, rebuilt — obj_dir
+      had cached the pre-migration path): hardened shim decodes clean baseline (2-3 frames, realistic latency),
+      and RECOVERS from +ddr_drop=1000 (3 dropped read responses, frames complete, NO STALL/watchdog, NO
+      tag/mem_res $stop) where the UNMODIFIED shim hung. rd stays exactly N-ahead of rsp = recovery resyncs the
+      count so the decoder never deadlocks. CAVEAT (honest): the recovery synthesizes ZERO data for the lost
+      read -> it's a LIVENESS fix that DEGRADES the dropped word (post-drop frame std 38 vs clean 63). On HW's
+      ~0.05% drop rate = rare glitches vs a permanent black screen. A correctness-preserving recovery would
+      RE-ISSUE the lost read (future enhancement).
+  (4) rebaseline.rbf HW TEST (probe-free + recovery, dell sof Jun6 04:17 -> rbf 04:20, built last session but
+      NEVER flashed) = BLANK (per-MB-row 3/0/0..., overall 0.1% !=128, SETTLED, VERDICT=FAIL no decodable slot).
+      WORSE than getbits -> PLACEMENT-MARGINAL META-BLOCKER RE-CONFIRMED this session: getbits's simple-probe
+      ballast places well + decodes partial; probe-free places badly + blanks. So the proven-in-sim recovery is
+      UN-TESTABLE on HW until it rides a good-placement build.
+  NEXT (build-heavy, needs steer): to HW-validate the recovery, build good-placement-ballast + recovery
+  (reconstruct getbits's SIMPLE probe — note patches/hw/ has the per-MB probe [blanks], not the simple one);
+  OR attack the durable placement fix — VERIFY the unverified "LogicLock blocked in Quartus Lite 17.0" claim
+  (if false, LogicLock-pin the f2sdram bridge region = ends the lottery), or a deterministic non-probe ballast /
+  fitter-seed lock. | advanced: tooling fixed; getbits anchor objective+reproduced; mem_shim recovery PROVEN in
+  sim (liveness); placement-marginal re-confirmed on HW | blocked: recovery un-testable on HW (placement);
+  no capture card (480i signal gate) | building: none.
