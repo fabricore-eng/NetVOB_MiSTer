@@ -1,0 +1,111 @@
+--- /tmp/mem_shim.sv.working-baseline	2026-06-24
++++ core/MiSTer_MPEG2/rtl/mem_shim.sv	2026-06-24
+@@ -61,6 +61,42 @@
+     assign ddr3_writedata  = ram_writedata;
+     assign ddr3_burstcnt   = 8'd1;
+     assign ddr3_byteenable = 8'hFF;
++
++    // =========================================================================
++    // READ-RETURN INPUT PIPELINE (HW hold-margin fix 2026-06-24, "Option A") —
++    // placement-INDEPENDENT fix for the dead-read-return wedge.
++    // =========================================================================
++    // The HPS f2sdram read-return inputs (DOUT_READY/DOUT) were consumed
++    // COMBINATIONALLY and fanned out widely (response path, recovery, the
++    // outstanding/rsp counters, and the ADDR_ERR collision guards), so the
++    // bridge-pin -> first-fabric-register path was long and varied. That made it
++    // PLACEMENT-SENSITIVE: on a bad placement the read-return capture failed on
++    // silicon (raw DDRAM_DOUT_READY pulses VL=0 — reads accepted but NEVER
++    // answered -> the bus jams BUSY-forever; root-caused via the emu.sv DDRAM
++    // counter-probe). Registering these two inputs ONCE at the boundary gives the
++    // fitter a short, dedicated capture path it can place adjacent to the bridge
++    // interface and meet hold/setup robustly, decoupling all downstream logic
++    // from the bridge pin timing.
++    //
++    // Logic effect: a UNIFORM +1 clk cycle delay of the read RESPONSE only. The
++    // command/issue side (ram_read/ram_write/ram_address + the waitrequest-based
++    // acceptance) is untouched, so the bus stays fully pipelined and pacing is
++    // unchanged (outstanding_reads simply decrements 1 cycle later -> the
++    // READ_LIMIT throttle becomes marginally MORE conservative, never less).
++    // ddr3_waitrequest is intentionally LEFT combinational here: registering it
++    // changes command-acceptance timing (riskier) and the read-return is the
++    // proven-dead path — defer waitrequest to a second iteration if needed.
++    reg        rdv_q;       // registered ddr3_readdatavalid (DDRAM_DOUT_READY)
++    reg [63:0] rdd_q;       // registered ddr3_readdata      (DDRAM_DOUT)
++    always @(posedge clk) begin
++        if (!rst_n) begin
++            rdv_q <= 1'b0;
++            rdd_q <= 64'd0;
++        end else begin
++            rdv_q <= ddr3_readdatavalid;
++            rdd_q <= ddr3_readdata;
++        end
++    end
+ 
+     // =========================================================================
+     // 2-State FSM + Skid Buffer
+@@ -93,7 +129,7 @@
+     reg  [5:0]  outstanding_reads;   // reads accepted but not yet responded
+     reg  [16:0] resp_timer;          // cycles since last response while reads are outstanding
+     wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
+-    wire        resp_timeout      = (outstanding_reads != 0) && !ddr3_readdatavalid && (&resp_timer);
++    wire        resp_timeout      = (outstanding_reads != 0) && !rdv_q && (&resp_timer);
+ 
+     // The HPS f2sdram has an outstanding-READ throttle: HW lock-probe caught the bridge
+     // LOCKING on a READ with 6 reads in flight (PC: lock_cmd=READ, outstanding=6). Bound
+@@ -133,9 +169,9 @@
+             // -----------------------------------------------------------------
+             // Response Path (always active, independent of FSM state)
+             // -----------------------------------------------------------------
+-            mem_res_wr_en <= ddr3_readdatavalid;
+-            if (ddr3_readdatavalid)
+-                mem_res_wr_dta <= ddr3_readdata;
++            mem_res_wr_en <= rdv_q;
++            if (rdv_q)
++                mem_res_wr_dta <= rdd_q;
+             else if (resp_timeout) begin
+                 // A read response is genuinely lost (overdue by >2^17 clk_mem cycles,
+                 // far beyond any real f2sdram latency) -> synthesize one (0 data) so the
+@@ -145,14 +181,14 @@
+             end
+ 
+             // Overdue-response timer: reset on any response or when nothing is outstanding.
+-            if (ddr3_readdatavalid || outstanding_reads == 0)
++            if (rdv_q || outstanding_reads == 0)
+                 resp_timer <= 0;
+             else if (!(&resp_timer))
+                 resp_timer <= resp_timer + 1'b1;
+ 
+             // Outstanding-read count: +1 when a read is accepted, -1 on a real response OR
+             // a synthesized timeout-recovery. (Both events same cycle => net unchanged.)
+-            case ({read_accepted_now, (ddr3_readdatavalid | resp_timeout)})
++            case ({read_accepted_now, (rdv_q | resp_timeout)})
+                 2'b10:   outstanding_reads <= outstanding_reads + 1'b1;
+                 2'b01:   if (outstanding_reads != 0) outstanding_reads <= outstanding_reads - 1'b1;
+                 default: ; // 2'b00 / 2'b11 -> unchanged
+@@ -197,7 +233,7 @@
+                                 // (saved_valid stays 1, no FIFO pull) so the synthetic response is
+                                 // re-issued next cycle. Without this, the same-cycle collision
+                                 // drops the real read's data (-> corrupt reference -> garbage).
+-                                if (!ddr3_readdatavalid) begin
++                                if (!rdv_q) begin
+                                     mem_res_wr_dta <= 64'd0;
+                                     mem_res_wr_en  <= 1'b1;
+                                     saved_valid    <= 0;
+@@ -242,7 +278,7 @@
+                                 // mem_res_wr_en/dta for the REAL response — do not overwrite it with
+                                 // the synthetic 0; stall the FIFO read so the same ADDR_ERR word is
+                                 // re-presented and the synthetic response is issued next cycle.
+-                                if (!ddr3_readdatavalid) begin
++                                if (!rdv_q) begin
+                                     mem_res_wr_dta <= 64'd0;
+                                     mem_res_wr_en  <= 1'b1;
+                                     mem_req_rd_en  <= !mem_res_wr_almost_full;
+@@ -308,7 +344,7 @@
+         end else begin
+             if (rd_accepted)        rd_count  <= rd_count  + 1'd1;
+             if (wr_accepted)        wr_count  <= wr_count  + 1'd1;
+-            if (ddr3_readdatavalid) rsp_count <= rsp_count + 1'd1;
++            if (rdv_q) rsp_count <= rsp_count + 1'd1;
+         end
+     end
+ 

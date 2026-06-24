@@ -1616,3 +1616,29 @@ building: nothing.
       banked: bridge-placement-marginal-root-cause, placement-fix-no-logiclock, dell-build-mechanics-no-push,
       + consolidated the stale feed-gate saga. | advanced: root cause confirmed + corrected fix plan + handoff
       + memories banked | blocked: placement (the bridge interface) | building: none.
+- 2026-06-24 (Option A IMPLEMENTED + SIM-VALIDATED + building on HW) — Executed the handoff's recommended
+  placement-independent fix: register the mem_shim<->f2sdram READ-RETURN boundary for hold margin.
+  WHAT: in core/MiSTer_MPEG2/rtl/mem_shim.sv, register ddr3_readdatavalid + ddr3_readdata ONCE at the input
+  boundary (new regs rdv_q/rdd_q on clk_mem) and drive ALL downstream consumers (response path, resp_timeout,
+  resp_timer reset, outstanding_reads case, the 2 ADDR_ERR collision guards, debug rsp_count) from the
+  registered versions. ddr3_waitrequest LEFT combinational (command-accept timing deferred — read-return is the
+  proven-dead path). Effect = uniform +1 clk_mem cycle on the read RESPONSE only; command/issue side untouched.
+  WHY DISTINCT FROM THE 2026-06-05 FAILED ATTEMPT: that patch (patches/hw/mpeg2fpga-memshim-handoff-register.patch)
+  registered the OUTGOING command path (ram_*->d_*, the command-accept hold hop); my base (217b0b6b) does NOT
+  contain d_* at all. Option A registers the INCOMING read-return — the opposite direction — directly targeting
+  the HW-root-caused dead-read-return (raw VL=0). Genuinely untried.
+  SIM VALIDATION (core/sim/memshim, the real mem_shim is the UUT): (a) Verilator builds clean. (b) DECODED frame
+  BYTE-IDENTICAL pre vs post at lat8 — full pixel payload AND the decoded sub-frame0 Y plane match (proving
+  timing-only, decode unchanged). Subtlety learned: framestore_0000 is the all-128 CLEARED store; decoded
+  greyramp lives in framestore_0001; and run_memshim.sh's kill truncates the LAST file (use MIN_FRAMES>=3 so the
+  frame you compare is '# not truncated'). (c) Liveness: rd==rsp=2501, no STALL, resp_timeout NEVER fired (no
+  lost responses — consistent with 'pacing is the fix, zero-fill is dead weight'). (d) Pacing robustness: peak
+  in-flight = 2 (lat8) / 4 (lat200,lock5) — READ_LIMIT=4 throttle still caps in-flight, no deadlock — identical
+  to pre-edit baseline. Self-check: reverse-applying the edits reconstructs md5 217b0b6b exactly (edits are
+  precisely the intended delta). Re-appliable patch saved: patches/hw/mpeg2fpga-memshim-readreturn-register.patch.
+  STAGED on dell (mem_shim md5 4de9dcd1; removed the SEED 5 pin from qsf — back to default placement so the
+  registered boundary, if it works, is placement-INDEPENDENT). | advanced: Option A coded + objectively
+  sim-validated (decode byte-identical, pacing preserved) + patch banked | blocked: awaiting HW gate verdict
+  | building: Option A rbf on dell (no SEED, no-op holdfix.sdc). NEXT: hw_flash_and_gate.sh optA -> read uart
+  VL (>0 = read-return alive) + SSIM gate; if PASS reproduce + back-annotate to freeze (Option B); if VL=0
+  again -> bridge genuinely HPS-silent, pivot.
