@@ -29,15 +29,20 @@ and memory `bridge-placement-marginal-root-cause`.
 | # | Failure | Evidence | Nature |
 |---|---|---|---|
 | A | **Over-issue lock** | unthrottled build piled to **9 reads in-flight** → bridge BUSY-stuck (PC:C489) | real, count-driven |
-| B | **Command-accept (waitrequest) wedge** | Option-A build wedged @85 reads on a WRITE, BUSY stuck, 1 in-flight (PC:A081) | placement-marginal (physical) |
+| B | **Throttle-hold command-gap wedge** | cap=4 AND cap=6 builds BOTH wedge @~84 reads on a WRITE, BUSY stuck, 1 in-flight (PC:A081); throttle-OFF ran 6000 | the read-HOLD itself (reproduced across 2 placements) |
 | C | **Lost-read desync** | reads occasionally dropped (VN−VL≈1; recovery fired) → positional misalign | bridge drops ~0.1% of responses |
 
 - **A** needs an in-flight cap **below ~9**. The old `READ_LIMIT=4` was tuned to a *sim-assumed* lock@6;
   HW shows ~9, so 4 over-throttles (clamps the pipeline lower than necessary).
-- **B** is the dominant killer and is **placement-dependent**: getbits's placement had a good command-accept
-  path (decoded partial); the Option-A build's placement wedged early; the unthrottled build's was decent
-  (ran ~6000). It is a *physical* fragility of the fabric↔HPS handshake — **no logic change un-sticks a
-  physically wedged bridge.**
+- **B** is the dominant killer and — UPDATED 2026-06-25 after the cap=6 build — is **the throttle's read-hold,
+  NOT a placement lottery.** Two *different* placements (READ_LIMIT=4 and =6) wedge at the *same* point (~84
+  reads, on a write, 1 in-flight); the throttle-OFF build (=63) ran 6000. A placement lottery would wedge at
+  random points; the consistent ~84 (= when read activity first saturates the cap and the throttle first
+  HOLDS) means the **first read-hold gaps the command stream and the f2sdram wedges** ("needs the pipeline
+  moving" — now confirmed, not speculative). This is **logic-fixable** (a non-stalling cap), not just placement.
+  Caveat: getbits (unthrottled) ran millions without the over-issue lock, so its placement kept natural
+  in-flight < 9 — i.e. whether the *over-issue* lock (A) bites is still placement/timing-influenced; but the
+  *throttle-hold* wedge (B) is the throttle, reproducibly.
 - **C** corrupts one read's data when "recovered" by zero-fill, or desyncs everything if unrecovered.
 
 ## What's been TRIED / RULED OUT (do not repeat)
@@ -66,27 +71,33 @@ and memory `bridge-placement-marginal-root-cause`.
   re-fetched datum returns, then emit in order.** Bounded and implementable, but real work — and only worth
   it once the bridge stops wedging (B), so it is **not** the next step.
 
-## Recommended path (priority order)
+## Recommended path (priority order) — UPDATED 2026-06-25 after cap=6 confirmed B = throttle-hold
 
-1. **Localize failure B with SignalTap** (the project's observe-first rule; handoff §8, `fabricore:signaltap`
-   skill, de10 JTAG bench). Capture `DDRAM_*` at the wedge to answer: does the bridge stop *accepting*
-   (waitrequest stuck — physical command-accept fragility) and/or genuinely *drop* a read response
-   (DOUT_READY never pulses for an accepted read)? This decides whether the fix is placement-robustness vs a
-   bridge-config/protocol change — and avoids more blind 35-min build gambles.
-2. **Cheap, data-driven build while/if observing isn't ready:** `READ_LIMIT=6` (below the HW lock@9, above
-   getbits's natural working set; sim-validated decode byte-identical, in-flight peaks at 6, no lock at
-   threshold=9). Removes failure A as a variable. Will NOT fix B (placement) — so treat its result as a
-   B-probe (does this placement wedge on command-accept?).
-3. **Placement robustness for B** — once SignalTap says it's command-accept: options are (a) back-annotate a
-   *good-placement* build's location assignments to freeze it (needs a build that decodes first; getbits's
-   CDB is gone), (b) a correctly-registered waitrequest handshake that doesn't double-accept (the naive
-   version double-issues — needs the d_accepted-style alignment the command-register patch used, which
-   failed, so approach with care), or (c) escalate the f2sdram bridge config (clock/CSR/burst — see the
-   RocketBoards "write-ok-read-stuck" thread: the controller buffers reads and latency spikes after refresh).
-4. **Correct lost-read recovery (failure C)** — implement the reorder-buffer re-issue above and DELETE the
-   zero-fill, *after* a good placement decodes (this is what turns getbits's "partial then desync" into a
-   full clean decode). Sim-validate against `+ddr_drop` in `core/sim/memshim` (decode byte-identical, no
-   zero-fill, in-flight bounded).
+The dominant blocker B is now known to be the throttle's **read-HOLD gapping the command stream** (the cap=4
+build did this @~84 reads, and cap=6 reproduced it at the same point). So the fix is a **non-stalling in-flight
+cap** — logic, sim-validatable. New priority:
+
+1. **Build the gap→wedge into the sim oracle, then design a NON-STALLING cap.** Enhance
+   `core/sim/memshim/ddr3_model.v`: if no command is accepted for K cycles while reads are outstanding, WEDGE
+   (waitrequest stuck, responses stop) — the "needs pipeline moving" hazard. Confirm it reproduces HW
+   (throttle=4 wedges, throttle-off runs). Then design a cap that **never creates a command gap**:
+   - **Best candidate: separate read/write issue** so WRITES keep flowing during a read-deferral (writes
+     don't count against the read cap and keep the pipeline moving). Needs a small write-bypass/queue with
+     read-after-write hazard ordering. The single in-order FIFO is *why* the current hold gaps (a held read
+     blocks the writes behind it → idle).
+   - Alternative: tune the decoder's own backpressure (`mem_req_almost_full` / response-FIFO depth) so natural
+     in-flight stays < 9 WITHOUT a mem_shim hold (replicate getbits's "naturally < 9" without luck).
+   Sim-validate: decode byte-identical, in-flight < 9, NO command gap ≥ K, no wedge.
+2. **(Optional) SignalTap to confirm the gap→wedge mechanism** before committing a big restructure — capture
+   `DDRAM_*` to verify the bridge stops draining responses during a command gap (vs some other cause). The
+   inference is strong (reproduced ~84 across 2 placements) but SignalTap removes the last doubt cheaply
+   relative to a wrong restructure.
+3. **Correct lost-read recovery (failure C)** — implement the reorder-buffer re-issue (above) and DELETE the
+   zero-fill, once B is solved and a placement decodes (turns getbits's "partial then desync" into a full
+   clean decode). Sim-validate against `+ddr_drop`.
+4. **Over-issue lock (A)** is then handled by the non-stalling cap from step 1 (keeps in-flight < ~9 without
+   a gap). The old `READ_LIMIT=6` value is sim-validated decode-equivalent but its HOLD method is the B
+   wedge — do NOT ship the hold; the cap must be non-stalling.
 
 ## Sim oracle gaps to remember
 
