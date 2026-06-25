@@ -1679,3 +1679,32 @@ building: nothing.
   SignalTap (observe the DDRAM_* handshake at the wedge on the de10 bench) per the project's observe-first rule.
   dell working tree is the throttle-disabled experiment (restore /tmp/mem_shim.optA.bak -> canonical Option A
   after).
+- 2026-06-24 (ISOLATION: throttle-disabled HW gate -> complete HW-validated model of the bridge wedge) —
+  Built+gated current shim+Option A with READ_LIMIT disabled (6'd63). DECISIVE comparison (all fresh warm-boots,
+  manual gate w/ explicit devlock):
+    throttle=4  -> wedge @ ~85 reads,   on a WRITE, 1 read in-flight,  recovery_count=1  (PC:A081)
+    throttle=63 -> wedge @ ~6000 reads, on a READ,  9 reads in-flight, recovery_count=9  (PC:C489) [P/RP~5994]
+    getbits     -> millions of reads, NO wedge, partial decode (control)
+  THREE interlocking failure modes now PROVEN on silicon:
+  (1) OVER-ISSUE LOCK IS REAL: unthrottled the shim piles reads up to 9 in-flight and the f2sdram LOCKS on a
+      read (sim predicted ~6; HW shows ~9). So read-limiting IS needed.
+  (2) THE THROTTLE AT 4 IS NET-HARMFUL: it wedges 70x EARLIER (~85 vs ~6000 reads). Its read-HOLD (don't pull
+      the FIFO) stalls the pipeline -> a different deadlock, exactly the "stalling the bus deadlocks — f2sdram
+      needs the pipeline moving" warning (shim comment + RocketBoards "can write but cannot read" + Avalon
+      pending-reads spec). READ_LIMIT=4 was tuned to a sim lock@6 that's wrong; real lock is ~9.
+  (3) ZERO-FILL RECOVERY CORRUPTS: recovery_count=9 means 9 lost reads got synthetic ZERO data before the lock
+      -> corrupts the bitstream getbits reads (the [[never-mask-faults-with-fake-data]] anti-pattern, live).
+      Both builds' framestores are empty (mean 0.1) — neither produces a frame.
+  WEB REFERENCES pulled this session (banked for the fix): original mpeg2fpga mem_ctl.v (the handshake the
+  decoder EXPECTS — in core/mpeg2fpga/bench/iverilog/), MiSTer emu DDRAM_* contract, Intel Avalon pipelined-
+  read/variable-latency spec (max pending-reads contract), RocketBoards f2sdram "write-ok-read-stuck" thread
+  (controller buffers reads; latency spikes after refresh). 
+  THE FIX DIRECTION (next, design-first like Option A): replace the harmful hold+zero-fill with (a) NON-stalling
+  in-flight pacing that caps reads below the ~9 lock WITHOUT gapping the pipeline (credit-style, or match
+  getbits's naturally-low-in-flight FSM), and (b) a CORRECTNESS-PRESERVING lost-read recovery that RE-ISSUES the
+  dropped read (never hold, never zero-fill). Sim-validate in core/sim/memshim first, then build+gate. Option A
+  (read-return register) STAYS — it's proven and orthogonal (canonical on local+dell, md5 4de9dcd1). Caveat:
+  per-build placement variance means single-build in-flight numbers are indicative, not exact.
+  | advanced: COMPLETE HW model of the wedge (over-issue real@9 + throttle-stall-wedge + zero-fill corruption);
+  throttle=4 proven net-harmful; Option A proven+orthogonal; web refs banked | blocked: no full decode — needs
+  the non-stalling-pace + re-issue-recovery redesign | building: none (board released, dell restored to Option A).
