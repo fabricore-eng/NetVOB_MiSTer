@@ -1,0 +1,28 @@
+# ddram_wedge.qsf.snippet -- QSF additions for the dvd f2sdram WEDGE SignalTap
+# probe. Appended to dell's mpeg2fpga.qsf WORKING TREE (the submodule can't push
+# to upstream, so all dvd builds compile dell's working tree). Debug-only:
+# restore the clean qsf after the build.
+#
+# REQUIRED SECOND STEP (RUNBOOK 1b): the compiler does NOT read the .stp;
+# insertion is driven by the SLD_* expansion generated ON DELL by
+#   quartus_stp mpeg2fpga --stp_file ddram_wedge.stp --enable
+# which appends USE_SIGNALTAP_FILE + SLD_NODE_* + CONNECT_TO_SLD_* lines.
+#
+# All 12 taps are REGISTERS in mem_shim -> PRESERVE_REGISTER only (no KEEP /
+# wildcards; wildcards are silently ignored = Critical Warning 136017).
+
+set_global_assignment -name ENABLE_SIGNALTAP ON
+set_global_assignment -name ENABLE_LOGIC_ANALYZER_INTERFACE ON
+
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|ram_read"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|ram_write"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|rdv_q"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|state"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|saved_valid"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wedged"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[5]"
