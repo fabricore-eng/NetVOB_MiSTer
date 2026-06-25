@@ -1642,3 +1642,40 @@ building: nothing.
   | building: Option A rbf on dell (no SEED, no-op holdfix.sdc). NEXT: hw_flash_and_gate.sh optA -> read uart
   VL (>0 = read-return alive) + SSIM gate; if PASS reproduce + back-annotate to freeze (Option B); if VL=0
   again -> bridge genuinely HPS-silent, pivot.
+- 2026-06-24 (Option A HW GATE: read-return REVIVED but bridge still wedges; control ISOLATES the cause) —
+  Built Option A rc=0 (0 errors), flashed + warm-reboot decode-gated on the SuperStation (manual gate, explicit
+  devlock — the turnkey hw_flash_and_gate.sh tripped the auto-classifier because its acquire is internal;
+  acquire isn't idempotent for the same holder so manual lock control was the path).
+  RESULT (reproduced x2, both fresh warm-boots uptime ~30s):
+  * Option A WORKS as intended: raw VL (DDRAM_DOUT_READY pulses) = 0x53/0x54 (~84) vs 0 in the bad placement —
+    the dead-read-return is REVIVED. VN~85 reads accepted, VL~84 answered (exactly 1 unanswered, consistent).
+  * BUT decode still WEDGES: P/RP/VL/VN frozen at ~85/84 while BL (DDRAM_BUSY cycles) climbs forever -> the
+    f2sdram bridge sticks BUSY at ~85 reads. PC:A081 = wedged, lock_cmd=WRITE, lock_outstanding=1,
+    recovery_count=1. M:D = mem_shim stuck in WRITE/S_WAIT (bridge refuses the write, waitrequest stuck high).
+    Objective gate VERDICT=FAIL (framestore essentially empty: FRAME_0 mean=0.1, no decodable slot).
+  * The recovery (resp_timeout) fired once but CANNOT un-wedge: it re-syncs mem_shim's accounting but the
+    PHYSICAL bridge BUSY is stuck — no fabric logic can clear a locked f2sdram (only a reset/reboot).
+  CONTROL (re-flashed known-good getbits.rbf md5 ea955179 on the SAME harness, fresh warm-boot):
+  * getbits keeps the bus MOVING: P/RP churn rapidly, wrapping the 16-bit rd_count (millions of transactions),
+    NOT wedged. Framestore has CONTENT (gate SSIM 0.128 vs ref_frame_01 — partial/garbled but real decode).
+    (getbits's VL/VN are NOT comparable — it predates the raw-DDRAM counter-probe; those fields carry the old
+    VLD/coeff probe semantics. Compare via P/RP + decode extent, not VL.)
+  * Harness VALIDATED end-to-end (extracts getbits's real partial content; my FAIL is real, not a tooling
+    artifact). Gotcha banked: warm-reboot WIPES /tmp -> re-copy dump_framestore.py before each post-cycle dump.
+  REFRAMED BLOCKER: the dead-read-return (VL=0) was a PLACEMENT artifact of the recovery build, now fixed by
+  Option A. The DOMINANT blocker is that the recovery-shim (READ_LIMIT throttle + resp_timeout, ± Option A)
+  WEDGES the bridge at ~85 reads, whereas getbits's SIMPLE shim churns the bus + partially decodes. So the
+  bridge is NOT fundamentally broken; the current shim's additions are bridge-hostile. Leading suspect: the
+  READ_LIMIT read-throttle (the shim's OWN comment + [[gap-fix-hw-stalls-decoder]] warn 'stalling the bus
+  deadlocks — the f2sdram needs the pipeline moving'). Caveat: getbits differs from the current build in more
+  than mem_shim (emu counter-probe, modeline, mpeg2video, rld), so the control isolates to 'changes since
+  getbits', not mem_shim alone.
+  | advanced: Option A read-return fix PROVEN on HW (VL 0->84, reproduced) + objective gate run + getbits
+  control isolates the wedge to the recovery-shim (not the bridge, not the read-return) + harness validated
+  | blocked: bridge BUSY-wedge at ~85 reads in the recovery-shim (no full decode yet)
+  | building (NEXT): isolation rbf = current shim + Option A but READ_LIMIT throttle DISABLED (6'd63) -> if it
+  churns like getbits, the throttle is the wedger (then design a bridge-friendly, correctness-preserving desync
+  fix: RE-ISSUE the lost read, no hold/zero-fill); if it still wedges at ~85, throttle is innocent -> pivot to
+  SignalTap (observe the DDRAM_* handshake at the wedge on the de10 bench) per the project's observe-first rule.
+  dell working tree is the throttle-disabled experiment (restore /tmp/mem_shim.optA.bak -> canonical Option A
+  after).
