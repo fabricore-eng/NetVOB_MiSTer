@@ -1,9 +1,18 @@
 # HANDOFF — next step: non-stalling read-pacing + correctness-preserving re-issue recovery
 
+> **⚠️ SUPERSEDED 2026-06-25 by the SignalTap capture.** The "non-stalling cap / pacing" framing below was
+> based on the INFERRED throttle-hold theory, which SignalTap on de10 **REFUTED**. The real wedge is a
+> **dropped read response → write-block** (outstanding only ever =1; the throttle never engaged). The current
+> truth + the corrected fix (gate WRITES on `outstanding_reads==0` + a short re-sync; and/or reduce the
+> residual read-response drop) are in **[`docs/mem-shim-design-analysis.md`](mem-shim-design-analysis.md)**
+> (Recommended path §0a/0b) and the newest **[`docs/progress.md`](progress.md)** entry. The §4–§6 *mechanics*
+> below (build / flash / manual gate / SignalTap recipe) are still accurate and reusable — only the §1–§4 *fix
+> theory* is stale.
+
 **Date:** 2026-06-25 · **Branch:** `feat-decoder-bringup` · **Session key:** `dvd`
 **Supersedes:** `docs/HANDOFF-2026-06-24-placement-fix.md` (Option A from that handoff is DONE — see §2).
-**Read first:** this doc is self-contained. Background: [`docs/progress.md`](progress.md) (newest 3 entries),
-memory `bridge-placement-marginal-root-cause`.
+**Read first (CORRECTED):** `docs/mem-shim-design-analysis.md` + newest `docs/progress.md` entry + memory
+`bridge-placement-marginal-root-cause` (#3 update). This doc's mechanics sections remain useful.
 
 ---
 
