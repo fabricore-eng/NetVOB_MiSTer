@@ -29,20 +29,22 @@ and memory `bridge-placement-marginal-root-cause`.
 | # | Failure | Evidence | Nature |
 |---|---|---|---|
 | A | **Over-issue lock** | unthrottled build piled to **9 reads in-flight** → bridge BUSY-stuck (PC:C489) | real, count-driven |
-| B | **Throttle-hold command-gap wedge** | cap=4 AND cap=6 builds BOTH wedge @~84 reads on a WRITE, BUSY stuck, 1 in-flight (PC:A081); throttle-OFF ran 6000 | the read-HOLD itself (reproduced across 2 placements) |
+| B | **Dropped-read → write-block wedge** (SignalTap-PROVEN 2026-06-25, CORRECTS the earlier "throttle-hold" guess) | de10 capture: read response DROPPED (reads=20/rdv_q=19), writes accepted ~160clk, then a write refused -> BUSY stuck -> wedged. outstanding only ever =1 (throttle never engaged). PC:A081 (lock_outstanding=1) | a marginal f2sdram read-response DROP, then a write behind the unanswered read |
 | C | **Lost-read desync** | reads occasionally dropped (VN−VL≈1; recovery fired) → positional misalign | bridge drops ~0.1% of responses |
 
 - **A** needs an in-flight cap **below ~9**. The old `READ_LIMIT=4` was tuned to a *sim-assumed* lock@6;
   HW shows ~9, so 4 over-throttles (clamps the pipeline lower than necessary).
-- **B** is the dominant killer and — UPDATED 2026-06-25 after the cap=6 build — is **the throttle's read-hold,
-  NOT a placement lottery.** Two *different* placements (READ_LIMIT=4 and =6) wedge at the *same* point (~84
-  reads, on a write, 1 in-flight); the throttle-OFF build (=63) ran 6000. A placement lottery would wedge at
-  random points; the consistent ~84 (= when read activity first saturates the cap and the throttle first
-  HOLDS) means the **first read-hold gaps the command stream and the f2sdram wedges** ("needs the pipeline
-  moving" — now confirmed, not speculative). This is **logic-fixable** (a non-stalling cap), not just placement.
-  Caveat: getbits (unthrottled) ran millions without the over-issue lock, so its placement kept natural
-  in-flight < 9 — i.e. whether the *over-issue* lock (A) bites is still placement/timing-influenced; but the
-  *throttle-hold* wedge (B) is the throttle, reproducibly.
+- **B** is the dominant killer. **SignalTap (de10, 2026-06-25) PROVED it and corrected the earlier guess:** it
+  is a **dropped read response**, NOT the throttle and NOT a command gap. In the capture, outstanding_reads
+  peaked at only 1 (the cap=4 throttle never engaged), reads ran single-file ~51clk apart, and responses
+  drained fine during gaps — until ONE read response was DROPPED by the f2sdram (reads=20, rdv_q=19). Writes
+  kept being accepted ~160clk, then a write was refused (BUSY stuck) -> wedge. So the cap=4/cap=6 builds
+  wedging at outstanding=1 (PC:A081) was this lost-read mechanism all along — the "throttle read-HOLD" reading
+  was wrong (it was an inference; the silicon shows out never reached the cap). Option A cut the drop rate from
+  total-dead (raw VL=0) to ~1-5% but didn't eliminate it. The fix is to (a) AVOID the wedge by never issuing a
+  write while a read is outstanding + a short re-sync for a genuinely-dropped read, and/or (b) drive the
+  residual drop rate to ~0 (more read-return timing margin). It is NOT the throttle and NOT logic-fixable by
+  "non-stalling cap" — that was the wrong target.
 - **C** corrupts one read's data when "recovered" by zero-fill, or desyncs everything if unrecovered.
 
 ## What's been TRIED / RULED OUT (do not repeat)
@@ -71,11 +73,24 @@ and memory `bridge-placement-marginal-root-cause`.
   re-fetched datum returns, then emit in order.** Bounded and implementable, but real work — and only worth
   it once the bridge stops wedging (B), so it is **not** the next step.
 
-## Recommended path (priority order) — UPDATED 2026-06-25 after cap=6 confirmed B = throttle-hold
+## Recommended path — UPDATED 2026-06-25 after SignalTap proved B = dropped-read → write-block
 
-The dominant blocker B is now known to be the throttle's **read-HOLD gapping the command stream** (the cap=4
-build did this @~84 reads, and cap=6 reproduced it at the same point). So the fix is a **non-stalling in-flight
-cap** — logic, sim-validatable. New priority:
+SUPERSEDES the "non-stalling cap" plan below (that targeted the refuted throttle-hold theory). The wedge is a
+**dropped read response** then a **write issued behind the unanswered read**. Lead fixes (sim-first):
+
+0a. **Gate WRITES on `outstanding_reads==0`** — never issue a write while a read is in flight. Then the bridge
+    never sees "write behind an unanswered read" -> it cannot enter the wedge. Pair with a **SHORT re-sync
+    timeout** (~a few× normal latency, ~200clk, NOT 2^17) that synthesizes the missing response so a genuinely
+    dropped read drains -> mem_shim re-syncs and decode continues (a dropped read becomes a 1-read glitch, not
+    a black screen). Reads stay single-outstanding (they already do in the bitstream phase); writes wait ~51clk
+    for the read to drain — acceptable. Validate in `core/sim/memshim` after adding a drop->write-block wedge
+    model (the oracle has `+ddr_drop`; the `+ddr_gap_wedge` I added models the REFUTED theory — replace it).
+0b. **Reduce the residual read-response drop to ~0** — more read-return timing margin (Option A took raw VL
+    0->84; the last ~1-5% still drops, plausibly a read/write-interleave timing margin near a response).
+    Candidates: a 2nd read-return register stage, or hold-margin work on DOUT_READY/DOUT. Confirm via a re-run
+    SignalTap (reads==rdv_q => zero drops). 0a is the more robust target (tolerate the drop); 0b is additive.
+
+### (superseded) earlier non-stalling-cap plan — kept for context, do NOT pursue as primary:
 
 1. **Build the gap→wedge into the sim oracle, then design a NON-STALLING cap.** Enhance
    `core/sim/memshim/ddr3_model.v`: if no command is accepted for K cycles while reads are outstanding, WEDGE

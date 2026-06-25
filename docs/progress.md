@@ -1708,3 +1708,31 @@ building: nothing.
   | advanced: COMPLETE HW model of the wedge (over-issue real@9 + throttle-stall-wedge + zero-fill corruption);
   throttle=4 proven net-harmful; Option A proven+orthogonal; web refs banked | blocked: no full decode — needs
   the non-stalling-pace + re-issue-recovery redesign | building: none (board released, dell restored to Option A).
+- 2026-06-25 (SignalTap on de10 — the wedge is a DROPPED READ RESPONSE; CORRECTS the throttle-hold theory) —
+  Built an instrumented Option-A rbf (12-bit regs-only probe of mem_shim @clk_mem: ram_read/ram_write/rdv_q/
+  state/saved_valid/wedged/outstanding_reads), all SignalTap gates passed (136017=0, auto_signaltap=91, mixed
+  CRC). Captured the wedge lead-in on the de10 JTAG bench (timed-arm via a 20s mgl delay = wide idle window to
+  arm before the bitstream/wedge; heisenbug gate PASSED — instrumented build still wedges). VERDICT from the
+  CSV (tools/signaltap/captures/ddram_wedge_20260625.csv):
+  * outstanding_reads peaked at ONLY 1 the whole capture -> the READ_LIMIT=4 throttle NEVER engaged. So the
+    "throttle read-HOLD wedge" theory (from the cap=4/cap=6 builds) is WRONG. Reads ran SINGLE-FILE (~51 clk
+    apart) and responses (rdv_q) drained FINE during the command gaps -> "command-gap stops responses" also
+    REFUTED.
+  * The wedge: read #20 (idx 6868) issued, out->1, and its response was DROPPED (no rdv_q ever follows;
+    reads=20 rising edges vs rdv_q=19). Writes kept being ACCEPTED for ~160 clk after (st cycles 1->0, bridge
+    still working), THEN a write got refused (BUSY stuck) -> wedged latched (idx 7169). EXACTLY the original
+    "a WRITE blocked forever by an outstanding READ whose response was LOST" mechanism — out=1, matching the
+    cap-build PC:A081 (lock_outstanding=1).
+  CORRECTED MODEL: the dominant blocker is a marginal f2sdram READ-RESPONSE DROP (~1 in 20-84; Option A cut it
+  from total-dead VL=0 to ~1-5%), which then wedges the bridge once a write follows the dropped read. NOT the
+  throttle (irrelevant at out=1), NOT over-issue (that lock@9 is a SEPARATE burst-only phenomenon), NOT a
+  command gap (responses drain in normal gaps). The resp_timeout recovery can't un-wedge (fires too late + a
+  wedged bridge needs a reset). FIX DIRECTION (sim-first): (A) AVOID the wedge — gate WRITES on
+  outstanding_reads==0 (never issue a write while a read is in flight) + a SHORT re-sync timeout to drain a
+  genuinely-dropped read; the bridge then never sees write-behind-lost-read -> never wedges, a drop becomes a
+  1-read glitch not a black screen. (B) Reduce the residual drop further (more read-return margin). Note: the
+  sim oracle's +ddr_gap_wedge models the now-REFUTED command-gap theory; the oracle needs a drop->write-block
+  wedge model instead (it already has +ddr_drop + lock_threshold). | advanced: TRUE root cause SignalTap-proven
+  (dropped read response -> write-block wedge), correcting the throttle-hold theory; instrumented capture
+  pipeline working end-to-end on de10 | blocked: no full decode — needs the write-gating + re-sync fix (or
+  drop elimination) | building: none (de10 released).
