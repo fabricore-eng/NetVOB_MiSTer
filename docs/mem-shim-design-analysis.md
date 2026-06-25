@@ -99,9 +99,29 @@ cap** — logic, sim-validatable. New priority:
    a gap). The old `READ_LIMIT=6` value is sim-validated decode-equivalent but its HOLD method is the B
    wedge — do NOT ship the hold; the cap must be non-stalling.
 
-## Sim oracle gaps to remember
+## Sim oracle now reproduces BOTH failure modes (2026-06-25)
 
-`core/sim/memshim/ddr3_model.v` models failure A (`lock_threshold`) and lost reads (`+ddr_drop`), but does
-**NOT** model failure B (the placement-marginal command-accept wedge — a physical, not logical, effect). So
-the sim CANNOT validate a B fix; B must be judged on HW (counters + SignalTap). This is exactly why the
-sim "proved" `READ_LIMIT=4` yet HW wedged.
+`core/sim/memshim/ddr3_model.v` now models the full HW catch-22:
+- `+ddr_lock_threshold=N` — failure **A** (over-issue lock): wedge once N reads are outstanding (HW ≈ 9).
+- `+ddr_gap_wedge=K` — failure **B** (NEW): wedge if NO command is accepted for K cycles while reads are in
+  flight (the "needs pipeline moving" hazard — what the throttle's read-HOLD trips). Plus `+ddr_drop=N` for
+  failure C (lost read).
+
+**Validated against HW** (rd_latency=80): throttle=4 + `gap_wedge=40` → GAP-WEDGE fires at 4 in-flight,
+decoder stalls @ macroblock 15, framestore empty — reproduces the cap=4/cap=6 HW wedge. throttle=63 +
+`gap_wedge=40` → no wedge but in-flight climbs to 16 → would trip `lock_threshold=9`. So with BOTH knobs on
+(`+ddr_gap_wedge=40 +ddr_lock_threshold=9`) the oracle exhibits the exact HW dilemma, **offline in seconds**.
+
+A correct fix must, against `+ddr_gap_wedge=40 +ddr_lock_threshold=9`: decode (frames), keep in-flight < 9,
+AND never let cmd_gap reach 40 — i.e. a **non-stalling cap**. Candidate designs to build + validate here next:
+1. **Separate read/write issue** (preferred): keep WRITES flowing while a read is deferred, so the command
+   pipeline never gaps. Needs a read-after-write hazard guard. The single in-order request FIFO is the root of
+   the gap (a held read blocks the writes behind it → idle).
+2. **Keep-alive command during a read-deferral**: issue a harmless command (e.g. a WRITE to a reserved scratch
+   word) to reset cmd_gap without adding an outstanding read. Simpler, but rests on the HW assumption that
+   *any* accepted command (not specifically a read) keeps the bridge draining — verify on HW.
+3. **Decoder-backpressure tuning**: size the response FIFO / `mem_req_almost_full` so natural in-flight stays
+   < 9 with NO mem_shim hold (replicate getbits's "naturally < 9" deterministically).
+
+Caveat: `gap_wedge` is an *inferred* model (from 3 HW builds); SignalTap can confirm the bridge truly stops
+draining during a command gap before committing to a big restructure.

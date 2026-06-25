@@ -112,8 +112,14 @@ module ddr3_model (
   integer late_after_reset;
   integer lock_threshold;     // REALISTIC: the f2sdram bridge WEDGES (waitrequest stuck
                               // high, responses stop) once this many reads are outstanding
-                              // (on-silicon lock-probe caught it locking at 6 in flight).
+                              // (on-silicon lock-probe caught it locking at ~9 in flight).
                               // 0 = off. This models the REAL failure, not an artificial drop.
+  integer gap_wedge;          // REALISTIC #2 (HW-confirmed 2026-06-25): the f2sdram needs the command
+                              // pipeline MOVING to drain responses. If NO command is accepted for this
+                              // many cycles WHILE reads are outstanding, the bridge WEDGES (waitrequest
+                              // stuck, responses stop). This reproduces the throttle read-HOLD wedge:
+                              // cap=4 AND cap=6 builds wedged @~84 reads (the hold gaps the command
+                              // stream ~read-latency cycles); throttle-off ran 6000. 0 = off.
 
   // LFSR for pseudo-random jitter / waitrequest phase
   reg [31:0] lfsr;
@@ -129,6 +135,7 @@ module ddr3_model (
     mode_dup     = 0;
     late_after_reset = 0;
     lock_threshold = 0;
+    gap_wedge    = 0;
     lfsr         = 32'hACE1_2345;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
@@ -140,11 +147,12 @@ module ddr3_model (
     if ($value$plusargs("ddr_dup=%d", mode_dup));
     if ($value$plusargs("ddr_late_after_reset=%d", late_after_reset));
     if ($value$plusargs("ddr_lock_threshold=%d", lock_threshold));
+    if ($value$plusargs("ddr_gap_wedge=%d", gap_wedge));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
-    $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d lock_threshold=%0d",
-             mode_reorder, mode_drop, mode_dup, late_after_reset, lock_threshold);
+    $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d lock_threshold=%0d gap_wedge=%0d",
+             mode_reorder, mode_drop, mode_dup, late_after_reset, lock_threshold, gap_wedge);
   end
 
   always @(posedge clk) lfsr <= {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
@@ -202,6 +210,9 @@ module ddr3_model (
   reg [31:0] outstanding_peak;          // max in-flight reads over the run
   wire [31:0] outstanding_now = rd_issued - rd_responded;
 
+  // command-gap (pipeline-stall) wedge instrumentation
+  reg [31:0] cmd_gap;                    // cycles since the last accepted command
+
   // Non-conformant bookkeeping
   reg [31:0] drain_count;        // # of drain opportunities (a response became ready)
   reg [31:0] post_reset_cycles;  // mem_clk cycles since reset deassert
@@ -229,6 +240,7 @@ module ddr3_model (
       reordered          <= 0;
       locked             <= 1'b0;
       outstanding_peak   <= 0;
+      cmd_gap            <= 0;
       for (k = 0; k < PIPE; k = k + 1) begin
         rsp_pending[k]   <= 1'b0;
         rsp_countdown[k] <= 0;
@@ -250,6 +262,18 @@ module ddr3_model (
         locked <= 1'b1;
         $display("[ddr3_model %0t] *** LOCK: f2sdram wedged -- %0d reads outstanding >= threshold %0d (waitrequest stuck, responses stop) ***",
                  $time, outstanding_now, lock_threshold);
+      end
+
+      // ---- REALISTIC #2: command-gap (pipeline-stall) wedge (HW-confirmed) ----
+      // The f2sdram needs the command pipeline MOVING to drain responses. If the master
+      // stops issuing for gap_wedge cycles while reads are still in flight, the bridge
+      // wedges. This reproduces the throttle read-HOLD wedge seen on silicon.
+      if (cmd_accept_rd || cmd_accept_wr) cmd_gap <= 0;
+      else if (!(&cmd_gap))               cmd_gap <= cmd_gap + 1;
+      if (!locked && gap_wedge != 0 && outstanding_now > 0 && cmd_gap >= gap_wedge[31:0]) begin
+        locked <= 1'b1;
+        $display("[ddr3_model %0t] *** GAP-WEDGE: f2sdram wedged -- no command for %0d cycles (>= %0d) with %0d reads in flight (pipeline starved) ***",
+                 $time, cmd_gap, gap_wedge, outstanding_now);
       end
 
       // ---- accept a WRITE ----
