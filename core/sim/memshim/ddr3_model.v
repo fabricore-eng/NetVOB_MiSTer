@@ -120,6 +120,17 @@ module ddr3_model (
                               // stuck, responses stop). This reproduces the throttle read-HOLD wedge:
                               // cap=4 AND cap=6 builds wedged @~84 reads (the hold gaps the command
                               // stream ~read-latency cycles); throttle-off ran 6000. 0 = off.
+                              // NOTE: this command-gap theory was REFUTED by SignalTap 2026-06-25
+                              // (responses drain fine during normal gaps). Kept for regression only;
+                              // the TRUE wedge is drop_then_write_wedge below.
+  integer drop_then_write_wedge; // TRUE ROOT CAUSE (SignalTap 2026-06-25): a read response is
+                              // marginally DROPPED, then a WRITE issued while that read is still
+                              // outstanding sticks the bridge BUSY forever. This is the wedge the
+                              // write-gate fix targets. Requires +ddr_drop=N to actually drop. 0=off.
+  integer wedge_window;       // cycles the lost-read dependency persists at the bridge after a drop.
+                              // The write-gate fix works IFF it holds the write PAST this window
+                              // (i.e. window < the shim's resp_timeout=16383). Default 4096 (well
+                              // under resp_timeout, well over the unfixed write-after-drop latency).
 
   // LFSR for pseudo-random jitter / waitrequest phase
   reg [31:0] lfsr;
@@ -136,6 +147,8 @@ module ddr3_model (
     late_after_reset = 0;
     lock_threshold = 0;
     gap_wedge    = 0;
+    drop_then_write_wedge = 0;
+    wedge_window = 4096;
     lfsr         = 32'hACE1_2345;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
@@ -148,11 +161,15 @@ module ddr3_model (
     if ($value$plusargs("ddr_late_after_reset=%d", late_after_reset));
     if ($value$plusargs("ddr_lock_threshold=%d", lock_threshold));
     if ($value$plusargs("ddr_gap_wedge=%d", gap_wedge));
+    if ($value$plusargs("ddr_drop_then_write_wedge=%d", drop_then_write_wedge));
+    if ($value$plusargs("ddr_wedge_window=%d", wedge_window));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
     $display("[ddr3_model] NONCONFORMANT modes: reorder=%0d drop=%0d dup=%0d late_after_reset=%0d lock_threshold=%0d gap_wedge=%0d",
              mode_reorder, mode_drop, mode_dup, late_after_reset, lock_threshold, gap_wedge);
+    $display("[ddr3_model] drop_then_write_wedge=%0d wedge_window=%0d",
+             drop_then_write_wedge, wedge_window);
   end
 
   always @(posedge clk) lfsr <= {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
@@ -222,6 +239,10 @@ module ddr3_model (
   reg [31:0] duped;
   reg [31:0] reordered;
 
+  // drop-then-write-block wedge bookkeeping (the TRUE root cause)
+  reg        rd_dropped_outstanding;  // a genuinely-dropped read is still "in flight" at the bridge
+  reg [31:0] dropped_age;             // cycles since that drop (clears the flag at wedge_window)
+
   always @(posedge clk) begin
     if (rst) begin
       ddr3_readdatavalid <= 1'b0;
@@ -238,6 +259,8 @@ module ddr3_model (
       dropped            <= 0;
       duped              <= 0;
       reordered          <= 0;
+      rd_dropped_outstanding <= 1'b0;
+      dropped_age        <= 0;
       locked             <= 1'b0;
       outstanding_peak   <= 0;
       cmd_gap            <= 0;
@@ -276,8 +299,25 @@ module ddr3_model (
                  $time, cmd_gap, gap_wedge, outstanding_now);
       end
 
+      // ---- TRUE ROOT CAUSE: drop-then-write-block wedge (SignalTap 2026-06-25) ----
+      // A genuinely-dropped read leaves a lost-read dependency at the bridge. If a WRITE
+      // is accepted while that dependency persists, the bridge sticks BUSY forever. The
+      // dependency ages out after wedge_window cycles (models the bridge/shim resolving
+      // the lost read); the write-gate fix works by holding the write past that window.
+      if (rd_dropped_outstanding) begin
+        if (dropped_age >= wedge_window[31:0])
+          rd_dropped_outstanding <= 1'b0;   // lost-read dependency aged out / resolved
+        else
+          dropped_age <= dropped_age + 1;
+      end
+
       // ---- accept a WRITE ----
       if (cmd_accept_wr) begin
+        if (!locked && drop_then_write_wedge != 0 && rd_dropped_outstanding) begin
+          locked <= 1'b1;
+          $display("[ddr3_model %0t] *** DROP-THEN-WRITE-WEDGE: write accepted while a dropped read is still outstanding (age=%0d < window=%0d) -- f2sdram locked (BUSY stuck, responses stop) ***",
+                   $time, dropped_age, wedge_window);
+        end
         wr_issued <= wr_issued + 1;
         if (window != 7'b0011000) badwin_seen <= 1'b1;
         if (word_addr > END_OF_MEM[21:0]) begin
@@ -370,6 +410,10 @@ module ddr3_model (
           if (mode_drop != 0 && ((drain_count + 1) % mode_drop == 0)) begin
             rsp_pending[ready0] <= 1'b0;     // consume it, but emit nothing
             dropped             <= dropped + 1;
+            if (drop_then_write_wedge != 0) begin
+              rd_dropped_outstanding <= 1'b1;   // arm the write-behind-lost-read wedge
+              dropped_age            <= 0;
+            end
             if (do_trace) $display("[ddr3_model %0t] *** NONCONF drop: response data=%h DROPPED (dropped=%0d) ***", $time, rsp_data[ready0], dropped+1);
           end
           else begin
@@ -413,6 +457,8 @@ module ddr3_model (
                dropped, duped, reordered, rd_issued - rd_responded);
       $display("[ddr3_model] LOCK/PEAK FINAL: locked=%0d outstanding_peak=%0d lock_threshold=%0d",
                locked, outstanding_peak, lock_threshold);
+      $display("[ddr3_model] WEDGE-MODEL FINAL: drop_then_write_wedge=%0d wedge_window=%0d rd_dropped_outstanding=%0d",
+               drop_then_write_wedge, wedge_window, rd_dropped_outstanding);
     end
   endtask
 

@@ -1736,3 +1736,32 @@ building: nothing.
   (dropped read response -> write-block wedge), correcting the throttle-hold theory; instrumented capture
   pipeline working end-to-end on de10 | blocked: no full decode — needs the write-gating + re-sync fix (or
   drop elimination) | building: none (de10 released).
+- 2026-06-30 (WRITE-GATE fix implemented + SIM-VALIDATED; staging the build) — Implemented the
+  SignalTap-derived fix in mem_shim.sv: never issue a write while a read is outstanding
+  (`reads_outstanding` gate, combinationally corrected to release on the last-read-drain cycle) +
+  shortened the re-sync timeout 17b->14b (16383 cyc ~152us — now LOAD-BEARING for liveness since a
+  held write waits on it to drain a genuinely-dropped read). Added a faithful drop-then-write-block
+  wedge model to the memshim oracle (`ddr3_model.v +ddr_drop_then_write_wedge`, self-clearing
+  `wedge_window` = the bridge's lost-read dependency lifetime; fix works IFF it holds the write past
+  it, i.e. window < resp_timeout). SIM RESULTS (Verilator, the REAL mem_shim as UUT):
+  (1) DECISIVE, same settings (drop=1000, window=4096): UNFIXED shim WEDGES (write issued age=15 clk
+      behind the dropped read -> bridge locks, only the cleared framestore dumps) while the
+      WRITE-GATED shim does NOT (write held ~16383 clk, releases past the window). Reproduces the HW
+      wedge + proves the fix.
+  (2) CORRECTNESS-PRESERVING: at zero drops, decoded pixels are byte-IDENTICAL to the pre-edit
+      baseline — the only frame delta is ~2% of MBs not-yet-written (100% of differing px are
+      FIXED==128 cleared, 0% decoded-but-different) = a write-TIMING snapshot, NOT a decode error.
+  (3) LIVENESS: 3 frames land under realistic drops (0.1% and 0.5%), no desync $stop, bridge never
+      wedges (shim_state=0, ddr_wait=0 throughout).
+  (4) Model validity: wedges when it should (unfixed age=15; fixed forced with window>resp_timeout ->
+      age=16399 = exactly resp_timeout+drain), not when it shouldn't. Double-response margin is
+      analytical (resp_timer resets on ANY response; 16383 >> max real latency) + scenario-1 balanced
+      rd==rsp=2501.
+  CAVEAT (honest, reinforces the follow-on): the zero-fill recovery corrupts references at HIGH drop
+  rates -> read amplification (3-18x) + slow decode (frames STILL land). The correctness-preserving
+  RE-ISSUE recovery (re-send the lost read, never zero-fill) is the clean-frame follow-on.
+  Patch banked: `core/patches/hw/mpeg2fpga-memshim-write-gate.patch` (baseline md5 4de9dcd1 + patch =
+  write-gate a74645df, verified reconstruct). NEXT: stage to dell + launch the detached build, then
+  CHECK IN with the human before the HW gate (sim-first mode). | advanced: write-gate coded +
+  sim-proven (fix works, correctness-preserving, liveness) | blocked: none | building: write-gate rbf
+  (about to launch on dell).
