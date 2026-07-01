@@ -1882,3 +1882,30 @@ building: nothing.
   dell's mpeg2fpga.qsf.clean_bak. TOOLING TODO: hw_flash_and_gate.sh reboot-race. | advanced: session-long
   arc — wedge killed, starvation fixed, blocker re-localized to write-placement, SignalTap probe built |
   blocked: write-path placement (diagnosing) | building: instrumented write-wedge rbf.
+- 2026-07-01 (WRITE-WEDGE SignalTap CAPTURED on de10 — root cause = f2sdram-boundary HOLD marginality
+  amplified by an SDC clock-groups glob that MISSES this core's sys_pll; supersedes the command-out/
+  waitreq-in decision tree) — Build clean (0-err, all SignalTap gates: 136017=0, auto_signaltap present,
+  trigger `wedged`+acq_clk+all 33 taps resolved, mixed CRC; the "2 of 99 missing" = benign disabled
+  storage-qualifier pins). Flashed de10 (warm-reboot, uptime 25s = clean bridge), mgl-delay-30s load_core,
+  timed-arm during the idle window -> trigger FIRED (heisenbug PASSED, this build still wedges). VERDICT
+  from the CSV (573 read_stp_csv.py, shift=+0 clean): the instrumented build manifested a READ-return-drop
+  wedge, NOT the pure-write clear mister showed -- 28 reads / ZERO real responses (UART RP:0000,
+  recovery=28), reads pegged at outstanding=4(=READ_LIMIT), a write then wedged behind them
+  (PC:A21C={wedged,lock_cmd=WRITE,lock_outstanding=4,recovery=28}). st_waitreq stuck-0 all 8193 samples
+  while the FSM saw busy => the boundary capture itself is hold-unreliable. => the marginal f2sdram-boundary
+  path MOVES between builds (mister=write, de10=read-return) = PLACEMENT LOTTERY confirmed. STA: worst HOLD
+  slack -59ns on sys_pll/pll_audio/h2f domains, NOT SignalTap (0 sld paths). ROOT CAUSE (new, verified):
+  mpeg2fpga_holdfix.sdc documents the mem_shim->f2sdram_safe_terminator command hop as a TRUE intra-clk_mem
+  reg->reg HOLD path of only +0.64ns margin (any placement perturbation tips it -> wedge); AND sys_top.sdc's
+  `set_clock_groups -exclusive` glob is `*|pll|pll_inst|...` but this core's PLL is `emu|sys_pll|...` -> the
+  glob MISSES sys_pll -> clk_mem is NOT decoupled from async h2f/audio/hdmi -> FALSE cross-domain hold
+  violations (-59ns) -> fitter burns routing delay "fixing" them (188005 x2) -> perturbs the +0.64ns hop ->
+  wedge lottery. RECOMMENDED (cheapest-first): (1) add sys_pll to the clock-groups exclusive set (no RTL,
+  SAFE -- f2sdram is single-domain clk_mem by design) -> rebuild, confirm -59ns/188005 gone, HW-test the
+  wedge; (2) pin/back-annotate a hold-clean bridge placement; (3) 2-deep skid DEMOTED (adds logic at the
+  knife-edge, re-rolls the lottery unless clock-groups+placement fixed first). Cleanup DONE: mem_shim
+  reverted to 4a8ca207, dell qsf.clean_bak restored. Also fixed hw_flash_and_gate.sh reboot-race (confirm
+  DOWN before polling UP) + added tools/signaltap/capture_dvd.sh (push-button de10 capture). Analysis:
+  tools/signaltap/captures/write_wedge_20260630_223227/ANALYSIS.md. | advanced: write-wedge captured +
+  root-caused to sys_pll clock-groups glob miss (cheap SDC fix candidate) + hw_flash reboot-race fixed +
+  capture tooling durable | blocked: HW-confirm the SDC fix stops the wedge (needs a build) | building: none.
