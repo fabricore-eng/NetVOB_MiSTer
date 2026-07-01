@@ -1,0 +1,49 @@
+# write_wedge.qsf.snippet -- QSF additions for the dvd f2sdram WRITE-PATH WEDGE
+# SignalTap probe (2026-07-01). Appended to dell's mpeg2fpga.qsf WORKING TREE
+# (submodule can't push upstream; dvd builds compile dell's working tree).
+# Debug-only: restore the clean qsf after the build.
+#
+# REQUIRED SECOND STEP (RUNBOOK 1b): the compiler does NOT read the .stp; run on
+# dell:  quartus_stp mpeg2fpga --stp_file write_wedge.stp --enable
+# which appends USE_SIGNALTAP_FILE + SLD_NODE_* + CONNECT_TO_SLD_* lines.
+#
+# All taps are REGISTERS in mem_shim -> PRESERVE_REGISTER only (no KEEP/wildcards
+# = Critical Warning 136017 silent drop). st_waitreq is the NEW observation reg
+# (registered raw ddr3_waitrequest) added in mem_shim.sv for this capture.
+
+set_global_assignment -name ENABLE_SIGNALTAP ON
+set_global_assignment -name ENABLE_LOGIC_ANALYZER_INTERFACE ON
+
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|ram_write"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|ram_read"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|state"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|st_waitreq"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wedged"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[8]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[9]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[10]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[11]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[12]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[13]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[14]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_count[15]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[2]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[3]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[4]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[5]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[6]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[7]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|wr_stall_cnt[8]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[0]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[1]"
+set_instance_assignment -name PRESERVE_REGISTER ON -to "emu:emu|mem_shim:mem_shim_inst|outstanding_reads[2]"
