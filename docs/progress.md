@@ -1909,3 +1909,19 @@ building: nothing.
   tools/signaltap/captures/write_wedge_20260630_223227/ANALYSIS.md. | advanced: write-wedge captured +
   root-caused to sys_pll clock-groups glob miss (cheap SDC fix candidate) + hw_flash reboot-race fixed +
   capture tooling durable | blocked: HW-confirm the SDC fix stops the wedge (needs a build) | building: none.
+- 2026-07-01 (SDC clock-groups fix BUILT — timing-clean; the sys_pll glob miss is CONFIRMED + corrected)
+  — Added `set_clock_groups -exclusive` for `*|sys_pll|altera_pll_i|*[*].*|divclk` to mpeg2fpga_holdfix.sdc
+  (core-specific SDC, already SDC_FILE-loaded — no stock-file edit), staged to dell (scp; submodule
+  non-pushable) with the clean qsf + age-gate mem_shim (4a8ca207). Built clean (0 err, 237 warn, rc=0).
+  TIMING VERIFICATION (decisive): (1) the STOCK glob is CONFIRMED broken — `Warning 332174: Ignored filter
+  at sys_top.sdc(14): *|pll|pll_inst|altera_pll_i|*[*].*|divclk could not be matched with a clock`; my
+  `*|sys_pll|...` glob MATCHED (no 332174 for it). (2) Worst-case HOLD slack -59.108ns -> +0.132ns (ALL
+  corners POSITIVE). (3) `188005` routing-delay-for-hold warnings 2 -> 0. (4) hold-fixing routing delay
+  1e4ns(6.5%) -> 4e3ns(1.9%). So the false cross-domain hold violations are GONE and the fitter no longer
+  perturbs the +0.64ns marginal hop. CAVEAT: worst SETUP is now tight +0.040ns (positive/signed-off, watch
+  it). This validates the root cause at the timing level; the real test is HW (STA was already positive on
+  the +0.64ns hop — the wedge is physical). NEXT (needs go): hw_flash_and_gate.sh decode gate on the
+  SuperStation (with the fixed reboot-race) -> does the placement stabilize + decode a frame. Patch:
+  core/patches/hw/mpeg2fpga-sdc-clockgroups-syspll.patch. | advanced: SDC fix built + timing-clean
+  (-59ns->+0.13, 188005 gone), root cause confirmed on the STA | blocked: HW decode test (needs go) |
+  building: none.
