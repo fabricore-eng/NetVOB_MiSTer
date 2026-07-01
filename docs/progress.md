@@ -1938,3 +1938,20 @@ building: nothing.
   capture_dvd.sh. Patch: core/patches/hw/mpeg2fpga-sdc-clockgroups-syspll.patch. | advanced: full arc —
   captured, root-caused, SDC fix built + timing-verified | blocked: HW decode test (needs go) | building:
   none.
+- 2026-07-01 (HW DECODE GATE run on the SDC-fix build — WEDGE GONE + FIRST REAL DECODED PIXELS ON SILICON;
+  new front = decode stall ~2 slices in) — Ran hw_flash_and_gate.sh sdcfix (human's explicit go; devlock
+  acquired, warm-reboot DOWN->UP, lock re-acquired post-reboot, released after; first attempt fail-closed
+  on a transient ss1.lab DNS blip — board untouched, lock was free). BRIDGE: healthy end-to-end — U:0 +
+  PC:0000 all samples, RP==P exactly, writes BN=0x22E5A5 (~2.29M, far past the clear where the old wedge
+  froze W at ~33k), reads ~30M+ climbing, J==Z=0xF3B (full 1.99MB clip ingested). The wedge did NOT fire
+  (single run; repro pending before claiming the milestone). DECODE: framestore cleared to 0x80808080
+  (99.76% intact); real content EXACTLY per the MP_AT_HL map — FRAME_0 Y rows 0-31 + matching CR/CB
+  (1/4 volume each) + first rows of FRAME_1_Y. Slice 1 (rows 0-15) matches ref_frame_01 at SSIM 0.90,
+  identical mean 124.3 — first recognizably-CORRECT hardware decode ever on this project. Slice 2
+  degrades, then writes STOP while ingest runs to EOF -> decode-pipeline stall, not a bridge fault. Gate
+  VERDICT=FAIL (full-frame 0.0517) as expected for a 32-row band. HYPOTHESIS (untested): frame 0 is an
+  I-frame (no MC refs) -> suspect VLD's VBUF-ring reads racing stream writes through mem_shim
+  (read-before-write hazard = the old "desync -> mem_shim layer" thread) -> sim-latency-oracle FIRST, no
+  fix-swing builds. HDMI shot black = scanout blind spot, informational. Artifacts + full analysis:
+  tools/hw_gate_runs/sdcfix_20260701/ANALYSIS.md. | advanced: SDC root-cause fix VALIDATED on HW (wedge
+  gone, first correct pixels) | blocked: wedge-milestone repro run (needs go) | building: none.

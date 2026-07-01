@@ -1,0 +1,49 @@
+=== hw_decode_verify.sh ===
+HW bin : /tmp/hw_gate_sdcfix/fs_sdcfix.bin  (14680064 bytes)
+Refs   : 6 frames in /Users/human/Dev/fabricore/NetVOB_MiSTer/core/sim/artifacts/decode_ref_set
+
+--- Step 1: render framestore ---
+render_framestore: 14680064 bytes, 720x480, flip=True bias=True
+  FRAME_0 @word 0x0: mean=6.1 nonzero%=5.7 stddev=28.4 -> /tmp/hw_gate_sdcfix/render/rendered/frame0_Y.png  <-- looks like real image
+  FRAME_1 @word 0x60000: mean=0.6 nonzero%=0.5 stddev=9.1 -> /tmp/hw_gate_sdcfix/render/rendered/frame1_Y.png
+  FRAME_2 @word 0xc0000: mean=0.1 nonzero%=0.1 stddev=3.4 -> /tmp/hw_gate_sdcfix/render/rendered/frame2_Y.png
+  FRAME_3 @word 0x120000: mean=0.1 nonzero%=0.1 stddev=4.2 -> /tmp/hw_gate_sdcfix/render/rendered/frame3_Y.png
+
+--- Step 2: auto-pick decoded slot ---
+  FRAME_0: mean=6.1 stddev=28.41
+  FRAME_1: mean=0.6 stddev=9.14
+  FRAME_2: mean=0.1 stddev=3.44
+  FRAME_3: mean=0.1 stddev=4.17
+PICK_SLOT=0
+PICK_MEAN=6.14
+PICK_SD=28.41
+
+Selected FRAME_0 (mean=6.14 stddev=28.41)
+
+--- Step 3: full-frame best-match SSIM (6 refs) ---
+  ref_frame_01.png: SSIM=0.0517  %diff=95.853  MISMATCH
+  ref_frame_02.png: SSIM=0.0497  %diff=96.003  MISMATCH
+  ref_frame_03.png: SSIM=0.0494  %diff=95.975  MISMATCH
+  ref_frame_04.png: SSIM=0.0495  %diff=96.002  MISMATCH
+  ref_frame_05.png: SSIM=0.0501  %diff=95.988  MISMATCH
+  ref_frame_06.png: SSIM=0.0488  %diff=96.025  MISMATCH
+
+  >>> Best match: ref_frame_01.png  SSIM=0.0517  %diff=95.853  ref-Y-md5=868c34a88acd7fc22c53566c653bc31a
+
+--- Step 4: bars cross-check (crop 120,0,720,480 vs sim_ref_full_frame.png) ---
+  bars SSIM=0.0536  %diff=95.888
+  bars cross-check: WARN  (threshold: SSIM>=0.85)
+
+--- Step 5: VERDICT ---
+  full-frame best SSIM : 0.0517  (need >= 0.95)
+  full-frame %diff     : 95.853  (need <= 2.0)
+  bars cross-check SSIM: 0.0536  (informational, warn < 0.85)
+  matched reference    : ref_frame_01.png  (Y-md5 868c34a88acd7fc22c53566c653bc31a)
+
+  VERDICT=FAIL
+
+=== DECODE GATE: FAIL ===
+
+Interpretation:
+  SSIM=0.0517 < 0.5 suggests severely partial or corrupt decode.
+  Check: is the DDR dump from a stably-decoding frame? Is bias/flip correct?
