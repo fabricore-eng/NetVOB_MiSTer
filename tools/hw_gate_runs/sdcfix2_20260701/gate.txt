@@ -1,0 +1,23 @@
+=== hw_decode_verify.sh ===
+HW bin : /tmp/hw_gate_sdcfix2/fs_sdcfix2.bin  (14680064 bytes)
+Refs   : 6 frames in /Users/human/Dev/fabricore/NetVOB_MiSTer/core/sim/artifacts/decode_ref_set
+
+--- Step 1: render framestore ---
+render_framestore: 14680064 bytes, 720x480, flip=True bias=True
+  FRAME_0 @word 0x0: mean=4.3 nonzero%=3.7 stddev=25.0 -> /tmp/hw_gate_sdcfix2/render/rendered/frame0_Y.png
+  FRAME_1 @word 0x60000: mean=0.5 nonzero%=0.4 stddev=8.7 -> /tmp/hw_gate_sdcfix2/render/rendered/frame1_Y.png
+  FRAME_2 @word 0xc0000: mean=0.0 nonzero%=0.0 stddev=0.0 -> /tmp/hw_gate_sdcfix2/render/rendered/frame2_Y.png
+  FRAME_3 @word 0x120000: mean=0.2 nonzero%=0.2 stddev=4.6 -> /tmp/hw_gate_sdcfix2/render/rendered/frame3_Y.png
+
+--- Step 2: auto-pick decoded slot ---
+  FRAME_0: mean=4.3 stddev=25.04
+  FRAME_1: mean=0.5 stddev=8.70
+  FRAME_2: mean=0.0 stddev=0.00
+  FRAME_3: mean=0.2 stddev=4.60
+PICK_SLOT=none
+PICK_MEAN=0.0
+PICK_SD=0.0
+
+ERROR: no plausible decoded frame found in FRAME_0..3 (all flat or out of range).
+       This bin may be uninitialized or not contain a decoded frame.
+VERDICT=FAIL  (no decodable frame slot found)

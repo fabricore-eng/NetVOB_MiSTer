@@ -1955,3 +1955,19 @@ building: nothing.
   fix-swing builds. HDMI shot black = scanout blind spot, informational. Artifacts + full analysis:
   tools/hw_gate_runs/sdcfix_20260701/ANALYSIS.md. | advanced: SDC root-cause fix VALIDATED on HW (wedge
   gone, first correct pixels) | blocked: wedge-milestone repro run (needs go) | building: none.
+- 2026-07-01 (REPRO run — WEDGE-DEATH CONFIRMED 2/2, MILESTONE CLAIMED; stall reproduced with
+  timing-varying extent) — Second gate run, same SDC-fix build, fresh warm-boot + re-flash (human's
+  per-run go). Bridge: clean AGAIN (U:0, PC:0000, RP==P, BN=0x22E2CF ~2.29M writes, J==Z full clip,
+  ~30M reads). Two boots, zero wedge signatures => the f2sdram wedge — the project's central blocker
+  since mid-June — is ELIMINATED by the sys_pll clock-groups SDC fix. Ladder: FEED✓ read-return✓
+  BRIDGE✓ -> stall/desync (CURRENT) -> SSIM>=0.95 -> scanout. Decode stall: reproduced, again rows
+  0-31 of FRAME_0 only, but SMALLER band (mean 4.3 vs 6.1, BN -726 writes) and slice 1 this time
+  NEAR-BIT-PERFECT (top-16 SSIM 0.987 vs ref, mean 123.9/124.3; run 1 was 0.90) with corruption onset
+  EARLIER (rows 16-23 vs 24-31). Same build+clip, different stall point across boots => timing/pacing-
+  dependent, NOT a fixed bitstream position. Shim source audit: single in-order FIFO (no read-bypass)
+  + recovery never fired (PC:0000) => shim-reorder ruled OUT; suspects = what sim doesn't model
+  (bursty latency/refresh, display-fetch load, real-time sector pacing). NEXT: extend the sim latency
+  oracle until the slice-2 stall reproduces OFFLINE (no fix-swing builds). Artifacts:
+  tools/hw_gate_runs/sdcfix2_20260701/ANALYSIS.md. | advanced: MILESTONE — bridge wedge eliminated
+  (2/2 HW runs) + slice-1 decode near-bit-perfect on silicon | blocked: none (sim-side next) |
+  building: none.
