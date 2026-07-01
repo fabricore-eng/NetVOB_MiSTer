@@ -41,7 +41,7 @@ echo "rbf bytes: ${RBFSZ:-0}  (sane MiSTer rbf ~2.9-3.1M)"
 [ "${RBFSZ:-0}" -gt 2000000 ] 2>/dev/null || { echo "!! rbf conversion looks wrong (size ${RBFSZ}) — ABORT before touching HW"; exit 3; }
 
 say "2. acquire mister devlock (dvd)  [GATE]"
-"$HUB/tools/dell_coord.sh" devlock mister acquire dvd 2>&1 | flt || { echo "mister LOCKED by other session — abort, retry later"; exit 1; }
+"$HUB/tools/dell_coord.sh" devlock mister acquire dvd 2>&1 | flt || { echo "devlock acquire FAILED — either held by another session OR the board is unreachable (check ssh mister). Board untouched; abort, retry later"; exit 1; }
 cleanup(){ ssh -o BatchMode=yes mister 'echo "load_core /media/fat/menu.rbf" > /dev/MiSTer_cmd' 2>&1 | flt; "$HUB/tools/dell_coord.sh" devlock mister release dvd 2>&1 | flt; }
 trap cleanup EXIT
 
