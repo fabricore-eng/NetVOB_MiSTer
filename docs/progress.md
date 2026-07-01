@@ -1844,3 +1844,28 @@ building: nothing.
   before polling UP). | advanced: age-gate logic sim-proven (no-starvation, byte-identical); write-wedge
   root-caused to WRITE-path placement (read side already durable via Option A) | blocked: f2sdram
   WRITE-path placement marginality -> no frame | building: none.
+- 2026-07-01 (durable WRITE-boundary register: a 1-deep slice is INSUFFICIENT -> it's a 2-DEEP skid-buffer
+  problem; re-scoping) — Designed + implemented a command/waitrequest boundary register slice (register
+  the command OUTPUTS + the waitrequest INPUT for hold margin, symmetric to Option A: bcmd_* flop +
+  waitreq_q, slice_accept = bcmd_inflight && !waitreq_q, FSM accept sense repointed). SIM EXPOSED THE
+  FATAL FLAW of a 1-deep slice — it cannot be exactly-once against BOTH Avalon slave behaviors:
+  * +ddr_wait_period=2 (STALLING slave): DROPS the write -> 0 frames, sim hangs at startup. Root cause:
+    slice_accept fires on a STALE waitreq_q (the registered waitrequest still reflects the cycle BEFORE
+    the command was presented at the pin), so the shim retires a command the bridge NEVER accepted.
+  * The obvious fix (gate accept on "presented >=1 cyc", presented_q) re-introduces DOUBLE-issue at
+    +ddr_wait_period=0 (never-stall: the pin is held 2 cycles, both waitrequest=0 -> 2 accepts).
+  * +ddr_wait_period=0 alone DID decode 3 frames balanced (rd=rsp=2501, no $stop) — never-stall happens
+    to align — but that is NOT the HW handshake contract.
+  FUNDAMENTAL RESULT: registering a req/waitrequest handshake in BOTH directions needs a 2-DEEP skid
+  buffer (a fully-registered Avalon pipeline bridge); a 1-deep register is provably not exactly-once.
+  This is almost certainly the class of bug that sank the 2026-06-05 command-register attempt. (The read
+  side was easy precisely because a RESPONSE channel has no handshake.) Reverted the working tree to the
+  sim-proven age-gate (4a8ca207); buggy slice saved at scratchpad/mem_shim.slice.sv. RE-SCOPE (needs
+  steer): (a) proper 2-deep skid buffer [correct, complex, corruption-risk]; (b) register the command
+  OUTPUTS ONLY via a combinational-ready skid [output hold margin only, simpler, lower risk — bets the
+  marginal path is the command output]; (c) back-annotate the hold-all build's KNOWN-GOOD write placement
+  + graft the age-gate logic [sidesteps RTL; brittle to the logic delta; needs the hold-all CDB on dell];
+  (d) SignalTap the write-wedge on the now-FREE de10 to identify WHICH path is marginal (command-out ->
+  (b) suffices; waitrequest-in -> (a) needed; bridge-side -> registration won't help, need placement) —
+  observe-first, de-risks the choice. | advanced: proved 1-deep slice insufficient + root-caused the
+  2026-06-05 failure class | blocked: durable write-register is a 2-deep-skid problem | building: none.
