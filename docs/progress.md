@@ -1765,3 +1765,28 @@ building: nothing.
   CHECK IN with the human before the HW gate (sim-first mode). | advanced: write-gate coded +
   sim-proven (fix works, correctness-preserving, liveness) | blocked: none | building: write-gate rbf
   (about to launch on dell).
+- 2026-06-30 (WRITE-GATE HW GATE: the bridge wedge is ELIMINATED — but writes STARVE, so no frame yet) —
+  Built the write-gate rbf clean (0 err, ~32min), then human-authorized warm-reboot + flash + objective
+  decode gate on the SuperStation (devlock, one load_core, framestore dump). UART (4 samples ~1s apart):
+  * WEDGE GONE (the primary goal, achieved on silicon): W=0x80E2 (32994 writes, vs the historical STUCK
+    0x55/0xBD = 85/189), U:0 (waitrequest NOT stuck), M:0 (shim idle), PC:0000 (no wedge latch), O:0 (no
+    watchdog), P/RP churning through millions BALANCED (diff ~3). The f2sdram bridge stays HEALTHY under
+    decode load for the FIRST time — 170x past the old lock. Feed OK (X:001 Y:E74 Z=J=0F3B), VLD
+    decoding (VN climbing), raster alive (FC advancing).
+  * NO FRAME (VERDICT=FAIL): framestore near-EMPTY (mean 2.4, all 4 slots flat — not even the 128-clear
+    completed). recovery_count=0 (PC low bits) + balanced P/RP = NO reads were dropped this run (Option A
+    + write-gate made read-return solid) -> NOT the zero-fill caveat. The symptom is W FROZEN at 32994
+    while P keeps churning = WRITE-STARVATION: the gate holds writes while ANY read is outstanding, and
+    the real 480i clip's read stream never drains to outstanding_reads==0 (unlike sim greyramp's sparse
+    reads), so writes -- incl. the framestore CLEAR -- never issue -> decode can't complete -> reads keep
+    flowing -> self-reinforcing write-stall.
+  DESIGN TENSION EXPOSED: safe wedge-avoidance (hold ALL writes behind reads) vs write throughput (needs
+  read-drain gaps the dense clip doesn't provide). The gate is CORRECT for wedge-avoidance but too
+  aggressive for a continuous read stream. NEXT (recommend sim-first, it's a LOGIC/throughput issue the
+  sim CAN model, unlike the physical drop): reproduce the starvation OFFLINE in core/sim/memshim with the
+  dense 480i clip -> refine the gate (bounded write-CREDIT: the bridge tolerated ~160 clk / several
+  writes after a lost read per SignalTap, so allow K writes through without re-exposing the
+  write-behind-lost-read wedge) -> sim-validate -> ONE more HW build. SignalTap on de10 is the fallback
+  if the sim can't reproduce it. | advanced: write-gate ELIMINATED the bridge wedge on HW (W 189->33k, no
+  busy-stuck, no wedge latch) — the weeks-long blocker is GONE | blocked: write-starvation (gate too
+  aggressive) -> no frame | building: none. Board released.
