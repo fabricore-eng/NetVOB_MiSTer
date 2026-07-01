@@ -52,7 +52,19 @@ say "2b. WARM REBOOT to clear any STALE HPS f2sdram wedge  [CRITICAL for this co
 # (resets the HPS bridge) and load our core onto a CLEAN bridge, else we inherit a stale
 # wedge (e.g. from the 573 session's probe builds) and misread it as OUR build wedging.
 "$HUB/tools/dell_coord.sh" devlock mister reboot dvd 2>&1 | flt || { echo "reboot refused (someone else holds lock) — abort"; exit 1; }
-echo "rebooting; waiting for mister to come back up..."
+# RACE FIX: `reboot` returns BEFORE the board actually drops. Polling for UP immediately is a
+# bug — `test -e /dev/MiSTer_cmd` still succeeds on the not-yet-rebooted host, so we'd declare
+# "up" instantly and re-acquire/load onto a host that's about to vanish (the aborted-1st-attempt
+# failure). So FIRST confirm the board goes DOWN, THEN poll for UP. A rebooting host FAST-FAILS
+# ssh (conn refused returns instantly), so pace each loop with `sleep`, not just ConnectTimeout.
+echo "reboot issued; waiting for mister to go DOWN first..."
+down=0
+for i in $(seq 1 30); do
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=4 mister 'test -e /dev/MiSTer_cmd' 2>/dev/null; then down=1; echo "mister went down after ~$((i*2))s"; break; fi
+  sleep 2
+done
+[ "$down" = 1 ] || { echo "mister never dropped within 60s after reboot — reboot/bridge suspect, ABORT"; exit 2; }
+echo "mister down; now waiting for it to come back up..."
 up=0
 for i in $(seq 1 36); do
   if ssh -o BatchMode=yes -o ConnectTimeout=4 mister 'test -e /dev/MiSTer_cmd' 2>/dev/null; then up=1; echo "mister up after ~$((i*5))s"; break; fi
