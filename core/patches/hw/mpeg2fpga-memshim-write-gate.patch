@@ -14,26 +14,33 @@
      wire        read_accepted_now = state && ram_read && !ddr3_waitrequest;
      wire        resp_timeout      = (outstanding_reads != 0) && !rdv_q && (&resp_timer);
  
-@@ -140,6 +145,18 @@
-     wire next_is_read   = saved_valid ? (saved_cmd == CMD_READ)
+@@ -141,6 +146,25 @@
                                        : (mem_req_rd_valid && (mem_req_rd_cmd == CMD_READ));
      wire read_throttled = next_is_read && (outstanding_reads >= READ_LIMIT);
-+
-+    // WRITE-GATE: never issue a write while a read is outstanding. The HW wedge
-+    // (SignalTap-proven 2026-06-25) is a WRITE issued behind an outstanding READ
-+    // whose response was dropped -> the f2sdram sticks BUSY forever. Holding the
-+    // write until reads drain means the bridge never sees write-behind-read, so a
-+    // dropped read degrades to a 1-read glitch (drained by resp_timeout) instead
-+    // of a permanent wedge. Carve out the last-read-drain cycle so we don't stall
-+    // the write one extra cycle when the sole outstanding read responds/recovers
-+    // NOW. (A same-cycle read ACCEPT can't occur in the write branches: reads are
-+    // accepted only in S_WAIT/state==1; writes are issued only in S_IDLE/state==0.)
-+    wire reads_outstanding = (outstanding_reads != 0) &&
-+                             !((outstanding_reads == 6'd1) && (rdv_q | resp_timeout));
  
++    // WRITE-GATE (age-gated). The HW wedge (SignalTap 2026-06-25) is a WRITE issued
++    // behind an outstanding READ whose response was DROPPED -> the f2sdram sticks BUSY
++    // forever. The first cut held writes while ANY read was outstanding; on the real
++    // 480i clip (dense, overlapping reads at HW memory latency) the read stream NEVER
++    // drains to outstanding==0, so writes -- incl. the framestore clear -- STARVED and
++    // no frame decoded (HW-observed W frozen @ 32994 w/ reads churning, recovery_count=0
++    // i.e. NO drops; sim-reproduced: baseline decodes at ~2 reads/MB, hold-all stalls at
++    // ~12x @ lat30). So hold writes ONLY when a read is actually STUCK: no response for
++    // WGATE_SUSPECT clk while reads are outstanding. resp_timer resets on ANY response,
++    // so a HEALTHY read stream keeps it low -> writes flow freely -> no starvation. A
++    // genuinely-dropped read opens a response gap -> resp_timer climbs -> we hold writes
++    // BEFORE the bridge wedges, then resp_timeout recovers. WGATE_SUSPECT sits ABOVE
++    // worst healthy latency (incl. refresh spikes) and BELOW the bridge's
++    // write-behind-lost-read tolerance (~160 clk per SignalTap), << resp_timeout(16383).
++    // HW-calibratable; the sim proves no-starvation, HW arbitrates wedge-safety.
++    localparam [13:0] WGATE_SUSPECT = 14'd128;
++    wire read_stuck        = (resp_timer >= WGATE_SUSPECT);
++    wire reads_outstanding = (outstanding_reads != 0) && read_stuck;
++
      // Skid buffer — captures the FIFO word that appears 1 cycle after rd_en is
      // deasserted (standard mode FIFO 1-cycle latency).
-@@ -173,9 +190,11 @@
+     reg        saved_valid;
+@@ -173,9 +197,11 @@
              if (rdv_q)
                  mem_res_wr_dta <= rdd_q;
              else if (resp_timeout) begin
@@ -46,7 +53,7 @@
                  mem_res_wr_en  <= 1'b1;
                  mem_res_wr_dta <= 64'd0;
              end
-@@ -214,6 +233,12 @@
+@@ -214,6 +240,12 @@
                                  // Drop ADDR_ERR write — do not forward to DDR3
                                  saved_valid   <= 0;
                                  mem_req_rd_en <= !mem_res_wr_almost_full;
@@ -59,7 +66,7 @@
                              end else begin
                                  ram_write     <= 1;
                                  ram_address   <= {7'b0011000, saved_addr};
-@@ -263,6 +288,11 @@
+@@ -263,6 +295,11 @@
                              if (mem_req_rd_addr == ADDR_ERR) begin
                                  // Drop ADDR_ERR write — keep flowing
                                  mem_req_rd_en <= !mem_res_wr_almost_full;

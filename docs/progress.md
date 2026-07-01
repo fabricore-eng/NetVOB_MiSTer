@@ -1790,3 +1790,30 @@ building: nothing.
   if the sim can't reproduce it. | advanced: write-gate ELIMINATED the bridge wedge on HW (W 189->33k, no
   busy-stuck, no wedge latch) — the weeks-long blocker is GONE | blocked: write-starvation (gate too
   aggressive) -> no frame | building: none. Board released.
+- 2026-06-30 (STARVATION reproduced OFFLINE + AGE-GATED refinement: no-starvation + byte-identical decode,
+  sim-proven) — Sim-first per the human's steer. Fed the DENSE 480i HW clip (testsrc2) through
+  core/sim/memshim at HW-realistic memory latency to reproduce the write-starvation:
+  * latency 8: the hold-all write-gate decodes the dense clip fine (3 frames) — no repro (reads drain).
+  * latency 30 (HW-realistic): the hold-all gate STALLS — mb=0 at rd=14603 (~12x read-amplification),
+    while the BASELINE shim (control, same clip+latency) decodes NORMALLY (mb=573 at rd=1165, ~2
+    reads/MB). => the starvation is UNAMBIGUOUSLY the write-gate (holding writes while ANY read is
+    outstanding; the dense clip's overlapping reads never drain to 0 at real latency). Matches the HW
+    symptom exactly.
+  REFINED to an AGE-GATED write-gate (mem_shim.sv): hold writes ONLY when a read is genuinely STUCK
+  (resp_timer >= WGATE_SUSPECT=128 clk with no response). resp_timer resets on ANY response, so a
+  HEALTHY read stream keeps it low -> writes FLOW -> no starvation; a dropped read opens a response gap
+  -> resp_timer climbs -> hold writes before the bridge wedges, then resp_timeout recovers. SIM RESULTS:
+  * NO STARVATION: age-gate decodes the dense clip at latency 30 on the BASELINE's exact trajectory
+    (mb=573@1165, mb=1108@2482) — amplification GONE.
+  * CORRECTNESS-PRESERVING: age-gate decode is BYTE-IDENTICAL to baseline (dense clip, all 4 slots,
+    maxdiff=0) AND byte-identical to the greyramp GOLDEN (maxdiff=0, 0.000% — cleaner than hold-all's
+    1.7% snapshot).
+  WEDGE-SAFETY is HW-arbitrated (sim can't model the bridge's exact write-behind-lost-read trigger): the
+  NO-DROP case (= the observed HW run, recovery_count=0) is SAFE (no stuck read -> gate never engages ->
+  decodes like baseline); a rare drop leaves a residual window (~250 clk to detect a sole-outstanding
+  drop vs the ~160 clk SignalTap tolerance) -> refine (per-read aging / lower WGATE_SUSPECT) or
+  SignalTap-calibrate if it bites on HW. Patch updated: mpeg2fpga-memshim-write-gate.patch (baseline
+  4de9dcd1 + patch = age-gate 4a8ca207, verified). NEXT (needs go, sim-first mode): HW-build + gate the
+  age-gate -> expect a frame on the no-drop path (the observed HW condition). | advanced: starvation
+  reproduced + root-caused to the gate (vs baseline control); age-gated refinement sim-proven
+  no-starvation + byte-identical decode | blocked: wedge-safety HW-arbitrated | building: none.
