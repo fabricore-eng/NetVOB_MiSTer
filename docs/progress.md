@@ -1817,3 +1817,30 @@ building: nothing.
   age-gate -> expect a frame on the no-drop path (the observed HW condition). | advanced: starvation
   reproduced + root-caused to the gate (vs baseline control); age-gated refinement sim-proven
   no-starvation + byte-identical decode | blocked: wedge-safety HW-arbitrated | building: none.
+- 2026-07-01 (AGE-GATE HW GATE: logic-fix UN-TESTABLE — the build WEDGES the f2sdram WRITE path =
+  placement lottery; read side already durable via Option A) — Flashed + decode-gated the age-gate build
+  (0-err, human-authorized). A reboot-detection RACE in hw_flash_and_gate.sh aborted the 1st attempt
+  (the up-check caught the board in the window AFTER the reboot command but BEFORE it dropped -> the
+  re-acquire then hit it mid-reboot + timed out; TOOLING BUG). Manual gate + a clean warm-reboot re-test
+  (uptime 0:00) read DECISIVELY:
+  * WRITE-PATH WEDGE: W stuck (0x00F1=241 first load; 0x213F=8511 on the clean-boot reload), U:1
+    (ddr3_waitrequest STUCK high), M:D/F, PC:A000 (wedge latched), P:0000 (ZERO reads), O toggling
+    (watchdog). It wedges during the framestore CLEAR = PURE WRITES, no reads involved.
+  * The jittering wedge point (241 vs 8511 across two clean boots) = a MARGINAL PHYSICAL issue, not
+    deterministic logic. The age-gate LOGIC cannot be the cause: during the clear (no reads)
+    reads_outstanding=0 in BOTH the age-gate and the hold-all shim -> identical write behavior; U:1 is
+    the BRIDGE refusing the write (bridge-side), not the shim holding. => PLACEMENT LOTTERY on the
+    f2sdram WRITE path.
+  CONTRAST that pins it: the hold-all build (a74645df, the prior gate) got a GOOD write placement
+  (cleared to W:32994, U:0, reads flowing) but the gate LOGIC starved. So hold-all = good placement +
+  bad logic (starve); age-gate = good logic (sim-proven) + bad placement (write-wedge). NEITHER lands a
+  frame. ROOT: Option A registered the READ-RETURN boundary (placement-INDEPENDENT reads, HW-proven),
+  but the WRITE-command / waitrequest boundary is still COMBINATIONAL -> placement-sensitive -> this
+  netlist re-rolled into a bad write placement. DURABLE FIX (symmetric to Option A): register the
+  write-command/waitrequest handoff for HOLD MARGIN -> placement-independent write path (+ the age-gate
+  logic = both fixed). Alternatives: re-roll placement (seed/ballast gamble — a good write placement
+  demonstrably EXISTS, the hold-all had one), or back-annotate the hold-all's good placement + age-gate
+  logic. Board released. TOOLING TODO: fix hw_flash_and_gate.sh's reboot-detection race (verify DOWN
+  before polling UP). | advanced: age-gate logic sim-proven (no-starvation, byte-identical); write-wedge
+  root-caused to WRITE-path placement (read side already durable via Option A) | blocked: f2sdram
+  WRITE-path placement marginality -> no frame | building: none.
