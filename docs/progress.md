@@ -1925,3 +1925,16 @@ building: nothing.
   core/patches/hw/mpeg2fpga-sdc-clockgroups-syspll.patch. | advanced: SDC fix built + timing-clean
   (-59ns->+0.13, 188005 gone), root cause confirmed on the STA | blocked: HW decode test (needs go) |
   building: none.
+- 2026-07-01 (SESSION HANDOFF — SDC fix built + timing-clean, HW decode test is the next step) — RESUME
+  POINT = **docs/HANDOFF-2026-07-01-sdc-clockgroups-fix.md** (supersedes the signaltap-writewedge handoff).
+  One-line: write-wedge SignalTap-captured on de10 -> root-caused to a stock clock-groups glob that never
+  matched this core's sys_pll (clk_mem never decoupled from async domains -> false -59ns hold viols ->
+  fitter routing-delay perturbs the +0.64ns mem_shim->terminator hop -> wedge lottery). The one-line SDC
+  fix (group sys_pll) is BUILT + TIMING-CLEAN (hold -59.108 -> +0.132 all corners positive, 188005 2->0,
+  stock glob confirmed broken via 332174). dell is deployable (mem_shim 4a8ca207, qsf clean, holdfix has
+  the fix, fresh sof Jul 1 06:28). IMMEDIATE NEXT (needs the human's go): hw_flash_and_gate.sh sdcfix on
+  the SuperStation -> DECODES = milestone (weeks-long blocker falls) / STILL WEDGES = pin a hold-clean
+  placement (2-deep skid demoted). Also this session: fixed hw_flash_and_gate.sh reboot-race + added
+  capture_dvd.sh. Patch: core/patches/hw/mpeg2fpga-sdc-clockgroups-syspll.patch. | advanced: full arc —
+  captured, root-caused, SDC fix built + timing-verified | blocked: HW decode test (needs go) | building:
+  none.
