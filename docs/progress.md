@@ -1869,3 +1869,16 @@ building: nothing.
   (b) suffices; waitrequest-in -> (a) needed; bridge-side -> registration won't help, need placement) —
   observe-first, de-risks the choice. | advanced: proved 1-deep slice insufficient + root-caused the
   2026-06-05 failure class | blocked: durable write-register is a 2-deep-skid problem | building: none.
+- 2026-07-01 (SESSION HANDOFF — instrumented write-wedge SignalTap build IN FLIGHT) — RESUME POINT for a
+  fresh session = **docs/HANDOFF-2026-07-01-signaltap-writewedge.md** (full state, artifacts, next steps,
+  decision tree). One-line: the write-gate KILLED the weeks-long f2sdram bridge wedge on HW (W 189->33k);
+  the write-starvation it exposed is fixed + sim-proven (age-gate 4a8ca207); the remaining blocker is a
+  WRITE-path PLACEMENT marginality (age-gate build wedges the clear, U:1). Durable write-register proven
+  to be a 2-deep-skid problem (1-deep drops/doubles writes). SignalTap-first (human's steer): instrumented
+  write-wedge rbf building on dell now (mem_shim 47ecf5fb = age-gate + st_waitreq obs reg; probe inserted,
+  quartus_stp --enable 0-err). NEXT: heisenbug-check it still wedges -> capture on de10 (free) -> the CSV
+  says which path is marginal (command-out / waitrequest-in / bridge-side) -> pick the fix (output-only
+  register / 2-deep skid / back-annotate placement). After capture: revert mem_shim to 4a8ca207, restore
+  dell's mpeg2fpga.qsf.clean_bak. TOOLING TODO: hw_flash_and_gate.sh reboot-race. | advanced: session-long
+  arc — wedge killed, starvation fixed, blocker re-localized to write-placement, SignalTap probe built |
+  blocked: write-path placement (diagnosing) | building: instrumented write-wedge rbf.
