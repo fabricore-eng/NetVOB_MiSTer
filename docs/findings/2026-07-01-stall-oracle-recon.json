@@ -1,0 +1,386 @@
+{
+ "simMap": {
+  "summary": "The memshim co-sim (core/sim/memshim) instantiates the FULL pristine mpeg2fpga decoder through the real working-tree mem_shim.sv (currently md5 4a8ca207 = the age-gate HW build) against a behavioral Avalon slave (ddr3_model.v) whose timing is FIXED read latency + optional uniform jitter and a DETERMINISTIC periodic waitrequest \u2014 it has fault-injection knobs (drop/dup/reorder/lock/gap-wedge/drop-then-write-wedge) but models NO bursty latency spikes, NO refresh gaps, NO write latency, and has a hardcoded LFSR seed. The decoder's own display/chroma-resample reads DO flow through mem_shim in sim (tv_out raster runs), but mem_shim is the sole bus master \u2014 no competing HPS/scaler load exists. The sd_*/mpg_streamer sector path is absent: stream bytes are fed 1/cycle at 27 MHz from stream.dat with only the decoder's own busy backpressure, so real-time sector-burst pacing is unmodeled. Of the four HW-only candidate classes, three (bursty/refresh latency, external memory-port contention, real-time sector pacing) are confirmed sim blind spots with small, well-anchored edit paths; response-FIFO overflow is largely covered because the real response FIFO RTL is in the loop and the shim bounds outstanding reads at 4.",
+  "facts": [
+   {
+    "fact": "The DDR model uses a FIXED per-read latency: every accepted read schedules exactly one response rd_latency cycles later (default 8), settable via +ddr_rd_latency=N; optional extra latency is UNIFORM 0..J via +ddr_rd_jitter=J computed as lfsr % (rd_jitter+1) \u2014 there is no spike/bursty distribution.",
+    "evidence": "core/sim/memshim/ddr3_model.v:139,141,153,155,337-339"
+   },
+   {
+    "fact": "The jitter LFSR seed is HARDCODED to 32'hACE1_2345 with no plusarg \u2014 jitter runs are not seed-variable, so a bursty-latency knob must also add a +ddr_seed plusarg.",
+    "evidence": "core/sim/memshim/ddr3_model.v:152,175"
+   },
+   {
+    "fact": "waitrequest is DETERMINISTIC and periodic: with +ddr_wait_period=P the slave accepts at most 1 command every P cycles (waitrequest = wait_phase != 0); P<=1 means never stall; the only other source is the sticky 'locked' flag. No random, command-dependent, or long-hold waitrequest exists.",
+    "evidence": "core/sim/memshim/ddr3_model.v:140,154,187-196"
+   },
+   {
+    "fact": "REFRESH GAPS ARE NOT MODELED: nothing ever holds all commands for N cycles every M us; the waitrequest generator is only the phase counter plus 'locked'. The bursty/refresh-latency candidate class is a confirmed sim blind spot.",
+    "evidence": "core/sim/memshim/ddr3_model.v:177-199 (entire waitrequest logic)"
+   },
+   {
+    "fact": "Response reordering exists only as a fault knob +ddr_reorder=N (every Nth drain emits the second-ready slot first, requiring >=2 simultaneously-ready responses); default behavior is strictly in-order, exactly-once, max one response per cycle.",
+    "evidence": "core/sim/memshim/ddr3_model.v:158,373-445,423-427"
+   },
+   {
+    "fact": "Full fault-knob inventory with defaults: +ddr_rd_latency (8), +ddr_wait_period (0), +ddr_rd_jitter (0), +ddr_zero_latency, +ddr_trace, +ddr_reorder (0), +ddr_drop (0, drops every Nth ready response at :410-417), +ddr_dup (0, extra pulse at :394-401/436-440), +ddr_late_after_reset (0, gates emission at :405-406), +ddr_lock_threshold (0, sticky lock at outstanding>=N, :284-288), +ddr_gap_wedge (0, :296-300, comment :117-125 says SignalTap REFUTED this theory \u2014 kept for regression), +ddr_drop_then_write_wedge (0, the SignalTap-confirmed write-wedge, :302-320 arm :413-415), +ddr_wedge_window (4096, :307-312).",
+    "evidence": "core/sim/memshim/ddr3_model.v:138-166"
+   },
+   {
+    "fact": "WRITES HAVE ZERO LATENCY AND NO QUEUE: an accepted write commits to mem[] the same cycle (:315-330); there is no write-latency, write-buffer, or write-vs-read ordering knob, and ddr3_burstcnt is a port (:60) that is never used in scheduling logic.",
+    "evidence": "core/sim/memshim/ddr3_model.v:60,315-330"
+   },
+   {
+    "fact": "The FULL mpeg2fpga decoder (mpeg2video with the complete RTL list incl. vld/idct/motcomp/resample/syncgen/framestore) is instantiated in sim, at the REAL clock ratios clk=27 MHz / mem_clk=108 MHz / dot_clk=27 MHz.",
+    "evidence": "core/sim/memshim/tb_memshim.v:39-48,129-158; core/sim/memshim/Makefile:65-75"
+   },
+   {
+    "fact": "The DISPLAY fetch IS active in sim: the chroma-resample display read path ('disp' fifo) is arbitrated into the single memory request stream inside mpeg2video's framestore, and the tv_out raster dump runs continuously off dot_clk producing tv_out_*.ppm \u2014 so display reads load mem_shim during decode in sim, same as the core's internal path on HW.",
+    "evidence": "core/mpeg2fpga/rtl/mpeg2/framestore.v:70-92,176-186; core/sim/memshim/tb_memshim.v:315-359"
+   },
+   {
+    "fact": "mem_shim is the SOLE master of ddr3_model \u2014 no second master, no MiSTer scaler/HPS/ascal traffic, no port contention of any kind is modeled; external-load contention on the f2sdram port is a confirmed sim blind spot.",
+    "evidence": "core/sim/memshim/tb_memshim.v:195-241 (only mem_shim drives ddr3_*)"
+   },
+   {
+    "fact": "The sd_*/mpg_streamer sector path is NOT in the loop: stream bytes are $readmemh'd from stream.dat and fed 1 byte per 27 MHz cycle whenever the decoder's own 'busy' (vbuf backpressure) is low \u2014 instantaneous continuous delivery, no 2048-byte sector cadence, no ARM service latency. Real-time pacing is a confirmed sim blind spot.",
+    "evidence": "core/sim/memshim/tb_memshim.v:70-87"
+   },
+   {
+    "fact": "Response-FIFO overflow is largely COVERED in sim: the real framestore response/tag FIFO RTL is in the loop (soft generic_fifo_dc, or the fork's Gray-code xilinx_fifo_dc with FIFO_GRAY=1 which decoded bit-identically), the shim honors mem_res_wr_almost_full, and outstanding reads are bounded at READ_LIMIT=4 by the shim itself \u2014 the same bound as HW; dense runs show peak in-flight = 4.",
+    "evidence": "core/sim/memshim/Makefile:49-62; core/MiSTer_MPEG2/rtl/mem_shim.sv:144; core/sim/memshim/README.md:65-69; run_dense_age_l30/run.log last line 'peak in-flight reads = 4'"
+   },
+   {
+    "fact": "The decoder's own tag-desync trap is compiled in (-D__IVERILOG__ enables the framestore_response.v:248 $stop), and an ADDR_ERR injector (req_inject.v) can rewrite reads with +inj_addrerr_period=N, +inj_addrerr_oncollide, +inj_addrerr_max (default 64), +inj_trace.",
+    "evidence": "core/sim/memshim/Makefile:92; core/sim/memshim/req_inject.v:82-85,104-115"
+   },
+   {
+    "fact": "Testbench knobs: +wd_cycles (progress watchdog, default 2,000,000 mem_clk ~18.5 ms \u2014 progress = mb-address change OR ddr3 response OR readdatavalid OR mem_res_wr_en) and +max_cycles (hard cap, default 80,000,000); on trip it prints a 'STALL/END REPORT' with shim FSM state and counters then $finish.",
+    "evidence": "core/sim/memshim/tb_memshim.v:517-570"
+   },
+   {
+    "fact": "A run 'declares frames done' externally: run_memshim.sh launches the binary detached and polls until count(framestore_*.ppm) >= MIN_FRAMES (arg 2, default 2) OR 'STALL/END REPORT' appears in run.log OR MAX_WAIT (arg 3, default 600 s), then kills the sim; the LAST framestore ppm may be mid-write, so use MIN_FRAMES=N+1 for N closed frames.",
+    "evidence": "core/sim/memshim/run_memshim.sh:18-48; core/sim/memshim/README.md:153-157"
+   },
+   {
+    "fact": "The framestore PPM dump fires on a decoder CMD_WRITE whose address equals a FRAME_{0..3}_Y base observed at the request port, and dumps all frame planes straight out of ddr3.mem[] (~54 MB per ppm).",
+    "evidence": "core/sim/memshim/tb_memshim.v:436-501 (trigger at 497-501)"
+   },
+   {
+    "fact": "Wall-clock (from file mtimes): a lat30 dense-clip run (run_dense_age_l30, stream.dat = 1,996,106 bytes matching the HW clip) produced framestore_0000 in ~3 s and framestore_0001 at ~53 s after launch; greyramp age-gate baseline 3-frame runs took ~2m51s (wp0) and ~2m33s (wp2).",
+    "evidence": "mtimes: run_dense_age_l30/{sim.pid 20:12:54, framestore_0001 20:13:47}; run_agebase_wp0/{sim.pid 22:11:00, framestore_0002 22:13:51}; run_agebase_wp2/{sim.pid 22:13:53, framestore_0002 22:16:26}"
+   },
+   {
+    "fact": "Exact age-gate-baseline rerun commands (UUT = working-tree core/MiSTer_MPEG2/rtl/mem_shim.sv, verified md5 4a8ca2075e2... = the age-gate HW shim): cd core/sim/memshim && rm -rf obj_dir && make build && ./run_memshim.sh run_agebase_wp0 3 600 -- +ddr_rd_latency=30 +ddr_wait_period=0 and ./run_memshim.sh run_agebase_wp2 3 600 -- +ddr_rd_latency=30 +ddr_wait_period=2. Effective knobs confirmed against the original run banners (rd_latency=30, wait_period=0/2, all fault modes 0). For the dense HW clip first regenerate stream.dat: ../prep_stream.sh tools/testclips/test480i_ntsc.m2v 4194304 stream.dat.",
+    "evidence": "run_agebase_wp0/run.log:1-3; run_agebase_wp2/run.log:1-3; core/sim/memshim/Makefile:28,80; docs/HANDOFF-2026-07-01-signaltap-writewedge.md:161-170"
+   },
+   {
+    "fact": "The run_lat30/80/200 series (Jun 24) ran +ddr_rd_latency={30,80,200} +ddr_wait_period=4 AND +ddr_lock_threshold=6 (banner shows lock_threshold=6 while the compiled default has always been 0); run_harsh/run_hrharsh = lat20 wait8 jitter7; run_drop* = drop={8,1000} regimes; run_wedge_d200/d1000/big = drop_then_write_wedge=1 with drop={200,1000} and window={4096,30000}.",
+    "evidence": "run_*/run.log line 1-3 banners; ddr3_model.v:148 and git show 9fa3bc3 (default 0 at introduction)"
+   },
+   {
+    "fact": "SHORTEST EDIT (a) bursty latency spikes: single file ddr3_model.v \u2014 add +ddr_spike_period/+ddr_spike_lat/+ddr_seed parsing in the initial block (:138-166), seed the LFSR (:152), and override cur_lat at the latency-selection point (:337-339, e.g. cur_lat = 200 + lfsr % 801 every Nth read). The response pipe (PIPE=64, 32-bit countdowns, :207-210) already tolerates 1000-cycle latencies (lat200 proven).",
+    "evidence": "core/sim/memshim/ddr3_model.v:138-166,152,207,337-339"
+   },
+   {
+    "fact": "SHORTEST EDIT (b) refresh-like gaps: ddr3_model.v waitrequest generator (:187-196) \u2014 add a free-running counter with +ddr_refresh_interval=M / +ddr_refresh_hold=N and OR 'refresh_active' into the assign at :195-196; to also model tRFC blocking data return, AND '!refresh_active' into the two emission gates at :396 (dup) and :405 (normal drain).",
+    "evidence": "core/sim/memshim/ddr3_model.v:187-196,394-406"
+   },
+   {
+    "fact": "SHORTEST EDIT (c) competing display-read load: cheapest is traffic-shaping inside ddr3_model.v (a background-load counter that periodically forces waitrequest at :195 and inflates cur_lat at :337-339); the structural alternative is a new load-gen master + 2:1 arbiter wired between mem_shim and ddr3_model in tb_memshim.v (:104-113 wire block, :229-241 instantiation) \u2014 the arbiter must keep an issue-order FIFO of master IDs because ddr3_model returns responses in global issue order.",
+    "evidence": "core/sim/memshim/ddr3_model.v:195,337-339; core/sim/memshim/tb_memshim.v:104-113,229-241"
+   },
+   {
+    "fact": "SHORTEST EDIT (d) real-time-paced stream: tb_memshim.v stream-feed block (:78-87) plus plusarg parsing in the initial block (:70-76) \u2014 add +stream_sector_bytes=2048 / +stream_sector_gap=G (burst a sector then hold stream_valid low G clk cycles) or a simple +stream_ipg=N inter-byte gap; real-time ~6 Mbps at 27 MHz is ~1 byte per 36 cycles or one 2048-byte sector every ~74k clk cycles. This also converts the decoder's vbuf DDR writes from a steady trickle into HW-like sector bursts at mem_shim.",
+    "evidence": "core/sim/memshim/tb_memshim.v:70-87"
+   },
+   {
+    "fact": "The sim-vs-HW attribution premise is structural: the harness reuses the proven core/sim decode path byte-for-byte and swaps ONLY the memory controller (mem_ctl.v -> mem_shim.sv + ddr3_model.v), so any divergence is attributable to shim/DDR timing; prior results: conformant slave decodes byte-identically across zero-lat/lat8/wait4/harsh, while +ddr_drop/+ddr_dup reproduce a hang.",
+    "evidence": "core/sim/memshim/Makefile:1-13; core/sim/memshim/README.md:18-29,46-50"
+   }
+  ],
+  "gaps": [
+   "The exact original launch command lines (MIN_FRAMES/MAX_WAIT and full plusarg strings) are not recorded anywhere: run_memshim.sh echoes plusargs to the console only, not into run.log \u2014 knob values were reconstructed from the ddr3_model banner printed at sim start plus docs/HANDOFF-2026-07-01-signaltap-writewedge.md:161-170.",
+   "Whether the dense NTSC-clip runs were built with a different MODELINE than the Makefile default (MODELINE_PAL_INTERL, Makefile:37) is not discoverable from the run dirs \u2014 compile flags are not logged into run.log.",
+   "Real f2sdram bridge timing (actual latency distribution, refresh behavior, burstiness, whether HPS-side traffic contends on the same port) has no in-tree spec \u2014 the ddr3_model knob values are behavioral guesses, so 'sim covers X' never implies 'HW behaves like X'; only the blind-spot direction (sim does NOT model it) is certain.",
+   "Wall-clock to a FULL multi-frame dense-clip decode was not measured \u2014 all dense runs were killed at 2 framestore dumps (~1 min); only greyramp 3-frame runs (~2.5-3 min) are directly evidenced by mtimes.",
+   "Whether the sim's active display-read path exercises the same TIMING/priority mix as HW scanout (real 27 MHz pixel-rate fetch against a contended controller) is unverifiable in this harness \u2014 the arbitration RTL is identical but the memory-side service times are the model's, and no non-decoder master exists.",
+   "run_dense_* used a 1,996,106-byte stream.dat (matches the HW clip size) while the CURRENT core/sim/memshim/stream.dat is the 622,221-byte greyramp \u2014 a dense rerun must regenerate stream.dat first; which exact .m2v produced the dense stream.dat is inferred from the handoff doc (tools/testclips/test480i_ntsc.m2v), not from the run dir itself."
+  ],
+  "recommendations": [
+   "Add the four coverage extensions in this order, matched to the HW candidate classes: (b) refresh-like all-hold gaps and (a) plusarg-seeded latency spikes in ddr3_model.v first \u2014 they are the cheapest edits (one file) and directly test the 'bursty/refresh DDR latency' class that the current fixed+uniform model structurally cannot produce.",
+   "Implement (d) sector-paced stream delivery in tb_memshim.v next: it is a ~15-line edit and uniquely reshapes the decoder's vbuf WRITE traffic into HW-like bursts, which interacts with the write-path candidates; pace at the real clip bitrate (2048-byte burst every ~74k clk cycles for ~6 Mbps).",
+   "For (c), start with the traffic-shaping version inside ddr3_model.v (background load stealing acceptance slots + inflating latency) before building a true second-master arbiter \u2014 it exercises the same shim-visible symptom (longer, clustered service times) at a fraction of the edit cost.",
+   "When rerunning the age-gate baseline for comparison, always run BOTH +ddr_wait_period=0 and =2 (the 1-deep command slice historically passed wp0 but dropped writes at wp2, per docs/HANDOFF-2026-07-01-signaltap-writewedge.md:171-173), keep MIN_FRAMES=3, and gate correctness on byte-identical framestore ppm/Y-plane hashes vs the baseline run rather than 'a frame appeared'.",
+   "Given the HW signature (decode writes stop while reads continue at ~32k/s and resp_timeout never fires), prioritize sim scenarios that can starve or gap the WRITE path specifically \u2014 e.g. refresh holds aligned against write attempts, and latency spikes landing while outstanding_reads is at the READ_LIMIT=4 cap \u2014 since the conformant model already proved plain slowness is absorbed by backpressure.",
+   "Record launch command lines into the run dir (echo \"${PLUSARGS[*]}\" > \"$RUNDIR/cmdline\" in run_memshim.sh around line 31) so future forensic passes do not have to reconstruct knobs from banners."
+  ]
+ },
+ "clientMap": {
+  "summary": "The single memory queue mem_shim serves is filled by an 8-way priority arbiter in framestore_request.v (there is no mem_ctl.v in this port \u2014 mem_shim.sv IS the memory controller): refresh (compile-time dead) > disp (display read) > vbr (bitstream readback) > fwd > bwd (motion-comp reads) > vbw (stream-in write) > recon (decoded-macroblock write) > osd (dead, regfile tied off). Display pixels DO come from the framestore through this same queue and mem_shim (no separate framebuffer; VGA_* is wired straight off the decoder raster), needing ~5.18M 64-bit reads/s (~41 MB/s) at 720x480i once \u2014 and only once \u2014 a first decoded frame is handed off (output_frame_valid); before that the display path issues ZERO memory reads, and on data underrun it just paints black and resyncs (no deadlock). The response-FIFO-overflow candidate is arithmetically killed: prog_full asserts with 64 of 128 slots still free, in the shim's own clock domain, while at most READ_LIMIT=4 responses can still land. The full UART field map is recovered, including the \"mystery\" fields: Y=E74 is just img_size[19:8] of the 1.99 MB clip, I:1FF = RAM-init complete, N:3 = video-active latch saturation, BL = cycles DDRAM_BUSY was high (its \"checksum\" label in uart_debug.sv is stale), and @ = last DDRAM word address \u2014 which directly discriminates what the post-stall ~32k reads/s are hitting (vbuf window 0x061C0000-0x061EFFFE = bitstream reads vs. frame windows = motion-comp/display).",
+  "facts": [
+   {
+    "fact": "There is no mem_ctl.v in either RTL tree; the memory-controller role is split into framestore_request.v (arbiter), framestore.v (the three FIFOs), framestore_response.v (de-mux), and mem_shim.sv (the actual DDR3 controller). The Quartus build compiles the copy under core/MiSTer_MPEG2/rtl/mpeg2/, not the mpeg2fpga submodule",
+    "evidence": "core/MiSTer_MPEG2/mpeg2fpga.qsf:44-84 (VERILOG_FILE rtl/mpeg2/...); ls of both rtl/mpeg2 dirs; diff shows both copies identical except mixer.v (clk_en port added) and xilinx_fifo_dc.v"
+   },
+   {
+    "fact": "Complete client list into the single mem_request_fifo, with issuing module: disp = display read (resample_addrgen.v via disp_reader, mpeg2video.v:1456); vbr = circular-video-buffer read feeding getbits (addresses generated inside framestore_request.v:436-453); fwd/bwd = motion-comp reference reads (motcomp via fwd_reader/bwd_reader, mpeg2video.v:1353/1391); vbw = stream-input write into the circular buffer (vbuf_write -> vbuf_write_fifo, mpeg2video.v:601-631); recon = reconstructed-macroblock write (motcomp -> recon_writer, mpeg2video.v:1427); osd = OSD write (regfile -> osd_writer, mpeg2video.v:1492); plus the reset-time STATE_CLEAR whole-framestore write sweep (framestore_request.v:200,395-408, FRAME_0_Y..VBUF_END ~2.03M writes \u2014 accounts for most of the observed ~2.29M W)",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v, mpeg2video.v at cited lines"
+   },
+   {
+    "fact": "Arbitration priority (highest first): refresh > disp > vbr > fwd > bwd > vbw > recon > osd \u2014 decode writes (recon) are the second-LOWEST priority client; the priority encoder is the next-state chain in framestore_request.v:209-217 with do_* qualifier terms at :479-486",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:162-176 (comment), :209-217 (encoder), :479-486 (do_refresh/do_disp/do_vbr/do_fwd/do_bwd/do_recon/do_vbw/do_osd)"
+   },
+   {
+    "fact": "Two clients are dead on this core: refresh never fires (REFRESH_EN parameter defaults 0 and framestore.v's instantiation does not override it; do_refresh requires REFRESH_EN; mem_shim treats CMD_REFRESH as NOOP anyway), and OSD writes never occur (emu.sv ties reg_wr_en=1'b0)",
+    "evidence": "framestore_request.v:126-127,479; framestore.v:249-305; mem_shim.sv:285-289,332; core/MiSTer_MPEG2/rtl/emu.sv:382-386"
+   },
+   {
+    "fact": "Display pixels come from the framestore THROUGH mem_shim \u2014 there is no separate framebuffer/scaler path: motcomp output_frame -> resample_addrgen -> disp_reader -> framestore_request (disp = top live priority) -> mem_request_fifo -> mem_shim -> f2sdram, back via mem_response_fifo -> framestore_response -> resample -> pixel_queue -> mixer -> yuv2rgb -> VGA_*; emu.sv registers the core raster directly onto VGA_R/G/B with VGA_SCALER=0 and no FB_* usage",
+    "evidence": "mpeg2video.v:989-1056 (resample->pixel_queue), :1456-1482 (disp_reader); emu.sv:99 (VGA_SCALER=0), :510-539 (VGA_* from core raster)"
+   },
+   {
+    "fact": "Display fetch rate at 720x480i: resample_addrgen issues exactly 8 x 64-bit reads per 16-pixel macroblock column per displayed line (states WR_OSD_MSB/LSB, WR_Y_MSB/LSB, WR_U_UPPER/LOWER, WR_V_UPPER/LOWER \u2014 the OSD plane is fetched even with OSD disabled), i.e. 45x8=360 reads/line x 240 lines/field x 59.94 fields/s ~= 5.18M reads/s ~= 41.5 MB/s, self-paced by disp_wr_addr_almost_full/resample_wr_almost_full against the 13.5 MHz dot-rate drain (dot_ce = 27 MHz/2, emu.sv:173-183; NTSC_INTERL modeline 858x525 @13.5 MHz)",
+    "evidence": "resample_addrgen.v:186-203 (8 WR states + WAIT gate), :558-573 (disp_valid_in per state); modeline.v:111-133; emu.sv:173-183"
+   },
+   {
+    "fact": "The display path issues ZERO memory reads until the first decoded picture is handed off: resample_addrgen sits in STATE_INIT until output_frame_valid (which motcomp_picbuf asserts on picture-buffer update); after the first handoff, persistence defaults to 1 so the last image is re-displayed (and re-fetched at full rate) indefinitely",
+    "evidence": "resample_addrgen.v:172-181 (STATE_INIT/STATE_REPEAT); regfile.v:463 (persistence <= 1'b1 at hard_rst)"
+   },
+   {
+    "fact": "Display underrun is benign by construction: if disp data starves, pixel_queue empties, mixer sees pixel_rd_underflow and drops to STATE_INIT, emitting default black (y=16,u=v=128) until the next frame's first pixel; syncgen free-runs on dot_clk/dot_ce independent of memory, so raster timing never depends on DDR",
+    "evidence": "mixer.v:131,136 (underflow -> STATE_INIT), :210-222 (black default); mpeg2video.v:1058-1087 (syncgen_intf has no memory-side inputs)"
+   },
+   {
+    "fact": "The observed post-stall ~32k reads/s matches NEITHER display-active (~5.18M/s) nor display-off (0); since frame 0 never completed, the output_frame_valid handoff plausibly never occurred, leaving vbr (bitstream readback, paced by getbits consumption: do_vbr requires vbuf non-empty AND vbr_rd_almost_empty i.e. getbits fifo below 32 words) or fwd/bwd as the only code-possible sources of a sustained low-rate read stream",
+    "evidence": "framestore_request.v:481 (do_vbr gating); fifo_size.v:108 (VBUF_RD_THRESHOLD=32); resample_addrgen.v:172-173 (no disp reads before handoff)"
+   },
+   {
+    "fact": "Response-FIFO overflow is arithmetically impossible: mem_response_fifo is 128 deep (MEMRESP_DEPTH=9'd7) with prog_thresh=64 (MEMRESP_THRESHOLD), and prog_full asserts when FREE space <= 64 \u2014 i.e. with 64 slots still open \u2014 computed in the wr_clk=mem_clk domain (mem_shim's own clock, conservative synchronized read pointer); mem_shim stops pulling commands on almost_full but at most READ_LIMIT=4 outstanding read responses (+1 held ADDR_ERR synthetic) can still arrive, so max fill ~69 of 128. A hypothetical overflow would silently drop the word (do_write = wr_en & ~full) and pulse mem_res_wr_overflow, which goes only to the probe module, not the UART",
+    "evidence": "fifo_size.v:214-215; framestore.v:396-418 (instantiation, FIFO_XILINX(1)); xilinx_fifo_dc.v:14-15,135-163 (prog_full <= wr_free <= prog_thresh; do_write gating); mem_shim.sv:144 (READ_LIMIT=4), :196-207 (unconditional response write), :236,292,337 (issue gated on almost_full)"
+   },
+   {
+    "fact": "The response FIFO drain is framestore_response at clk=27 MHz, max 1 word per 3 cycles (~9M words/s, >> arrival bound); the drain stalls only when a destination data fifo is FULL (fwd/bwd/disp dta full, vbr_wr_full) or the tag fifo is empty \u2014 and that stall feeds back through almost_full to stop the shim issuing, closing the loop before overflow",
+    "evidence": "framestore_response.v:110 (fifos_not_ready), :125-130 (WAIT/READ/WRITE 3-cycle loop), :148 (mem_res_rd_en gated on fifos_ready)"
+   },
+   {
+    "fact": "mem_shim's WRITE-GATE holds ALL writes whenever resp_timer >= WGATE_SUSPECT=128 mem_clk cycles with any read outstanding, releasing only on a response arrival (resp_timer reset) or the 16383-cycle resp_timeout; a fixed-latency-30 sim can never engage this path, making it a structurally sim-invisible, HW-only write-stall mechanism \u2014 but with U:0 and PC:0000 (wedged=0, recovery_count=0) the shim-level gates were NOT terminally engaged post-stall, so the write stoppage originates upstream (no recon requests reaching the queue)",
+    "evidence": "mem_shim.sv:164-166 (WGATE_SUSPECT, read_stuck, reads_outstanding), :210-213 (resp_timer reset on any response), :243-248,298-302 (write hold), :392-396,447 (PC = {wedged, lock_cmd(2), lock_outstanding(6), recovery_count(7)})"
+   },
+   {
+    "fact": "sd_* sector pacing is purely demand-driven with no timeouts: mpg_streamer keeps one 512-byte sector request in flight into a 16 KB circular BRAM cache, and drains 1 byte/27 MHz-cycle to the decoder whenever busy is low; busy = vbw_wr_almost_full || reset || init_cnt!=0x1FF, so ingest can only be slowed by the decoder, never the reverse (mpg_streamer cannot stall decode except by cache-empty data underrun)",
+    "evidence": "mpg_streamer.sv:44-56 (16KB cache, sector accounting), :116-121 (single sector_pending), :168-171 (1 byte/cycle when !busy); mpeg2video.v:544-546 (busy definition)"
+   },
+   {
+    "fact": "UART field map, group 1 (single-bit status, uart_debug.sv:181-261 with drivers in emu.sv:542-586): L=pll locked (1b); A=core_video_active (>=3 vsync edges, emu.sv:469); B=core busy (vbw fifo backpressure/init, mpeg2video.v:546); V=stream_valid (streamer byte strobe); S=sync_rst (1=decoder running); F=vbw_almost_full; E=mem_req_rd_en (shim pulling FIFO); Q=mem_req_rd_valid; R=mem_res_wr_almost_full; U=ddr3_waitrequest (mem_shim.sv:442); K=ddr3 command accepted this cycle (mem_shim.sv:443); T=streamer active; D=sd_rd pending; C=sd_ack; H=streamer cache has data; G=vld_err (VLD bitstream error, emu.sv:577); O=watchdog fired, latched between prints (uart_debug.sv:127-128,162)",
+    "evidence": "core/MiSTer_MPEG2/rtl/uart_debug.sv:104-136 (legend + char table); emu.sv:542-586 (port hookup)"
+   },
+   {
+    "fact": "UART field map, group 2 (multi-digit): X(3 hex)=img_mounted_cnt, count of OSD-mount pulses (emu.sv:274,548); Y(3 hex)=current_file_size[19:8] \u2014 Y:E74 means img_size ~0x1E74xx = 1,995,776-2,096,031... precisely 1,995,776-1,996,031 bytes ~1.99 MB, arithmetically consistent with Z=J=0xF3B (3899 sectors x 512 = 1,996,288 ceiling): Y is the CLIP SIZE, not a mystery constant; I(3 hex)=init_cnt, 9-bit power-on RAM-init counter \u2014 I:1FF = init complete and is its permanent parked value (mpeg2video.v:539-548); M(1 hex)={debug_cmd[1:0],saved_valid,state}: 0=NOOP/IDLE,1=NOOP/WAIT,9=READ/WAIT,D=WRITE/WAIT,F=WRITE/WAIT+skid (mem_shim.sv:427-440) \u2014 M appears once; the earlier 'M(dup)' in the legend is the same char position; SC(1 hex)=skid-buffer command (0=none,2=READ,3=WRITE, mem_shim.sv:441)",
+    "evidence": "emu.sv:268-288 (X/Y diagnostic block), :548-549; mpg_streamer.sv:74-75; mpeg2video.v:539-548; mem_shim.sv:427-441"
+   },
+   {
+    "fact": "UART field map, group 3 (counters): W(4 hex,16-bit)=DDR writes accepted (mem_shim.sv:374,383); P(4 hex,16-bit)=DDR reads accepted (:373,382); RP(4 hex,16-bit)=read responses (registered readdatavalid pulses, :384); PC(4 hex)=packed lock probe {wedged(1),lock_cmd(2),lock_outstanding(6),recovery_count(7)} \u2014 PC:0000 = never wedged AND zero timeout recoveries (:392-396,447); J(4 hex)=streamer next_lba[15:0]; Z(4 hex)=total_sectors[15:0] (mpg_streamer.sv:182-183); @(8 hex)=DDRAM_ADDR, the LAST 29-bit 64-bit-word address on the bridge = 0x06000000 + core word address, so @ in [0x061C0000,0x061EFFFE] = vbuf/bitstream window and @ < 0x061C0000 = frame stores (mem_codes.v:175-191 MP_AT_HL map: VBUF=0x1C0000, VBUF_END=0x1EFFFE, ADDR_ERR=0x1EFFFF; mem_shim.sv:251 address formula); N(1 hex)=core_vs_edge_cnt which STOPS counting at 3 by design once core_video_active latches \u2014 N:3 is the expected steady state, not an anomaly (emu.sv:467-482); FC(4 hex)=free-running vsync-edge counter = field counter, ~60/s at 480i (emu.sv:484-485)",
+    "evidence": "mem_shim.sv:369-396,440-447; mpg_streamer.sv:176-184; emu.sv:467-487,581; mem_codes.v:175-191; uart_debug.sv:263-341"
+   },
+   {
+    "fact": "UART field map, group 4 (32-bit pin probes \u2014 the uart_debug.sv port comments for these are STALE; the authoritative drivers are the emu.sv counter block): VL=raw DDRAM_DOUT_READY pulses at the bridge pin (emu.sv:345,356); VN=raw reads accepted at the pin (DDRAM_RD & ~DDRAM_BUSY, :346,357); BL=cycles DDRAM_BUSY was HIGH (bridge busy/stall duration, :347,358) \u2014 NOT a bitstream checksum despite uart_debug.sv:44's label; BN=raw writes accepted at the pin (:348,359). These are the only non-wrapping (32-bit) rate sources; W/P/RP are 16-bit and wrap every ~2 s at the observed ~32k/s",
+    "evidence": "emu.sv:338-361 (probe block + stale-label warning in comments), :582-585; uart_debug.sv:42-45 (stale labels)"
+   },
+   {
+    "fact": "The watchdog (default interval 127 => ~4.97 s timeout at 27 MHz) only counts while busy is CONTINUOUSLY asserted; because ingest ran to end-of-clip (vbw writes kept draining, so busy=vbw_almost_full kept deasserting), a decoder-internal stall with completed ingest will NOT fire the watchdog \u2014 consistent with the core sitting stalled indefinitely with no self-reset",
+    "evidence": "watchdog.v:23,137-146 (decoder_active <= ~busy || ...); regfile.v:171,273 (DEFAULT_WATCHDOG_TIMER=127); mpeg2video.v:546"
+   },
+   {
+    "fact": "mem_shim is NOT reset by the decoder watchdog: emu.sv wires mem_shim.rst_n = reset_n (locked & ~RESET) while the decoder's sync_rst incorporates watchdog_rst; the framestore_response 65536-cycle STATE_FLUSH after a watchdog reset is the designed mechanism for discarding in-flight responses that survive in the un-reset shim/FIFOs",
+    "evidence": "emu.sv:161,427; framestore_response.v:95-122 (STATE_FLUSH); framestore.v:104-118 (reset-behavior comment)"
+   }
+  ],
+  "gaps": [
+   "What the sustained post-stall ~32k reads/s actually targets cannot be established from code: the read-tag mix (disp/vbr/fwd/bwd) is not on the UART, and the rate matches neither display-active (~5.18M/s) nor display-off (0). The @ field (last DDRAM_ADDR) from the existing gate logs would discriminate vbuf-window (0x061C0000-0x061EFFFE = bitstream/vbr) vs frame-store addresses (fwd/bwd/disp), but the captured @ values were not provided.",
+   "Whether output_frame_valid (first picture handoff to the display path) ever asserted on hardware is not observable on the current UART \u2014 A/N/FC only prove the syncgen raster is alive, which is memory-independent. Since frame 0 never completed, handoff status is inferred-likely-never, not proven.",
+   "The real f2sdram latency distribution (refresh bursts, scanout-independent HPS traffic) is a hardware property, not in this codebase; the code shows the WGATE (>=128-cycle response gap) write-hold path is structurally unreachable in a fixed-lat30 sim, but whether HW actually enters it repeatedly cannot be confirmed from code.",
+   "The 'display/scanout fetch load' candidate class can be neither fully confirmed nor killed from code alone: code proves it is zero before the first frame handoff and ~5.18M reads/s after; which regime the stalled board is in depends on the unobserved handoff.",
+   "The sim testbench configuration (whether the Verilator/iverilog baseline exercises concurrent display fetch and vbr traffic identically to HW) was not inspected \u2014 outside the file set for this task.",
+   "uart_debug_v2.sv exists but is not in the .qsf, so the field map above is for uart_debug.sv only; if a gate build ever swapped in v2 the legend would differ."
+  ],
+  "recommendations": [
+   "Decode the @ field from the existing two gate-run logs first \u2014 zero new builds needed: @ >= 0x061C0000 during the post-stall 32k reads/s window means the residual reads are vbr/bitstream (getbits still consuming => VLD alive but decode pipeline blocked downstream), while @ in the frame-store range means fwd/bwd motion-comp reads (motcomp looping) \u2014 this single datum splits the remaining hypothesis space in half.",
+   "Measure all rates from the 32-bit pin counters VN (reads accepted) and BN (writes accepted), never from 16-bit P/W/RP which wrap every ~2 s at 32k/s; also use BL deltas per 1 s print to get the bridge-busy duty cycle post-stall (high BL delta with low VN delta = bridge slow; low BL = demand-limited).",
+   "Given U:0 and PC:0000 post-stall, stop investigating the shim/bridge for the write stoppage: no writes are being PRESENTED (recon_rd_empty upstream), so instrument the decoder pipeline boundary instead \u2014 surface framestore_request's do_disp/do_vbr/do_fwd/do_bwd/do_recon (or tag_wr_dta) plus resp_timer max-watermark and outstanding_reads on spare UART fields or SignalTap to see which client is live and which starved at the degradation onset.",
+   "To close the sim-vs-HW gap for the two code-confirmed sim-invisible mechanisms: (1) add a bursty-latency mode to the sim shim model that injects periodic >=128-cycle response gaps to exercise the WGATE write-hold path (mem_shim.sv:164-166), and (2) force an early output_frame_valid in sim so the ~5.18M reads/s display fetch competes with recon writes under the disp>recon arbitration priority (framestore_request.v:209-217) \u2014 the two HW-only load regimes the lat30 baseline never sees.",
+   "Surface mem_res_wr_overflow / mem_req_wr_overflow / tag_wr_overflow (currently probe-only, framestore.v:420-446) on UART as sticky bits \u2014 the overflow class is arithmetically ruled out for mem_res, but a LOUD flag costs one bit and permanently retires the question for all three FIFOs, consistent with the no-masking doctrine.",
+   "The boot-to-boot-varying degradation row (16-23 vs 24-31) plus near-bit-perfect slice 1 points at a timing-marginal or latency-order-sensitive interaction rather than a logic bug; when instrumenting, latch the FIRST-divergence context (tag, @, outstanding_reads, resp_timer) at the moment recon writes stop rather than sampling 1 Hz snapshots."
+  ]
+ },
+ "vldMap": {
+  "summary": "The vbuf ring is guarded purely by REQUEST ORDER, not write completion: a VBR read for an address is only enqueued after the VBW write request entered the same single in-order mem_request FIFO, and the shim issues one command at a time \u2014 so with a truly coherent in-order memory no read-behind gap exists in RTL; the only residual hazard is the f2sdram bridge serving a read stale relative to an already-accepted posted write, which the sim DDR3 model cannot exhibit by construction (it snapshots coherent memory at accept time). On garbage input the VLD does not wedge: it enters a byte-per-step start-code resync scan that consumes the stream while writing nothing, and a (spurious or real) SEQUENCE_END code clears sequence_header_seen so ALL subsequent slices are silently ignored until a new sequence header \u2014 a consume-everything/write-nothing terminal state with no error flag; separately, out-of-range macroblock addresses are clamped to ADDR_ERR whose writes the shim silently drops (never counted in W). The ingress chain (mpg_streamer -> vbuf_write -> vbw FIFO) has no byte-drop point: the streamer gates on busy with a 128-word FIFO margin and at most one in-flight byte. The freeze-class failures (vld_en stuck on motcomp_busy etc.) are killed by the observables: they would halt ingest before end-of-clip and trip the watchdog (~1.2 s at 27 MHz, default-enabled), which would fire a full ~2.03M-word memory re-clear visible as a W jump; instead the numbers (clip 1.99 MB > ring 1.57 MB, W\u22482.29M \u2248 2.03M clear + 249k ingest + ~1 slice recon) prove the decoder kept CONSUMING ~0.4 MB after corruption onset while writing nothing. The failure sequence consistent with all constraints is: boot-varying data corruption on the vbuf DDR round-trip (RAW staleness or electrical) -> VLD desync early in slice 2 -> resync-scan / sequence-end gate-off / ADDR_ERR-clamped writes -> full stream consumed -> getbits clean-starves -> only the free-running display fetch keeps reading forever.",
+  "facts": [
+   {
+    "fact": "vbuf_wr_addr increments the cycle the VBW request is ENQUEUED into the memory request FIFO (previous==STATE_VBW && vbw_rd_valid), not when the DDR write completes; there is no write-completion tracking anywhere in the ring logic.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:432 (increment), :383 (mem_req_wr_en same condition)"
+   },
+   {
+    "fact": "Ring fill/empty is pure pointer comparison: vbuf_empty=(wr==rd), vbuf_full=(wr+1==rd), registered one cycle later; do_vbr additionally requires ~vbuf_holdoff (no back-to-back VBW/VBR, protecting the 1-cycle flag lag) and vbr_rd_almost_empty (refill only when getbits-side FIFO fill <32 of 256).",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:439-443,477,481; fifo_size.v:107-108"
+   },
+   {
+    "fact": "Reads and writes share ONE in-order request FIFO and the shim executes them strictly one-at-a-time in FIFO order (waitrequest handshake per command; the WRITE-GATE and READ_LIMIT only HOLD the FIFO head, never reorder), so a vbuf read always reaches the bridge after its write was accepted \u2014 the read-behind guard is request-order only.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore.v:343-364 (single mem_request_fifo); core/MiSTer_MPEG2/rtl/mem_shim.sv:226-362 (single FSM, in-order)"
+   },
+   {
+    "fact": "getbits on an EMPTY ring stalls cleanly: STATE_INIT waits for vid_in_rd_valid, getbits_valid and vld_en deassert (freezing VLD), and the FIFO primitive ignores rd_en-while-empty without corrupting pointers \u2014 there is NO path that hands getbits junk or an unwritten word from an empty ring.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/getbits.v:75,135,154-157; xfifo_sc.v:79,119-120"
+   },
+   {
+    "fact": "The sim DDR3 model captures read data AT ACCEPT TIME from a coherent memory array (rsp_data <= mem[word_addr]), so read-after-write staleness at the bridge is structurally impossible in sim \u2014 this is the exact ordering property the vbuf guard depends on and the sim does not test.",
+    "evidence": "core/sim/memshim/ddr3_model.v:356 (rsp_data[free_slot] <= mem[word_addr]); ddr3_model.v:327 (write commits at accept)"
+   },
+   {
+    "fact": "VLD error handling is resync-by-scan: STATE_ERROR and STATE_DCT_ERROR both set vld_err then fall into STATE_NEXT_START_CODE, which byte-aligns and consumes ONE BYTE PER VLD STEP (~1 byte per 2 clk_en, since VLD and getbits alternate) writing nothing, until 24'h000001 is found; it can therefore consume the entire remaining stream if start codes never appear in what it reads.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/vld.v:795,799,934-938 (error paths), :512,901,810 (scan/align, advance=0); getbits.v:145-151 (alternation)"
+   },
+   {
+    "fact": "vld_err is SELF-CLEARING the moment the FSM reaches STATE_NEXT_START_CODE, i.e. it is a transient pulse; the UART G field samples it UNLATCHED at print-capture time, so G:0 in the logs does NOT prove no VLD error occurred (unlike O=watchdog, which IS latched).",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/vld.v:936; core/MiSTer_MPEG2/rtl/uart_debug.sv:161,302-304 (G sampled), :127-128,162-163 (O latched)"
+   },
+   {
+    "fact": "A SEQUENCE_END start code (0x000001B7 \u2014 real or produced by corrupted ring data) clears sequence_header_seen, sequence_extension_seen and picture_header_seen; afterwards ALL slice start codes are routed straight back to STATE_NEXT_START_CODE until a new sequence header+extension arrives \u2014 a legal-looking, error-flag-free state that consumes the whole remaining stream while writing nothing.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/vld.v:522,797 (B7 -> STATE_SEQUENCE_END), :945,951,957 (flags cleared), :548-549 (slices ignored without flags)"
+   },
+   {
+    "fact": "Out-of-range macroblock/motion addresses are clamped to ADDR_ERR by mem_addr, and the shim SILENTLY drops ADDR_ERR writes (and synthesizes 0 for ADDR_ERR reads) without them ever reaching the DDR pins \u2014 so a desynced decoder actively 'decoding' garbage produces ZERO counted writes (W counts only pin-accepted writes).",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/mem_addr.v:1273; core/MiSTer_MPEG2/rtl/mem_shim.sv:239-241,295-297 (write drop), :258-276,311-324 (read synth); mem_shim.sv:373-384 (W counts wr_accepted only)"
+   },
+   {
+    "fact": "The watchdog fires ONLY on stuck-FULL (busy = vbw FIFO prog_full at fill>=128, held continuously ~2^25 clk \u2248 1.24 s @27 MHz with the default interval 127, which is in force since reg_wr_en is tied 0); a STARVED decoder (busy low) never trips it. Expiry would pulse sync_rst and force framestore_request through STATE_CLEAR, rewriting FRAME_0_Y..VBUF_END \u2248 2.03M words \u2014 a ~2M jump in W that was NOT observed, proving busy never stayed high.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/mpeg2video.v:546 (busy), :1515-1520; watchdog.v:121,146,153-157; regfile.v:171,273; emu.sv reg_wr_en=1'b0; framestore_request.v:199-201,400 (clear range)"
+   },
+   {
+    "fact": "The stream ingress chain has NO silent drop point: mpg_streamer emits at most 1 byte per 2 clk gated on !busy (worst case one in-flight byte after busy asserts), busy asserts with 128 free words (1 KB) still in the 256-deep vbw FIFO, vbuf_write shifts every valid byte, and the FIFO primitive's overflow guard preserves contents; the only loss is a final partial (<8-byte) tail word never flushed from vbuf_write's 64-bit packer at end of stream.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpg_streamer.sv:161-171 (busy gate, pipeline); mpeg2video.v:546,616-629; fifo_size.v:105-106; xfifo_sc.v:61,124; vbuf.v:53-67 (8-byte packing, no flush)"
+   },
+   {
+    "fact": "Sector pacing sim-vs-HW: the sim testbench feeds bytes DIRECTLY at 1 byte/clk gated only on busy \u2014 no mpg_streamer, no 512-byte sector bursts, no HPS sd_ack latency, no 16 KB cache; on HW the streamer requests a sector only when a full sector of cache room exists and advances on the sd_ack falling edge. Both sides honor busy identically, so pacing changes arrival TIMING only; an HW underrun clean-stalls getbits rather than corrupting.",
+    "evidence": "core/sim/memshim/tb_memshim.v:80-86; core/MiSTer_MPEG2/rtl/mpg_streamer.sv:56,108-121"
+   },
+   {
+    "fact": "Response-FIFO overflow is impossible in the current code: the shim refuses to pull ANY command while mem_res_wr_almost_full (threshold = 64 free of 128), and at most READ_LIMIT=4 reads are in flight, bounding fill at ~68 < 128; framestore_response applies full-stop backpressure (stops draining only when a destination FIFO is FULL) and never drops.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mem_shim.sv:144,236,292; fifo_size.v:214-215; framestore_response.v:110-126,148"
+   },
+   {
+    "fact": "Tag/data misrouting (which would corrupt getbits input globally) requires an extra or missing response; the only in-code sources are resp_timeout synthesis (observed: never fired) and a bridge drop (observed: RP==P), so this class is dead for these runs. The dual-clock FIFOs are a standard 2-stage-synchronized Gray-pointer design with guarded pointers (and 27/108 MHz are same-PLL multiples), no code-level flaw found.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mem_shim.sv:137,199-207,217-221; framestore_response.v:249-253 (1:1 tag/data pairing); core/MiSTer_MPEG2/rtl/mpeg2/xilinx_fifo_dc.v:70-200"
+   },
+   {
+    "fact": "Capacity arithmetic forces the conclusion that the decoder CONSUMED ~0.4 MB after corruption onset: the vbuf ring holds 0x2ffff words = 1.573 MB (VBUF 22'h1c0000..VBUF_END 22'h1efffe, MP_AT_HL mapping active), plus 16 KB streamer cache + 2 KB vbw + 2 KB vbr \u2248 1.594 MB total buffering, vs the 1.996 MB clip (0xF3B\u00d7512) that fully ingested (J==Z). W\u22482.29M matches 2.03M clear + 249k vbuf-ingest writes + ~1 slice of recon, confirming ingest-to-ring continued while decode-output writes were silent.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/mem_codes.v:176,190-191; mpg_streamer.sv:46-48; fifo_size.v:105-108; framestore_request.v:400 (clear from FRAME_0_Y)"
+   },
+   {
+    "fact": "The perpetual ~32k/s reads after write-silence are code-consistent ONLY with the display path: chroma-resample/disp read requests are generated by the free-running syncgen (dot_ce ticks regardless of decode state) and disp has the highest arbitration priority; vbr reads stop when the ring is empty, fwd/bwd stop when motcomp idles.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:210,480 (disp priority/gating); emu.sv mpeg2video_inst .dot_ce(ce_pix); framestore_request.v:481 (do_vbr needs ~vbuf_empty)"
+   },
+   {
+    "fact": "Ranked failure sequences consistent with (a) in-order memory, (b) no shim recovery, (c) full stream consumed, (d) permanent write silence, (e) reads forever: 1) corrupted vbuf-ring readback (bridge RAW staleness or electrical, boot-timing-dependent) -> VLD desync in slice 2 -> terminal consume-without-write via sequence-end gate-off and/or resync-scan and/or ADDR_ERR-clamped writes -> clean starvation; 2) same corruption entering via misdecoded headers driving all recon writes to ADDR_ERR (write-silent but still consuming); KILLED: vld_en freeze (halts ingest + trips watchdog, contradicting c/d), response-FIFO overflow (bounded), tag/data desync (RP==P), ingress byte drop (margins).",
+    "evidence": "synthesis of vld.v:548-549,797,945-957; mem_addr.v:1273; mem_shim.sv:144,236-241; getbits.v:156-157; watchdog.v:146; mpg_streamer.sv:168"
+   }
+  ],
+  "gaps": [
+   "Whether the HPS f2sdram bridge guarantees read-after-write coherency for a read accepted after a posted write to the same address on the same port \u2014 the entire vbuf ring guard rests on this ordering property; it is a bridge-internal behavior not expressible in the RTL, and the sim model is coherent-by-construction (ddr3_model.v captures read data at accept time), so sim-clean proves nothing about it.",
+   "The actual O (watchdog latched), G, F, B field values in the two gate runs' UART logs were not in the provided context; O:0 would independently confirm the watchdog never fired (killing the freeze class beyond the write-count argument), while O:1 would flip the analysis.",
+   "Which tag the residual ~32k/s reads carry \u2014 the UART P counter is tag-blind, so disp-vs-vbuf attribution is inferred from code structure, not measured.",
+   "Whether the corruption enters via the vbuf ring readback (bitstream corrupted) or via reference-frame reads (recon corrupted) \u2014 indistinguishable from code; needs a payload checksum compare (bytes into vbuf_write vs bytes out of getbits) or SignalTap on vbr_wr_dta.",
+   "The terminal VLD FSM state (NEXT_START_CODE-after-sequence-end vs starved mid-slice vs garbage-slice loop) is not observable: no VLD state, sequence_header_seen, or latched vld_err is exported on the UART.",
+   "The exact byte-arrival pacing of sd_ack on real HW (HPS service latency, burst cadence) is software/HPS-side and not in this repo's RTL; only its bounded-safety (no drops, clean stalls) is code-provable."
+  ],
+  "recommendations": [
+   "Before any new build, re-read the existing gate-run UART logs for O (watchdog, latched) \u2014 O:0 plus the stable W count closes the freeze class with zero cost; also check F/B history for whether busy ever asserted.",
+   "Export decisive VLD observability on unused UART fields: a LATCHED vld_err with an event counter, the VLD state byte, and sequence_header_seen \u2014 the current G field samples a self-clearing pulse and will almost always read 0 even after a desync (uart_debug.sv:161,302).",
+   "Add a ring round-trip checksum probe: CRC of bytes entering vbuf_write vs CRC of bytes getbits delivers to VLD (BL/BN-style counters already exist at the pins). One boot localizes the corruption to the DDR ring path (or exonerates it) without touching decode.",
+   "Test the RAW-staleness hypothesis directly: either SignalTap a write-then-read of the same vbuf address at the bridge (fabricore:signaltap flow), or as a cheap A/B build, hold VBR-region reads in the shim until N cycles after the last write acceptance to the same region \u2014 unlike the reverted global vbuf_fill>=256 gate, gate ONLY the VBR tag with a small window so decode cannot starve.",
+   "Teach the sim the missing hazard class instead of more latency knobs: add a +ddr_raw_stale=N mode to ddr3_model.v that returns pre-write data for reads accepted within N cycles of a write to the same address \u2014 if it reproduces the slice-2 desync + consume-to-end signature (including the sequence-end gate-off), the HW hypothesis is validated offline (sim-latency-oracle pattern).",
+   "Tag-discriminate the read counters (disp/vbuf/fwd/bwd) on spare UART bits to confirm the residual 32k/s reader is TAG_DISP, turning an inference into a measurement."
+  ]
+ },
+ "critique": {
+  "summary": "The three reports are individually strong but collide on the single most diagnostic HW observable: what the post-stall ~32k reads/s are. clientMap says the rate matches neither display-active (~5.18M/s) nor display-off (0) and infers the first-frame handoff never happened; vldMap says the perpetual reads are \"code-consistent ONLY with the display path,\" which requires that same handoff \u2014 both cannot be right, and my code check confirms display reads are strictly gated on output_frame_valid, so the contradiction is real and unresolved. Secondary contradictions: the watchdog timeout (clientMap's ~4.97s is wrong, the RTL comment pins 2^25 \u2248 1.24s at 27 MHz, vldMap correct), the WGATE being called \"structurally sim-invisible\" when the run_lat200 series (fixed latency 200 > WGATE_SUSPECT=128) necessarily engaged it constantly, and clientMap calling display-vs-recon contention an \"HW-only regime\" when simMap proves disp reads flow through mem_shim in every multi-frame sim run. The load-bearing unverified number is vldMap's \"W\u22482.29M\": W is a 16-bit counter that wraps every ~2s, so the entire capacity-arithmetic proof (\"decoder consumed ~0.4MB after corruption onset,\" \"full stream consumed,\" \"clean starvation\") rests on an unprovenanced figure that must be re-extracted from the gate logs (it can only have come from the 32-bit BN pin counter). Uncovered failure classes: no knob anywhere injects plain DATA corruption (the direct behavioral proxy for the placement-marginal hypothesis that is the project's actual leading blocker), no sim run has ever exercised the vbuf ring wrap (greyramp 622KB < 1.57MB ring; dense runs killed at 2 frames), boot-time init-ordering variance is unmodeled, and the ARM-side sd_* sector service payload correctness is outside all three scopes. The highest-information first experiment is a dense-clip full-consumption + post-stream soak pair (control arm with no faults, then a +ddr_corrupt_rd knob on vbuf-window reads), because nobody has ever observed the sim's healthy terminal state after stream end \u2014 without that baseline, no terminal-signature comparison to HW is meaningful.",
+  "facts": [
+   {
+    "fact": "CONTRADICTION 1 (decision-critical): clientMap claims the post-stall ~32k reads/s 'matches NEITHER display-active (~5.18M/s) nor display-off (0)' and infers output_frame_valid never asserted; vldMap claims those same reads are 'code-consistent ONLY with the display path', which structurally requires output_frame_valid. Verified in code: display reads are hard-gated on output_frame_valid (STATE_INIT waits for it), so exactly one report is wrong and the discriminator (the @ address field / read tag in gate logs) has not been read.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/resample_addrgen.v:172 (STATE_INIT: if (output_frame_valid) next = STATE_NEXT_IMG)"
+   },
+   {
+    "fact": "vldMap is also internally inconsistent on this point: its capacity arithmetic proves only >=0.4MB consumed after corruption onset (1.99MB clip vs 1.594MB total buffering), yet its summary asserts 'full stream consumed... getbits clean-starves' \u2014 if consumption stopped partway, the ring stays non-empty and vbr reads (not disp) could be the residual reader, which is clientMap's position.",
+    "evidence": "vldMap capacity fact vs vldMap summary; ring bounds at core/MiSTer_MPEG2/rtl/mpeg2/mem_codes.v:176,190-191"
+   },
+   {
+    "fact": "Numeric lead neither report noticed: ~32k reads/s is within a few percent of 2x the NTSC line rate (15,734 Hz x 2 = 31,468/s), i.e. roughly two reads per scan line \u2014 a line-paced residual reader would implicate the display/resample chain in a blocked-but-retrying state. Testable against gate logs with zero builds (VN deltas vs 31,468).",
+    "evidence": "emu.sv:346,357 (VN = 32-bit raw read-accept pin counter); rate arithmetic from clientMap's own 480i geometry"
+   },
+   {
+    "fact": "CONTRADICTION 2 (resolved): watchdog timeout at default interval 127 is ~1.24s at 27 MHz (vldMap correct), not ~4.97s (clientMap wrong by 4x, likely computed 2^27). The RTL comment states the timer_msb[2] tap corresponds to 2^25 cycles = 447ms @ 75MHz. Both reports' shared conclusion (watchdog never fired given ingest kept draining) is unaffected.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/watchdog.v:121 (timer_msb[2] tap), :155-156 (2**25, 447 ms @ 75 MHz comment)"
+   },
+   {
+    "fact": "CONTRADICTION 3: clientMap calls the mem_shim WGATE write-hold 'structurally sim-invisible, HW-only'; but simMap's recorded run_lat200 series used FIXED +ddr_rd_latency=200 > WGATE_SUSPECT=128 mem_clk cycles, so every outstanding read engaged the write-gate for ~72 cycles \u2014 the WGATE path HAS run in sim (constantly, decode-clean). What is genuinely untested is intermittent engage/release dynamics and gate-release racing a write, not the path itself.",
+    "evidence": "mem_shim.sv:164-166 (WGATE_SUSPECT=128) vs simMap run_lat200 banner facts; simMap's own 'lat200 proven' statement"
+   },
+   {
+    "fact": "CONTRADICTION 4: clientMap's recommendation premise that display-fetch-vs-recon contention is 'a load regime the lat30 baseline never sees' is falsified by simMap's evidenced fact that disp reads flow through mem_shim in sim: every multi-frame run (all baselines decode 3 frames) asserts output_frame_valid after frame 0 and runs the disp client concurrently with recon for frames 1+. The genuinely unsimmed regime is only the contention INTENSITY under realistic memory service times, not the client mix.",
+    "evidence": "core/mpeg2fpga/rtl/mpeg2/framestore.v:70-92 (disp in the single arbitration); core/sim/memshim/tb_memshim.v:315-359 (tv_out raster active)"
+   },
+   {
+    "fact": "LOAD-BEARING UNVERIFIED NUMBER: vldMap's 'W\u22482.29M' cannot have been read from W \u2014 wr_count is 16 bits and wraps every ~2s at the observed rates (verified: reg [15:0] wr_count). The value must come from BN (the 32-bit DDRAM_WE pin counter) or accumulated deltas; until its provenance is confirmed from the actual gate logs, the entire capacity-arithmetic chain (2.03M clear + 249k ingest + ~1 slice recon => consumed-0.4MB-post-onset => consume-without-write terminal state) is an unverified premise of the ranked failure sequence.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mem_shim.sv:370 (reg [15:0] wr_count); emu.sv:349,359 (core_bn_cnt is the only 32-bit write counter)"
+   },
+   {
+    "fact": "vldMap's core VLD mechanism claims all VERIFY: SEQUENCE_END clears sequence_header_seen (and the FSM shows slice start codes route to STATE_NEXT_START_CODE unless all three seen-flags are set \u2014 silent consume-without-decode), and vld_err self-clears on reaching STATE_NEXT_START_CODE so the unlatched UART G field is near-useless as a desync detector.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/vld.v:548-549 (slice gating), :945 (flag clear on SEQUENCE_END), :936 (vld_err self-clear)"
+   },
+   {
+    "fact": "vldMap's coherent-by-construction claim about the sim DDR model VERIFIES: reads capture mem[word_addr] at accept time and writes commit at accept, so bridge RAW staleness is unrepresentable. Caveat for simMap's proposed two-master arbiter (edit c): both commit and capture are nonblocking assignments, so a same-cycle write+read to one address would return STALE data \u2014 safe today only because the single-master waitrequest handshake serializes commands; an arbiter must preserve that or it silently changes coherence semantics.",
+    "evidence": "core/sim/memshim/ddr3_model.v:327 (mem[word_addr] <= writedata), :356 (rsp_data <= mem[word_addr] at accept)"
+   },
+   {
+    "fact": "Suspected blind spot KILLED by spot-check: ddr3_model ignoring ddr3_burstcnt is harmless because mem_shim hardwires burstcnt to 1 (assign ddr3_burstcnt = 8'd1), so no burst semantics exist to mismodel.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mem_shim.sv:62"
+   },
+   {
+    "fact": "Suspected blind spot KILLED by spot-check: there is no CDC on the stream-byte seam \u2014 mpg_streamer and mpeg2video are both clocked on clk_sys (27 MHz), and sd_ack is consumed via a same-domain registered edge detect (sd_ack_prev), so sector dup/skip from ack-edge metastability is ruled out at the RTL level. ARM-side payload correctness (wrong/stale sector CONTENT) remains outside all three reports' scope.",
+    "evidence": "core/MiSTer_MPEG2/rtl/emu.sv:294,373 (both .clk(clk_sys)); mpg_streamer.sv:83,95,108"
+   },
+   {
+    "fact": "UNCOVERED CLASS A \u2014 no data-corruption injection exists anywhere: every ddr3_model fault knob (drop/dup/reorder/lock/wedge) is a response-EVENT fault; nothing flips bits in rsp_data or writedata. Yet the project's standing leading HW hypothesis is WRITE-path placement marginality, whose behavioral signature is precisely occasional corrupted words \u2014 the one fault class the harness cannot express, and the one that directly feeds vldMap's ranked corruption->VLD-desync sequence.",
+    "evidence": "core/sim/memshim/ddr3_model.v:138-166 (complete knob inventory, no corrupt knob); memory: bridge-placement-marginal-root-cause"
+   },
+   {
+    "fact": "UNCOVERED CLASS B \u2014 the vbuf ring-wrap regime has plausibly never been simulated: the ring holds 0x2FFFF words = 1.573MB; the greyramp stream (622,221 payload bytes, verified: current stream.dat is 1,866,663 file bytes = 622,221 x 3-char hex lines) never wraps it, and the dense runs (1,996,106 payload bytes, preserved in run_dense_age_l30/stream.dat = 5,988,318 file bytes) were killed at 2 framestore dumps before full consumption. The HW clip guarantees wr-pointer wrap plus the special full-at-boundary compare ((wr==VBUF_END)&&(rd==VBUF)) in play; the wrap logic looks correct on inspection but has zero sim coverage, and stall onset 'early in slice 2' is temporally compatible with first ring-full/wrap.",
+    "evidence": "core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:432,436,440 (wrap + boundary-full logic); run_dense_age_l30/run.log:5 ($readmem ended at 1996106); wc -c stream.dat"
+   },
+   {
+    "fact": "UNCOVERED CLASS C \u2014 boot-time initialization variance: the degradation row varies boot-to-boot (16-23 vs 24-31), but sim always releases reset ideally at a fixed time with deterministic initial memory, a hardcoded LFSR seed, and stream feed starting at a fixed cycle; nothing sweeps mount-time vs STATE_CLEAR-sweep phase, PLL-lock ordering, or initial DDR contents. No report proposed a reset/start-phase sweep knob.",
+    "evidence": "core/sim/memshim/ddr3_model.v:152 (hardcoded seed 32'hACE1_2345); tb_memshim.v:70-87 (fixed-time stream start)"
+   },
+   {
+    "fact": "Minor discrepancy for byte-identical oracle work: the HW-mounted clip size decoded from Y:E74 is 1,995,776..1,996,031 bytes, but the sim dense stream payload is 1,996,106 bytes \u2014 75..330 bytes larger, i.e. the HW vdisk file and the sim elementary stream are NOT byte-identical (prep_stream padding/stripping or Y-field truncation semantics). Any oracle gating on exact byte counts or final-word behavior must reconcile this first.",
+    "evidence": "run_dense_age_l30/run.log:5 (1,996,106 payload); clientMap Y-field decode of emu.sv:268-288"
+   }
+  ],
+  "gaps": [
+   "The actual gate-log values that everything hinges on were never in any report's evidence: the @ (last DDRAM_ADDR) samples, the latched O (watchdog) bit, the F/B history, and the provenance of both '~32k reads/s' and 'W\u22482.29M' (which counters, what deltas, what window). The 32k-reads attribution contradiction is unresolvable from code alone.",
+   "Whether output_frame_valid ever asserted on the stalled HW boots is unproven in both directions: motcomp_picbuf's FSM shows the first I-frame handoff timing depends on subsequent-picture events (motcomp_picbuf.v:145-174), and neither report traced the exact first-picture handoff condition with line evidence; my read confirms the gating exists but not when it fires relative to a frame-0-slice-2 wedge.",
+   "Whether ANY historical sim run crossed VBUF_END (ring wrap) is not recorded anywhere \u2014 no wrap-event log or assertion exists, and run dirs do not log compile flags (MODELINE) or launch plusargs, so per-run configuration forensics beyond the ddr3_model banner is impossible (simMap flagged the logging gap; the wrap-coverage gap is new).",
+   "The healthy end-of-stream terminal state of the sim has never been observed: all dense runs were killed at 2 frames, so nobody knows what a CLEAN full-consumption soak looks like (does display persistence keep reading at ~5.18M/s? do vbr reads stop? what does the read-tag mix settle to?) \u2014 without this control, no terminal-signature comparison against the stalled HW is meaningful.",
+   "The ARM/HPS-side sd_* sector service (Main_MiSTer user_io sector delivery: correct LBA payloads, no stale-buffer reuse) is outside all three reports and this review \u2014 RTL-side ingress is verified drop-free, payload correctness is not.",
+   "Real f2sdram bridge properties (RAW coherency for posted writes, refresh cadence, latency distribution, boot-to-boot calibration variance) remain unspecified in-tree; all three reports agree, and no sim knob can be more than a behavioral guess at them."
+  ],
+  "recommendations": [
+   "FIRST, zero builds: re-extract from the existing two gate-run UART logs (a) the @ field during the post-stall window and classify vbuf-window (0x061C0000-0x061EFFFE) vs frame-store addresses \u2014 this single datum adjudicates the clientMap-vs-vldMap contradiction; (b) the latched O bit; (c) the exact counters behind '~32k/s' and '2.29M writes' (must be VN/BN, the only 32-bit ones); (d) test whether the residual read rate equals ~31,468/s (2x NTSC line rate), which would indicate a line-paced display-chain reader and prove output_frame_valid asserted.",
+   "SINGLE HIGHEST-INFORMATION SIM EXPERIMENT: a dense-clip FULL-consumption + post-stream soak pair. Arm 0 (control, zero code changes): regenerate the dense stream.dat, run with lat30/wp0 and wp2 but do NOT kill at 2 frames \u2014 set MIN_FRAMES high and max_cycles large enough to consume all 1,996,106 bytes and soak past end-of-stream, recording the terminal read-tag mix and rates. This simultaneously (i) exercises the never-simmed vbuf ring wrap, (ii) establishes the healthy terminal signature the HW logs must be compared against, and (iii) may reproduce a wrap-logic bug outright. Arm 1 (one ~10-line knob): add +ddr_corrupt_rd_period=N / +ddr_corrupt_lo/hi (default vbuf window) / +ddr_seed to ddr3_model.v at the rsp_data capture (:356), flipping one bit every Nth in-window read; success criterion = reproducing the exact HW terminal signature (recon/vbw write silence + consumption continuing to end + no watchdog W-jump + persistent residual reads). If Arm 1 matches, the corruption->VLD-desync->consume-without-write hypothesis is validated offline and becomes the fix-gating oracle; if it instead trips the watchdog or halts consumption, vldMap's terminal-state model is wrong and the investigation must return to the gate logs.",
+   "Before treating any run_lat* result as WGATE evidence, confirm the shim in those runs had READ_LIMIT=4 and the same WGATE constants (the banner showed lock_threshold=6, a knob that can never fire under READ_LIMIT=4 \u2014 configuration drift between run series is demonstrated, so pin the shim md5 per run going forward).",
+   "Adopt simMap's cmdline-logging fix (echo plusargs into the run dir) and ALSO log the compile MODELINE and the mem_shim md5 into run.log \u2014 three separate forensic gaps in this review trace to unrecorded run configuration.",
+   "For the next HW build only after the sim oracle exists: add the vldMap/clientMap-converged observability set \u2014 latched vld_err + event counter, sequence_header_seen, VLD state byte, and tag-discriminated read counters (disp/vbr/fwd/bwd) \u2014 since the G field is provably useless (self-clearing) and the read-tag mix is the standing blind spot.",
+   "Do not build any oracle on byte-exact stream identity until the 75-330-byte discrepancy between the HW vdisk size (Y:E74) and the sim dense stream payload (1,996,106) is explained \u2014 either prep_stream.sh trims/pads or the Y-field decode is off by one hex digit semantics."
+  ]
+ }
+}

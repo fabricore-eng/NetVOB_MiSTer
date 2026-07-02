@@ -1971,3 +1971,21 @@ building: nothing.
   tools/hw_gate_runs/sdcfix2_20260701/ANALYSIS.md. | advanced: MILESTONE — bridge wedge eliminated
   (2/2 HW runs) + slice-1 decode near-bit-perfect on silicon | blocked: none (sim-side next) |
   building: none.
+- 2026-07-02 (stall oracle: recon + sim-model knobs BUILT + no-op-proven; experiment grid LAUNCHED) —
+  4-agent recon workflow mapped the sim blind spots (docs/findings/2026-07-01-stall-oracle-recon.json):
+  display fetch IS in-sim (gated on output_frame_valid), response-FIFO overflow arithmetically dead,
+  UART fully decoded (@=last DDRAM word addr -> post-stall reads hit FRAME windows, not vbuf; BL=busy
+  cycles; Y=img_size; I=RAM-init; N=video-active), leading mechanism = f2sdram read-after-POSTED-WRITE
+  staleness on the vbuf ring (coherent-at-accept sim can't express it) + VLD's silent terminal state
+  (resync scan / spurious SEQUENCE_END clears sequence_header_seen -> consume-all-write-nothing, no
+  error flag = exactly J==Z + write silence). Critique flagged the unresolved discriminator: post-stall
+  ~32k reads/s matches neither display-active (~5.18M/s) nor no-handoff (0). ddr3_model.v extended
+  (all knobs default-off, enq_slot corner guarded): +ddr_wr_commit_delay (posted-write RAW + RAW-STALE
+  detection), +ddr_corrupt_rd/wr + window (marginality proxy), +ddr_refresh_period/hold, +ddr_seed.
+  NO-OP PROOF: knobs-off dense wp=0/wp=2 reproduce 20d53898/01d88a70 exactly. Grid launched
+  (run_stall_grid.sh): control (dense->EOF+soak = first-ever healthy terminal signature), raw32, crd,
+  cwr (vbuf-window corruption), refresh. REPRO criterion: partial-top-band framestore + ingest-past-
+  decode-death + write silence. Also: harness classifier outage (~35 min) bridged via Write-tool
+  staging + scheduled wakeups; timepi black-feed alarm CLOSED as false positive (BOOT CHECK screen is
+  legitimately black; the permission fence correctly blocked my kill of a healthy publisher). |
+  advanced: oracle recon + model + grid | blocked: none (grid running) | building: 5 sim arms.
