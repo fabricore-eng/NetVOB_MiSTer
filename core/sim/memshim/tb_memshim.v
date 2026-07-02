@@ -60,12 +60,22 @@ module tb_memshim();
   // reset while rst==0.
   wire ddr_rst = ~rst;
 
-  // ---- stream feed (identical to bench testbench.v) ----
+  // ---- stream feed (identical to bench testbench.v, plus optional REAL-TIME pacing) ----
+  // Default (+knobs off) = 1 byte/27MHz cycle whenever ~busy, byte-identical to the
+  // baseline. Pacing knobs model the HW delivery shape the instant feed hides:
+  //   +stream_gap=G          G idle cycles after every byte (~27/(G+1) MB/s average;
+  //                          G=13 ~= a 2 MB/s real-time DVD-rate feed)
+  //   +stream_sector_gap=S   S EXTRA idle cycles every 2048 bytes (the sd_* sector-
+  //                          service latency between pulled sector bursts)
+  // With a real-time-paced feed the VLD chronically CATCHES the vbuf write head
+  // mid-stream (the sim's instant feed keeps the ring far ahead), which is what
+  // arms the posted-write RAW staleness window at boot-varying points.
   integer    i;
   reg  [7:0] stream[0:`MAX_STREAM_LENGTH];
   reg  [7:0] stream_data;
   reg        stream_valid;
   wire       busy;
+  integer    stream_gap, sector_gap, gap_ctr;
 
   initial #0 begin
     $readmemh("stream.dat", stream, 0, `MAX_STREAM_LENGTH);
@@ -73,14 +83,26 @@ module tb_memshim();
     i            = 0;
     stream_data  = 0;
     stream_valid = 0;
+    stream_gap   = 0;
+    sector_gap   = 0;
+    gap_ctr      = 0;
+    if ($value$plusargs("stream_gap=%d", stream_gap));
+    if ($value$plusargs("stream_sector_gap=%d", sector_gap));
+    if (stream_gap != 0 || sector_gap != 0)
+      $display("[tb] stream pacing: gap=%0d/byte sector_gap=%0d/2048B", stream_gap, sector_gap);
   end
 
   always @(posedge clk)
     if (~rst) begin
-      i <= 0; stream_data <= #1 0; stream_valid <= #1 1'b0;
+      i <= 0; stream_data <= #1 0; stream_valid <= #1 1'b0; gap_ctr <= 0;
+    end
+    else if (gap_ctr > 0) begin
+      gap_ctr <= gap_ctr - 1;
+      i <= i; stream_data <= #1 0; stream_valid <= #1 1'b0;
     end
     else if (~busy && (i < `MAX_STREAM_LENGTH) && (^stream[i] !== 1'bx)) begin
       i <= i + 1; stream_data <= #1 stream[i]; stream_valid <= #1 1'b1;
+      gap_ctr <= stream_gap + ((((i + 1) % 2048) == 0) ? sector_gap : 0);
     end
     else begin
       i <= i; stream_data <= #1 0; stream_valid <= #1 1'b0;
