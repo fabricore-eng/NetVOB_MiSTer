@@ -2004,3 +2004,17 @@ building: nothing.
   stream_greyramp.dat.bak). Relaunched on testsrc2: baseline, raw32, comp32 (staleness x pacing);
   greyramp comp32 + control still running. | advanced: staleness mechanism CONFIRMED (kills like HW,
   corruption doesn't) + clip truth restored | blocked: none | building: 5 sim arms.
+- 2026-07-02 #3 (testsrc2 raw32 = the FULL HW TERMINAL STATE reproduced offline; causal story assembled)
+  — ts2_raw32 (real HW clip, delay=32): same 63 initial-fill stale reads, but testsrc2's structure let
+  VLD partially recover -> "decoded" 456 misaligned MBs into a phantom B-frame, then STALL/END REPORT:
+  decoder busy=0 error=0, request FIFO drained, stream consumed to EOF, writes silent, mid-frame death =
+  EXACTLY the HW terminal state (J==Z + write silence + no error), from ONE early staleness event. The
+  greyramp/testsrc2 contrast shows the post-desync trajectory is CONTENT-dependent (endless ring scan vs
+  phantom-decode-then-idle) — both content-dependent flavors of the same silent VLD desync. CAUSAL STORY:
+  VLD head-chase read hits the f2sdram posted-write window -> stale words -> silent desync (matches HW
+  slice-2 degradation) -> consume-all/write-nothing; boot variance moves the catch-up point. FIX TARGET
+  (design next): mem_shim same-address recent-write guard for reads (small CAM/age check, delays ONLY the
+  colliding read — no global stall per the gap-fix lesson), immune to any real window size; sim-validate
+  byte-identical on BOTH clips at wp=0/2 + under raw32/composite arms (fix => decode must survive). Still
+  running: ts2_base, ts2_comp32, greyramp control/comp32. | advanced: offline repro of the HW terminal
+  state + causal chain | blocked: none | building: 4 sim arms.
