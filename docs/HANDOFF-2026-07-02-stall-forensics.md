@@ -67,3 +67,45 @@ fatal clump lands. The HW I-frame door is the same class via the vbr/idct path.
   landed); stream false-alarm closed (mostly-black BOOT CHECK is legit output).
 - Sim probes live in tb_memshim.v (trajectory trace + stall-report extensions) — committed; the
   RAW-guard mem_shim.sv is the working-tree version, NOT yet staged to dell.
+
+---
+## FINAL STATE (end of session, forensics COMPLETE)
+
+**The freeze chain, fully mapped (every link probe-verified):**
+1. ~~Shim lost words~~ **FIXED**: pulse-valid FIFO semantics meant examine-without-consume LOSES the
+   word; all direct-path holds had it (27 losses/run → tag-without-response → router wedge → the
+   frame-2 freeze). Fix = 4-deep credit-based command queue (patch
+   `core/patches/hw/mpeg2fpga-memshim-credit-queue.patch`, shim md5 280e0cb9 incl. RAW guard@128).
+   Gate criterion forever: the tb word audit's LOST_AT_SHIM==0 and the shim's lost_words==0.
+2. **REMAINING (scanout rung, NOT decode-blocking)**: the display-ack wedge. Under ANY command-timing
+   shift (guard holds, credit-queue latency, HW latency — guard-inert discriminator proved it's not
+   the guard): raster-side disp-data consumer stops draining → disp dta fifo full → do_disp blocked →
+   disp ADDR fifo afull → resample_addrgen stuck in STATE_WAIT (probe: state=4, disp_addr_afull=1) →
+   never re-enters STATE_INIT → never acks output_frame_valid (probe: out_valid STUCK 1, out_rd 0) →
+   picbuf_busy → motcomp_busy → vld_en=0 at the NEXT picture boundary (frame 4). The raster itself
+   stays alive (tv_out keeps producing) — it's the frame handshake that starves. Matches the HW
+   post-stall signature (black display, slow frame-window reads). FIX DIRECTION (next session):
+   underrun-robust resync of the disp addr/data pairing at vsync (flush+realign), or make picbuf's
+   rotation not block decode when the display is wedged (decouple with care — never mask: log it).
+   The final micro-root (the raster consumer's exact stuck condition in resample dta/bilinear) is one
+   probe deeper via `mpeg2.resample.*` if needed.
+3. Meta-lesson (3 instances in one session): this 2007 design is riddled with pulse/count-aligned
+   handshakes that never resync — safe on deterministic 2007-Xilinx memory, fragile on any
+   perturbation. Treat EVERY new hold/delay as suspect against this class; the word audit + the
+   trajectory trace + per-slot extraction are the standing verification kit.
+
+**Why the decode milestone is NOT blocked**: the decode gate reads SETTLED DDR framestore content.
+With the credit queue + guard, sim decodes frames 0-2 byte-identical-to-baseline before the frame-4
+display wedge; on HW the same should carry the framestore past the old slice-2 death to settled
+frames 0-2 → the SSIM>=0.95 decode-correctness gate on frame 0 is in reach THIS build.
+
+**Staging checklist (next actions)**:
+1. Confirm run_v_final_base (settled slots f089ee06/b64eca3d, LOST=0) + run_v_final_raw32 (decode
+   SURVIVES 32-cycle staleness, RAW-STALE=0-or-few, LOST=0).
+2. scp rtl/mem_shim.sv (md5 280e0cb9) to dell (working-tree build per dell-build-mechanics; qsf
+   stays clean; holdfix SDC already has the clock-groups fix).
+3. Hub-launcher build (DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2,
+   no ref). ~35 min. Check STA: worst setup was +0.040ns — the queue adds logic; if setup goes
+   negative, timing-iterate before the gate.
+4. hw_flash_and_gate.sh (human's per-run go). Expect: W far past 2.29M (decode continues past old
+   death), framestore frames 0-2 settled, frame-0 SSIM vs ref_frame_01 — the 0.95 gate.
