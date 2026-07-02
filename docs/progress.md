@@ -1989,3 +1989,18 @@ building: nothing.
   staging + scheduled wakeups; timepi black-feed alarm CLOSED as false positive (BOOT CHECK screen is
   legitimately black; the permission fence correctly blocked my kill of a healthy publisher). |
   advanced: oracle recon + model + grid | blocked: none (grid running) | building: 5 sim arms.
+- 2026-07-02 #2 (grid round 1 verdicts + a CLIP MISLABEL caught; testsrc2 re-run launched) — Round-1
+  arms (ALL on what turned out to be the GREYRAMP clip, see below): raw8 = 0 stale reads, byte-identical
+  (safe); raw32 = 63 RAW-STALE reads on the FIRST 63 vbuf words (VLD initial-fill head-chase) -> ZERO
+  frames ever decoded, terminal state = reads circling the vbuf ring forever + write silence + no error
+  = the HW terminal SHAPE. Dose-response cliff between delay 8 and 32. cwr2 (8 seeded bit-flips in early
+  ring) = frame damage + RECOVERY (VLD resyncs, 4 frames) -> random corruption does NOT match HW's
+  permanent silence; STALENESS does. Whole-framestore md5s proven useless under timing perturbation
+  (dump-instant skew) -> built tools/build/extract_framestore_slots.py (per-slot Y comparison).
+  CORRECTION: core/sim/memshim/stream.dat was the 622KB GREYRAMP all along — the handoff labeled the
+  20d53898/01d88a70 baseline "dense clip" (WRONG) and the recon echoed prep_stream's intended size as
+  on-disk fact (the critique's unverified-number warning, vindicated). stream.dat now = the REAL HW clip
+  (test480i_ntsc.m2v via prep_stream.sh, 1996106B incl end-of-sequence; greyramp kept as
+  stream_greyramp.dat.bak). Relaunched on testsrc2: baseline, raw32, comp32 (staleness x pacing);
+  greyramp comp32 + control still running. | advanced: staleness mechanism CONFIRMED (kills like HW,
+  corruption doesn't) + clip truth restored | blocked: none | building: 5 sim arms.
