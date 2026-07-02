@@ -2055,3 +2055,15 @@ building: nothing.
   next (likely pulse->level or timeout on the picbuf/display frame handshake — 3rd instance of the
   pulse-fragility family). | advanced: shim lost-word class ELIMINATED (audit-proven) | blocked: none |
   building: discriminator sim.
+- 2026-07-02 #6 (STAGING CANDIDATE VALIDATED + dell BUILD LAUNCHED) — Final validation of shim 280e0cb9
+  (credit queue + RAW guard@128): (1) no-hazard equivalence — frame 0 settled BYTE-IDENTICAL (f089ee06);
+  later slots = real correct-class frames (SSIM 0.90-0.94 vs nearest sampled ref phases; per-slot
+  run-vs-run md5s are INVALID under rotation-timing shift — content-vs-ref is the honest comparator,
+  same as the HW gate); (2) staleness immunity — under +ddr_wr_commit_delay=32 (previously: instant
+  total death): 3 frames, RAW-STALE=0 (guard held every collision), framestore BYTE-IDENTICAL to the
+  clean run incl. slot1; (3) word conservation — LOST_AT_SHIM=0 everywhere. Known ceiling: frame-4
+  display-ack wedge (scanout rung, docs/HANDOFF-2026-07-02-stall-forensics.md §FINAL). Staged to dell
+  (md5 confirmed 280e0cb9, holdfix SDC intact), hub build launched detached (pid 1165216). NEXT: STA
+  check (worst setup was +0.040ns — the queue adds logic) then the HW decode gate (human's per-run go);
+  target = settled frames 0-2 in DDR, frame-0 SSIM>=0.95. | advanced: candidate validated + building |
+  blocked: none | building: quartus-dvd on dell (~35 min).
