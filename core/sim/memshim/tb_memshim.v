@@ -558,10 +558,56 @@ module tb_memshim();
       $display("[tb]   inject:   inj_count=%0d addrerr_branches=%0d collisions=%0d", inj_count, addrerr_branch_count, collision_count);
       $display("[tb]   ddr3 bus: read=%b write=%b waitrequest=%b readdatavalid=%b addr=%h", ddr3_read, ddr3_write, ddr3_waitrequest, ddr3_readdatavalid, ddr3_addr);
       $display("[tb]   framestore_response.state probe: see decoder $display traces above");
+      // Decoder-internal localization (hierarchical probes; Verilator resolves these):
+      $display("[tb]   stream feed: i=%0d (of %0d) stream_valid=%b busy=%b gap_ctr=%0d", i, `MAX_STREAM_LENGTH, stream_valid, busy, gap_ctr);
+      $display("[tb]   vbuf: wr_addr=%h rd_addr=%h empty=%b full=%b (framestore_request)",
+               mpeg2.framestore.framestore_request.vbuf_wr_addr,
+               mpeg2.framestore.framestore_request.vbuf_rd_addr,
+               mpeg2.framestore.framestore_request.vbuf_empty,
+               mpeg2.framestore.framestore_request.vbuf_full);
+      $display("[tb]   vbr/vbw: do_vbr=%b vbr_wr_full=%b vbr_wr_almost_full=%b vbw_rd_valid=%b vbw_rd_empty=%b",
+               mpeg2.framestore.framestore_request.do_vbr,
+               mpeg2.framestore.framestore_request.vbr_wr_full,
+               mpeg2.framestore.framestore_request.vbr_wr_almost_full,
+               mpeg2.framestore.framestore_request.vbw_rd_valid,
+               mpeg2.framestore.framestore_request.vbw_rd_empty);
+      $display("[tb]   getbits: state=%0d cursor=%0d vid_in_rd_en=%b vid_in_rd_valid=%b getbits_valid=%b",
+               mpeg2.getbits_fifo.state, mpeg2.getbits_fifo.cursor,
+               mpeg2.getbits_fifo.vid_in_rd_en, mpeg2.getbits_fifo.vid_in_rd_valid,
+               mpeg2.getbits_fifo.getbits_valid);
+      $display("[tb]   vld gates: vld_en=%b wait_state=%b rld_wr_almost_full=%b mvec_wr_almost_full=%b motcomp_busy=%b",
+               mpeg2.vld_en, mpeg2.getbits_fifo.wait_state,
+               mpeg2.getbits_fifo.rld_wr_almost_full, mpeg2.getbits_fifo.mvec_wr_almost_full,
+               mpeg2.getbits_fifo.motcomp_busy);
+      $display("[tb]   mc/recon fifos: fwd_addr_empty=%b fwd_dta_afull=%b bwd_addr_empty=%b bwd_dta_afull=%b recon_rd_empty=%b vbr_rd_aempty=%b tag_afull=%b req_afull=%b",
+               mpeg2.framestore.framestore_request.fwd_rd_addr_empty,
+               mpeg2.framestore.framestore_request.fwd_wr_dta_almost_full,
+               mpeg2.framestore.framestore_request.bwd_rd_addr_empty,
+               mpeg2.framestore.framestore_request.bwd_wr_dta_almost_full,
+               mpeg2.framestore.framestore_request.recon_rd_empty,
+               mpeg2.framestore.framestore_request.vbr_rd_almost_empty,
+               mpeg2.framestore.framestore_request.tag_wr_almost_full,
+               mpeg2.framestore.framestore_request.mem_req_wr_almost_full);
       ddr3.report_counts;
       $display("================================================================");
     end
   endtask
+
+  // trajectory trace: one line per ~1ms of sim time (108K mem cycles)
+  reg [31:0] traj_ctr;
+  always @(posedge mem_clk) begin
+    if (~rst) traj_ctr <= 0;
+    else begin
+      traj_ctr <= traj_ctr + 1;
+      if (traj_ctr % 108000 == 0)
+        $display("[traj %0t] i=%0d mb=%0d fr=%0d wr=%h rd=%h vbw_empty=%b busy=%b flush=%b rdcnt=%0d",
+                 $time, i, macroblock_address, frame_number,
+                 mpeg2.framestore.framestore_request.vbuf_wr_addr,
+                 mpeg2.framestore.framestore_request.vbuf_rd_addr,
+                 mpeg2.framestore.framestore_request.vbw_rd_empty,
+                 busy, mpeg2.flush_vbuf, shim_rd_count);
+    end
+  end
 
   always @(posedge mem_clk) begin
     if (~rst) begin

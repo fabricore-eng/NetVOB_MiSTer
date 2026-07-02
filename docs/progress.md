@@ -2018,3 +2018,24 @@ building: nothing.
   byte-identical on BOTH clips at wp=0/2 + under raw32/composite arms (fix => decode must survive). Still
   running: ts2_base, ts2_comp32, greyramp control/comp32. | advanced: offline repro of the HW terminal
   state + causal chain | blocked: none | building: 4 sim arms.
+- 2026-07-02 #4 (guard validation FAILED -> forensics ladder -> the REAL blocker is a decoder-side
+  PIPELINE FREEZE, not memory data at all) — The RAW guard: skid-capture bug found+fixed (a direct-path
+  hold LOSES the in-flight FIFO word — rd_en was still high, the next word overwrites the output; fix =
+  capture into the skid, the FSM's own idiom; latent trap documented for ANY new hold in this FSM). Then
+  the ladder overturned the mechanism: (1) inert-guard bisect = byte-identical (edits sound); (2) active
+  guard (CORRECT data, in-order, bounded delays) still dies at mb=453 frame 2(B) — nearly the SAME spot
+  as the raw32 stale-data run (mb=456) and the same read-count (~33.6K); (3) ADDR_ERR-overtake theory:
+  0 occurrences (dead); (4) trajectory trace: the READ SIDE freezes first (rd/rdcnt/mb static from 44ms)
+  while ingest continues until the ring legally wraps+fills — ring accounting EXONERATED (my rd>wr
+  "corruption" was a post-wrap legal state); (5) at freeze: vbuf has data, vbr fifo has room+data,
+  getbits READY with valid bits — the VLD ITSELF stopped consuming. vld_en gates on ~wait_state &&
+  ~rld_wr_almost_full && ~mvec_wr_almost_full && ~motcomp_busy => a BACKPRESSURE DEADLOCK CYCLE in the
+  decode pipeline (suspect: VLD stalled on motcomp; motcomp waiting on fwd/bwd reference reads never
+  REQUESTED — addr fifo empty — a cross-lock reachable only under memory-latency perturbation; fifo
+  margins tuned for the 2007 Xilinx memory). GREYRAMP CONTROL: 23 frames, still decoding at the cycle
+  cap = the decoder is HEALTHY at baseline timing. UNIFIES EVERYTHING: HW's boot-varying slice-2 death =
+  real latency spikes reaching the same deadlock; stale-data and guard-delays are just two other doors
+  to it. The old "IQUANT/VLD/CDC-race saga" was likely THIS. Probing the exact frozen gate now
+  (vld_en/motcomp/rld/mvec + mc-fifo flags in the stall report). NOTE: monthly spend limit hit — no
+  subagents/workflows; solo mode. | advanced: freeze localized to the VLD/motcomp backpressure loop |
+  blocked: none | building: gate-probe sim.
