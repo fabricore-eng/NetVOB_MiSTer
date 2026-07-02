@@ -135,6 +135,25 @@ module ddr3_model (
   // LFSR for pseudo-random jitter / waitrequest phase
   reg [31:0] lfsr;
 
+  // HW-divergence knobs (2026-07-01, slice-2 stall oracle). All default OFF = the
+  // model stays byte-identical to the age-gate baseline (proven via the settled-frame
+  // fingerprints 20d53898/01d88a70).
+  integer seed_arg;           // +ddr_seed=S            LFSR seed (jitter/corruption runs become seed-variable)
+  integer wr_commit_delay;    // +ddr_wr_commit_delay=N posted-write RAW hazard: a write is ACCEPTED
+                              //                        immediately but commits to mem[] only N cycles
+                              //                        later; a read accepted in that window samples the
+                              //                        STALE value (the f2sdram bridge-level read-after-
+                              //                        posted-write hazard the coherent model can't show).
+  integer corrupt_rd;         // +ddr_corrupt_rd=N      flip one seeded bit in every Nth read response
+  integer corrupt_wr;         // +ddr_corrupt_wr=N      flip one seeded bit in every Nth committed write
+                              //                        (models a setup/hold-marginal write datapath)
+  integer corrupt_lo;         // +ddr_corrupt_lo=H      corruption window low word addr (default 0)
+  integer corrupt_hi;         // +ddr_corrupt_hi=H      corruption window high word addr (default END_OF_MEM)
+  integer refresh_period;     // +ddr_refresh_period=M  every M cycles ...
+  integer refresh_hold;       // +ddr_refresh_hold=H    ... hold waitrequest high for H cycles (refresh/
+                              //                        arbitration outage bursts the master never sees in
+                              //                        the fixed-latency model)
+
   initial begin
     rd_latency   = 8;
     wait_period  = 0;
@@ -150,6 +169,14 @@ module ddr3_model (
     drop_then_write_wedge = 0;
     wedge_window = 4096;
     lfsr         = 32'hACE1_2345;
+    seed_arg     = 0;
+    wr_commit_delay = 0;
+    corrupt_rd   = 0;
+    corrupt_wr   = 0;
+    corrupt_lo   = 0;
+    corrupt_hi   = END_OF_MEM[21:0];
+    refresh_period = 0;
+    refresh_hold   = 0;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
     if ($value$plusargs("ddr_rd_jitter=%d", rd_jitter));
@@ -163,6 +190,14 @@ module ddr3_model (
     if ($value$plusargs("ddr_gap_wedge=%d", gap_wedge));
     if ($value$plusargs("ddr_drop_then_write_wedge=%d", drop_then_write_wedge));
     if ($value$plusargs("ddr_wedge_window=%d", wedge_window));
+    if ($value$plusargs("ddr_seed=%d", seed_arg) && seed_arg != 0) lfsr = seed_arg[31:0];
+    if ($value$plusargs("ddr_wr_commit_delay=%d", wr_commit_delay));
+    if ($value$plusargs("ddr_corrupt_rd=%d", corrupt_rd));
+    if ($value$plusargs("ddr_corrupt_wr=%d", corrupt_wr));
+    if ($value$plusargs("ddr_corrupt_lo=%h", corrupt_lo));
+    if ($value$plusargs("ddr_corrupt_hi=%h", corrupt_hi));
+    if ($value$plusargs("ddr_refresh_period=%d", refresh_period));
+    if ($value$plusargs("ddr_refresh_hold=%d", refresh_hold));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
@@ -170,6 +205,8 @@ module ddr3_model (
              mode_reorder, mode_drop, mode_dup, late_after_reset, lock_threshold, gap_wedge);
     $display("[ddr3_model] drop_then_write_wedge=%0d wedge_window=%0d",
              drop_then_write_wedge, wedge_window);
+    $display("[ddr3_model] HW-DIVERGENCE knobs: seed=%08h wr_commit_delay=%0d corrupt_rd=%0d corrupt_wr=%0d corrupt_win=[%h..%h] refresh=%0d/%0d",
+             lfsr, wr_commit_delay, corrupt_rd, corrupt_wr, corrupt_lo, corrupt_hi, refresh_period, refresh_hold);
   end
 
   always @(posedge clk) lfsr <= {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
@@ -192,7 +229,25 @@ module ddr3_model (
     else if (wait_phase == (wait_period[15:0]-16'd1)) wait_phase <= 0;
     else wait_phase <= wait_phase + 16'd1;
 
+  // Refresh/arbitration outage: every refresh_period cycles, hold waitrequest
+  // high for refresh_hold cycles (commands stall; already-scheduled responses
+  // keep draining, like a controller finishing in-flight reads around a refresh).
+  reg [31:0] refresh_ctr;
+  reg        refresh_busy;
+  always @(posedge clk)
+    if (rst) begin refresh_ctr <= 0; refresh_busy <= 0; end
+    else if (refresh_period <= 0) begin refresh_ctr <= 0; refresh_busy <= 0; end
+    else begin
+      refresh_ctr <= refresh_ctr + 1;
+      if (!refresh_busy && refresh_ctr >= refresh_period) begin
+        refresh_busy <= 1; refresh_ctr <= 0;
+      end else if (refresh_busy && refresh_ctr >= refresh_hold) begin
+        refresh_busy <= 0; refresh_ctr <= 0;
+      end
+    end
+
   assign ddr3_waitrequest = locked ? 1'b1 :
+                            refresh_busy ? 1'b1 :
                             (wait_period <= 1) ? 1'b0 : (wait_phase != 16'd0);
 
   wire cmd_accept_rd = ddr3_read  && !ddr3_waitrequest;
@@ -243,6 +298,23 @@ module ddr3_model (
   reg        rd_dropped_outstanding;  // a genuinely-dropped read is still "in flight" at the bridge
   reg [31:0] dropped_age;             // cycles since that drop (clears the flag at wedge_window)
 
+  // Posted-write commit queue (+ddr_wr_commit_delay): FIFO order = accept order,
+  // so same-address write ordering is preserved; only READ-vs-posted-WRITE can skew.
+  localparam WQ = 256;
+  reg        wq_pending [0:WQ-1];
+  reg [21:0] wq_addr    [0:WQ-1];
+  reg [63:0] wq_data    [0:WQ-1];
+  reg [31:0] wq_age     [0:WQ-1];
+  integer    wq_head, wq_tail;
+  reg [31:0] raw_stale_reads;   // reads accepted while a same-address write was still posted
+  reg [31:0] wq_overflows;
+  integer    enq_slot;          // slot enqueued THIS cycle (-1 = none): guards the tick loop
+                                // from clearing a just-enqueued entry when the queue is full
+  // corruption bookkeeping
+  reg [31:0] corrupt_rd_count, corrupt_wr_count;   // in-window op counters
+  reg [31:0] corrupted_rd, corrupted_wr;           // corruptions applied
+  integer    j;
+
   always @(posedge clk) begin
     if (rst) begin
       ddr3_readdatavalid <= 1'b0;
@@ -269,9 +341,17 @@ module ddr3_model (
         rsp_countdown[k] <= 0;
         rsp_data[k]      <= 64'd0;
       end
+      wq_head <= 0; wq_tail <= 0;
+      raw_stale_reads <= 0; wq_overflows <= 0;
+      corrupt_rd_count <= 0; corrupt_wr_count <= 0;
+      corrupted_rd <= 0; corrupted_wr <= 0;
+      for (k = 0; k < WQ; k = k + 1) begin
+        wq_pending[k] <= 1'b0; wq_addr[k] <= 22'd0; wq_data[k] <= 64'd0; wq_age[k] <= 0;
+      end
     end
     else begin
       ddr3_readdatavalid <= 1'b0;   // default: no response this cycle
+      enq_slot = -1;                // no posted-write enqueue yet this cycle
 
       // ---- REALISTIC over-issue lock (faithful to the HW failure, NOT a fake drop) ----
       // The HW f2sdram bridge wedges (waitrequest stuck high, responses stop) once too
@@ -312,7 +392,8 @@ module ddr3_model (
       end
 
       // ---- accept a WRITE ----
-      if (cmd_accept_wr) begin
+      if (cmd_accept_wr) begin : wr_accept
+        reg [63:0] wdata_eff;
         if (!locked && drop_then_write_wedge != 0 && rd_dropped_outstanding) begin
           locked <= 1'b1;
           $display("[ddr3_model %0t] *** DROP-THEN-WRITE-WEDGE: write accepted while a dropped read is still outstanding (age=%0d < window=%0d) -- f2sdram locked (BUSY stuck, responses stop) ***",
@@ -324,15 +405,78 @@ module ddr3_model (
           oob_seen <= 1'b1;
           if (do_trace) $display("[ddr3_model %0t] WR OOB word_addr=%h (> END_OF_MEM)", $time, word_addr);
         end else begin
-          mem[word_addr] <= ddr3_writedata;
+          // optional marginal-write-datapath corruption (+ddr_corrupt_wr, windowed)
+          wdata_eff = ddr3_writedata;
+          if (corrupt_wr != 0 && word_addr >= corrupt_lo[21:0] && word_addr <= corrupt_hi[21:0]) begin
+            corrupt_wr_count <= corrupt_wr_count + 1;
+            if (((corrupt_wr_count + 1) % corrupt_wr) == 0) begin
+              wdata_eff = ddr3_writedata ^ (64'h1 << lfsr[5:0]);
+              corrupted_wr <= corrupted_wr + 1;
+              $display("[ddr3_model %0t] *** CORRUPT-WR: word=%h bit=%0d (corrupted_wr=%0d) ***",
+                       $time, word_addr, lfsr[5:0], corrupted_wr+1);
+            end
+          end
+          if (wr_commit_delay <= 0) begin
+            mem[word_addr] <= wdata_eff;      // immediate commit = baseline behavior
+          end else begin
+            // posted write: accepted now, commits wr_commit_delay cycles later.
+            if (wq_pending[wq_tail]) begin
+              // queue full: force-commit the head NOW (never drop a write), loudly.
+              wq_overflows <= wq_overflows + 1;
+              mem[wq_addr[wq_head]] <= wq_data[wq_head];
+              wq_head <= (wq_head + 1) % WQ;
+              $display("[ddr3_model %0t] *** WQ OVERFLOW: force-committed head (overflows=%0d) ***",
+                       $time, wq_overflows+1);
+            end
+            wq_pending[wq_tail] <= 1'b1;
+            wq_addr[wq_tail]    <= word_addr;
+            wq_data[wq_tail]    <= wdata_eff;
+            wq_age[wq_tail]     <= 0;
+            enq_slot            = wq_tail;
+            wq_tail             <= (wq_tail + 1) % WQ;
+          end
         end
         if (do_trace) $display("[ddr3_model %0t] WR accept addr=%h word=%h dta=%h", $time, ddr3_addr, word_addr, ddr3_writedata);
+      end
+
+      // ---- posted-write queue: age everything, commit expired entries in FIFO order ----
+      if (wr_commit_delay > 0) begin : wq_tick
+        integer idx;
+        integer stop;
+        for (k = 0; k < WQ; k = k + 1)
+          if (wq_pending[k]) wq_age[k] <= wq_age[k] + 1;
+        stop = 0;
+        for (j = 0; j < WQ; j = j + 1) begin
+          idx = (wq_head + j) % WQ;
+          if (!stop) begin
+            if (idx == enq_slot) stop = 1;   // never clear a just-enqueued entry (full-queue corner)
+            else if (wq_pending[idx] && wq_age[idx] >= wr_commit_delay) begin
+              mem[wq_addr[idx]] <= wq_data[idx];   // ascending j = accept order; same-addr order preserved
+              wq_pending[idx]   <= 1'b0;
+              wq_head           <= (idx + 1) % WQ;
+            end else stop = 1;
+          end
+        end
       end
 
       // ---- accept a READ: schedule a response ----
       if (cmd_accept_rd) begin
         rd_issued <= rd_issued + 1;
         if (window != 7'b0011000) badwin_seen <= 1'b1;
+        // RAW-STALE detection: a read accepted while a posted write to the SAME
+        // address is still uncommitted returns the stale value (the f2sdram
+        // read-after-posted-write hazard). Counted + printed for diagnosis.
+        if (wr_commit_delay > 0) begin : raw_check
+          integer hit;
+          hit = 0;
+          for (j = 0; j < WQ; j = j + 1)
+            if (wq_pending[j] && wq_addr[j] == word_addr) hit = 1;
+          if (hit) begin
+            raw_stale_reads <= raw_stale_reads + 1;
+            $display("[ddr3_model %0t] *** RAW-STALE: read word=%h served STALE (posted write in flight; raw_stale=%0d) ***",
+                     $time, word_addr, raw_stale_reads+1);
+          end
+        end
         // latency = base + optional jitter
         cur_lat = rd_latency;
         if (rd_jitter > 0) cur_lat = rd_latency + (lfsr % (rd_jitter+1));
@@ -353,7 +497,18 @@ module ddr3_model (
               rsp_data[free_slot] <= 64'd0;
               if (do_trace) $display("[ddr3_model %0t] RD OOB word_addr=%h -> 0", $time, word_addr);
             end else begin
-              rsp_data[free_slot] <= mem[word_addr];
+              // optional read-response bit corruption (+ddr_corrupt_rd, windowed)
+              if (corrupt_rd != 0 && word_addr >= corrupt_lo[21:0] && word_addr <= corrupt_hi[21:0]) begin
+                corrupt_rd_count <= corrupt_rd_count + 1;
+                if (((corrupt_rd_count + 1) % corrupt_rd) == 0) begin
+                  rsp_data[free_slot] <= mem[word_addr] ^ (64'h1 << lfsr[5:0]);
+                  corrupted_rd <= corrupted_rd + 1;
+                  $display("[ddr3_model %0t] *** CORRUPT-RD: word=%h bit=%0d (corrupted_rd=%0d) ***",
+                           $time, word_addr, lfsr[5:0], corrupted_rd+1);
+                end else
+                  rsp_data[free_slot] <= mem[word_addr];
+              end else
+                rsp_data[free_slot] <= mem[word_addr];
             end
             if (do_trace) $display("[ddr3_model %0t] RD accept addr=%h word=%h lat=%0d (issued=%0d)", $time, ddr3_addr, word_addr, cur_lat, rd_issued+1);
           end
@@ -459,6 +614,8 @@ module ddr3_model (
                locked, outstanding_peak, lock_threshold);
       $display("[ddr3_model] WEDGE-MODEL FINAL: drop_then_write_wedge=%0d wedge_window=%0d rd_dropped_outstanding=%0d",
                drop_then_write_wedge, wedge_window, rd_dropped_outstanding);
+      $display("[ddr3_model] HW-DIVERGENCE FINAL: raw_stale_reads=%0d wq_overflows=%0d corrupted_rd=%0d corrupted_wr=%0d",
+               raw_stale_reads, wq_overflows, corrupted_rd, corrupted_wr);
     end
   endtask
 
