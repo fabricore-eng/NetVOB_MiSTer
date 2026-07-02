@@ -588,10 +588,53 @@ module tb_memshim();
                mpeg2.framestore.framestore_request.vbr_rd_almost_empty,
                mpeg2.framestore.framestore_request.tag_wr_almost_full,
                mpeg2.framestore.framestore_request.mem_req_wr_almost_full);
+      $display("[tb]   fwd_reader: wr_dta_full=%b rd_dta_valid=%b rd_dta_en=%b rd_dta_empty=%b rd_dta_aempty=%b",
+               mpeg2.fwd_reader.wr_dta_full,
+               mpeg2.fwd_reader.rd_dta_valid, mpeg2.fwd_reader.rd_dta_en,
+               mpeg2.fwd_reader.rd_dta_empty, mpeg2.fwd_reader.rd_dta_almost_empty);
+      $display("[tb]   recon gates: state=%0d dst_valid_0=%b motion_fwd_0=%b motion_bwd_0=%b write_recon_0=%b fwd_row_valid=%b bwd_row_valid=%b idct_row_valid=%b recon_wr_afull=%b",
+               mpeg2.motcomp.motcomp_recon.state,
+               mpeg2.motcomp.motcomp_recon.dst_valid_0,
+               mpeg2.motcomp.motcomp_recon.motion_forward_0,
+               mpeg2.motcomp.motcomp_recon.motion_backward_0,
+               mpeg2.motcomp.motcomp_recon.write_recon_0,
+               mpeg2.motcomp.motcomp_recon.fwd_row_0_valid,
+               mpeg2.motcomp.motcomp_recon.bwd_row_0_valid,
+               mpeg2.motcomp.motcomp_recon.idct_row_0_valid,
+               mpeg2.motcomp.motcomp_recon.recon_wr_almost_full);
+      $display("[tb]   word audit: fifo_writes=%0d delivered=%0d addr_err=%0d ddr_cmds(rd+wr)=%0d => LOST_AT_SHIM=%0d UNDELIVERED=%0d",
+               cnt_fifo_wr, cnt_valid, cnt_valid_ae, ddr3.rd_issued + ddr3.wr_issued,
+               cnt_valid - cnt_valid_ae - (ddr3.rd_issued + ddr3.wr_issued),
+               cnt_fifo_wr - cnt_valid);
+      $display("[tb]   picbuf: busy=%b out_frame=%0d out_valid=%b out_rd=%b cur_frame=%0d fwd_ref=%0d bwd_ref=%0d",
+               mpeg2.motcomp.motcomp_addrgen.picbuf.picbuf_busy,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.output_frame,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.output_frame_valid,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.output_frame_rd,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.current_frame,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.forward_reference_frame,
+               mpeg2.motcomp.motcomp_addrgen.picbuf.backward_reference_frame);
+      $display("[tb]   resp router: mem_res_rd_empty=%b tag_rd_empty=%b",
+               mpeg2.framestore.framestore_response.mem_res_rd_empty,
+               mpeg2.framestore.framestore_response.tag_rd_empty);
       ddr3.report_counts;
       $display("================================================================");
     end
   endtask
+
+  // word-conservation audit: any presented-but-unconsumed word at the shim = loss
+  reg [31:0] cnt_fifo_wr;      // words written INTO mem_request_fifo (27MHz side)
+  reg [31:0] cnt_valid;        // valid pulses at the shim boundary (words delivered)
+  reg [31:0] cnt_valid_ae;     // delivered words that are ADDR_ERR (filtered, not issued)
+  always @(posedge clk)
+    if (~rst) cnt_fifo_wr <= 0;
+    else if (mpeg2.framestore.mem_req_wr_en) cnt_fifo_wr <= cnt_fifo_wr + 1;
+  always @(posedge mem_clk)
+    if (~rst) begin cnt_valid <= 0; cnt_valid_ae <= 0; end
+    else if (mem_req_rd_valid) begin
+      cnt_valid <= cnt_valid + 1;
+      if (mem_req_rd_addr == 22'h1EFFFF) cnt_valid_ae <= cnt_valid_ae + 1;
+    end
 
   // trajectory trace: one line per ~1ms of sim time (108K mem cycles)
   reg [31:0] traj_ctr;

@@ -2039,3 +2039,19 @@ building: nothing.
   (vld_en/motcomp/rld/mvec + mc-fifo flags in the stall report). NOTE: monthly spend limit hit — no
   subagents/workflows; solo mode. | advanced: freeze localized to the VLD/motcomp backpressure loop |
   blocked: none | building: gate-probe sim.
+- 2026-07-02 #5 (lost-word disease FIXED in the shim; the residual freeze is the DISPLAY-ACK wedge) —
+  Word-conservation audit caught the shim dropping 27 delivered words/run (the request FIFO has
+  PULSE-valid semantics: examine-without-consume LOSES the word — the write-gate/throttle/RAW-guard
+  direct-path "holds" ALL had this latent disease, on HW too: the age-gate build's write-gate hold fires
+  on real latency spikes => the HW stall's most likely proximate cause). FIX: mem_shim command path
+  restructured to a 4-deep CREDIT-BASED queue (delivered words always land, capacity guaranteed by
+  credit-gated rd_en, FSM processes only the head, holds = don't-consume; full 1-pull/cycle rate;
+  lost-word counter must stay 0 = a permanent gate criterion). Validated: LOST_AT_SHIM=0 through 976K
+  words (3x past the old freeze), frame-0/1 slots byte-identical to baseline. RESIDUAL: with the RAW
+  guard active the run now dies LATER (frame 4) on a DIFFERENT wedge — picbuf offers frame 2 with
+  output_frame_valid STUCK high and output_frame_rd NEVER acked: the DISPLAY side stops consuming
+  frames => picbuf_busy => motcomp_busy => vld_en=0. Discriminator in flight: same shim, guard inert —
+  decides whether loss-free hold delays trip the display wedge or any timing shift does. Fix design
+  next (likely pulse->level or timeout on the picbuf/display frame handshake — 3rd instance of the
+  pulse-fragility family). | advanced: shim lost-word class ELIMINATED (audit-proven) | blocked: none |
+  building: discriminator sim.
