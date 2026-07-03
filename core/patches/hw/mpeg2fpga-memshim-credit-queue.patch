@@ -1,5 +1,5 @@
 diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
-index 33f3c2a..7c6c8d7 100644
+index 33f3c2a..472adca 100644
 --- a/rtl/mem_shim.sv
 +++ b/rtl/mem_shim.sv
 @@ -62,6 +62,42 @@ module mem_shim (
@@ -45,7 +45,7 @@ index 33f3c2a..7c6c8d7 100644
      // =========================================================================
      // 2-State FSM + Skid Buffer
      // =========================================================================
-@@ -80,136 +116,297 @@ module mem_shim (
+@@ -80,136 +116,300 @@ module mem_shim (
  
      reg state;
  
@@ -143,15 +143,18 @@ index 33f3c2a..7c6c8d7 100644
 +    // behind the newest write, with the true VBUF_END->VBUF wrap seam (ring size
 +    // 0x2FFFF is NOT a power of two — mod-2^18 math would open a once-per-lap
 +    // hole exactly at the seam).
++    // NOTE: `dist` is a SystemVerilog RESERVED keyword (constraint distributions).
++    // The sim parser tolerated it as an identifier; Quartus (this file is .sv)
++    // rejects it (Error 10170) — the 2026-07-02 build died here. Use ring_dist.
 +    function raw_collides(input [21:0] a);
 +        reg [17:0] off;
 +        reg [18:0] d0;
-+        reg [17:0] dist;
++        reg [17:0] ring_dist;
 +        begin
 +            off  = a[17:0];
 +            d0   = {1'b0, vbw_newest} - {1'b0, off};
-+            dist = d0[18] ? (vbw_newest + RAW_RING_WORDS - off) : d0[17:0];
-+            raw_collides = vbw_young && (a[21:18] == 4'b0111) && (dist < RAW_SLACK);
++            ring_dist = d0[18] ? (vbw_newest + RAW_RING_WORDS - off) : d0[17:0];
++            raw_collides = vbw_young && (a[21:18] == 4'b0111) && (ring_dist < RAW_SLACK);
 +        end
 +    endfunction
 +
@@ -419,7 +422,7 @@ index 33f3c2a..7c6c8d7 100644
          end
      end
  
-@@ -231,7 +428,43 @@ module mem_shim (
+@@ -231,7 +431,43 @@ module mem_shim (
          end else begin
              if (rd_accepted)        rd_count  <= rd_count  + 1'd1;
              if (wr_accepted)        wr_count  <= wr_count  + 1'd1;
@@ -464,7 +467,7 @@ index 33f3c2a..7c6c8d7 100644
          end
      end
  
-@@ -247,7 +480,7 @@ module mem_shim (
+@@ -247,7 +483,7 @@ module mem_shim (
          if (ram_write)              debug_cmd = CMD_WRITE;
          else if (ram_read)          debug_cmd = CMD_READ;
          else if (saved_valid)       debug_cmd = saved_cmd;
@@ -473,7 +476,7 @@ index 33f3c2a..7c6c8d7 100644
          else                        debug_cmd = CMD_NOOP;
      end
  
-@@ -258,6 +491,6 @@ module mem_shim (
+@@ -258,6 +494,6 @@ module mem_shim (
      assign debug_rd_count         = rd_count;
      assign debug_wr_count         = wr_count;
      assign debug_rsp_count        = rsp_count;

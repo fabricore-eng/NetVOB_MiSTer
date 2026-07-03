@@ -614,6 +614,11 @@ module tb_memshim();
                mpeg2.motcomp.motcomp_addrgen.picbuf.current_frame,
                mpeg2.motcomp.motcomp_addrgen.picbuf.forward_reference_frame,
                mpeg2.motcomp.motcomp_addrgen.picbuf.backward_reference_frame);
+      $display("[tb]   resample: addrgen_state=%0d busy=%b disp_addr_full=%b disp_addr_afull=%b resample_wr_afull=%b",
+               mpeg2.resample.resample_addrgen.state, mpeg2.resample.resample_addrgen.busy,
+               mpeg2.resample.resample_addrgen.disp_wr_addr_full,
+               mpeg2.resample.resample_addrgen.disp_wr_addr_almost_full,
+               mpeg2.resample.resample_addrgen.resample_wr_almost_full);
       $display("[tb]   resp router: mem_res_rd_empty=%b tag_rd_empty=%b",
                mpeg2.framestore.framestore_response.mem_res_rd_empty,
                mpeg2.framestore.framestore_response.tag_rd_empty);
