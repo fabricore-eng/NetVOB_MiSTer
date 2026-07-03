@@ -2104,3 +2104,17 @@ building: nothing.
   re-gate itself needs a board go. Board released clean, menu.rbf reloaded. | advanced: STALL FIXED
   ON HW + decode-correctness objectively evidenced | blocked: valid milestone verdict needs a
   phase-robust (static-clip) re-gate | building: —
+- 2026-07-03 #9 (MILESTONE — HW decode-correctness gate PASS, phase-free) — Re-gated with a
+  STATIC clip (frozen testsrc2 frame-0, all-identical all-intra frames; `STATIC=1
+  make_test480i.sh`) so the free-running decoder always produces the SAME picture — removing the
+  animation-phase floor that capped the earlier run at 0.92. VERDICT=PASS: frame-0 best-match SSIM
+  **0.9918** vs golden ref_frame_01 (%diff 0.111; need ≥0.95 / ≤2.0), bars cross-check 0.9933. The
+  signature is clean/phase-locked: the static decode matches ONLY ref_frame_01 (frame-0) at 0.9918
+  while refs 02–06 (other phases) sit ~0.92 — not a lucky match. Decoder healthy throughout (U:0,
+  FC 0258→030C, RP tracks P, J==Z). This OBJECTIVELY CLOSES the decode-correctness milestone — the
+  project's center of gravity per CLAUDE.md: the credit-queue + ramstyle build decodes correctly on
+  silicon. De-risked FPGA-independently first (ffmpeg: static-clip frame-0 == original frame-0 at
+  0.9990). Recorded: group-chat verify=PASS + artifacts tools/hw_gate_runs/staticgate_20260703_PASS/.
+  NEXT rungs (NOT decode): the parked display-ack wedge (freezes scanout ~frame 4), then audio /
+  A-V sync / scanout-interlace (the OSD-squish video-timing bug). | advanced: DECODE-CORRECTNESS
+  MILESTONE MET ON HW (SSIM 0.9918) | blocked: none | building: —
