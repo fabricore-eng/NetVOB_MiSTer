@@ -1,5 +1,5 @@
 diff --git a/rtl/mem_shim.sv b/rtl/mem_shim.sv
-index 33f3c2a..472adca 100644
+index 33f3c2a..293870c 100644
 --- a/rtl/mem_shim.sv
 +++ b/rtl/mem_shim.sv
 @@ -62,6 +62,42 @@ module mem_shim (
@@ -45,7 +45,7 @@ index 33f3c2a..472adca 100644
      // =========================================================================
      // 2-State FSM + Skid Buffer
      // =========================================================================
-@@ -80,136 +116,300 @@ module mem_shim (
+@@ -80,136 +116,306 @@ module mem_shim (
  
      reg state;
  
@@ -170,9 +170,15 @@ index 33f3c2a..472adca 100644
 +    // HEAD, and a hold simply does not consume the head. Loss-free by arithmetic:
 +    // grants stop while (count + in-flight) can still be absorbed; worst case the
 +    // queue peaks at exactly 4 with zero loss. Full-rate: 1 pull/cycle sustained.
-+    reg  [1:0] q_cmd  [0:3];
-+    reg [21:0] q_addr [0:3];
-+    reg [63:0] q_dta  [0:3];
++    // ramstyle=logic is REQUIRED: without it Quartus infers these tiny 4-deep arrays
++    // as altsyncram/M10K block RAM, which (a) placed the q_addr RAM in a far corner
++    // (X41_Y69) wrecking clock skew (-2.012ns) and (b) routed ~1.3ns from the RAM to the
++    // raw_collides logic — together a -0.852ns setup miss on general[1] (108MHz). A 4-deep
++    // queue read COMBINATIONALLY at the head belongs in ALM regs + a LUT mux, co-located
++    // with the credit-gate logic. Synthesis-only attribute — sim behaviour is unchanged.
++    (* ramstyle = "logic" *) reg  [1:0] q_cmd  [0:3];
++    (* ramstyle = "logic" *) reg [21:0] q_addr [0:3];
++    (* ramstyle = "logic" *) reg [63:0] q_dta  [0:3];
 +    reg  [1:0] q_head, q_tail;
 +    reg  [2:0] q_count;
 +    wire        saved_valid = (q_count != 3'd0);   // head aliases (FSM body reads these)
@@ -422,7 +428,7 @@ index 33f3c2a..472adca 100644
          end
      end
  
-@@ -231,7 +431,43 @@ module mem_shim (
+@@ -231,7 +437,43 @@ module mem_shim (
          end else begin
              if (rd_accepted)        rd_count  <= rd_count  + 1'd1;
              if (wr_accepted)        wr_count  <= wr_count  + 1'd1;
@@ -467,7 +473,7 @@ index 33f3c2a..472adca 100644
          end
      end
  
-@@ -247,7 +483,7 @@ module mem_shim (
+@@ -247,7 +489,7 @@ module mem_shim (
          if (ram_write)              debug_cmd = CMD_WRITE;
          else if (ram_read)          debug_cmd = CMD_READ;
          else if (saved_valid)       debug_cmd = saved_cmd;
@@ -476,7 +482,7 @@ index 33f3c2a..472adca 100644
          else                        debug_cmd = CMD_NOOP;
      end
  
-@@ -258,6 +494,6 @@ module mem_shim (
+@@ -258,6 +500,6 @@ module mem_shim (
      assign debug_rd_count         = rd_count;
      assign debug_wr_count         = wr_count;
      assign debug_rsp_count        = rsp_count;

@@ -2067,3 +2067,20 @@ building: nothing.
   check (worst setup was +0.040ns — the queue adds logic) then the HW decode gate (human's per-run go);
   target = settled frames 0-2 in DDR, frame-0 SSIM>=0.95. | advanced: candidate validated + building |
   blocked: none | building: quartus-dvd on dell (~35 min).
+- 2026-07-03 #7 (rc=0 build had NEGATIVE setup — credit-queue arrays inferred as M10K block RAM;
+  fixed with ramstyle=logic) — The 3d8e036d credit-queue build compiled rc=0, but STA worst-case
+  SETUP was -0.852ns / TNS -4.629 on general[1] (the 108MHz f2sdram/mem clock; general[0]=27MHz
+  decoder); every other clock positive. Post-fit report_timing pinned it: the 4-deep q_addr/q_dta
+  queue arrays were synthesized into altsyncram/M10K block RAM, placed in a far corner (X41_Y69)
+  → -2.012ns clock skew + ~1.3ns RAM→raw_collides routing, feeding the long
+  saved_addr→raw_collides→consumed_a→credit-gate combinational chain (6 logic levels in a 9.26ns
+  period). A 4-deep queue read COMBINATIONALLY at the head belongs in ALM regs + a LUT mux
+  co-located with the credit logic, not block RAM. FIX: (* ramstyle = "logic" *) on
+  q_cmd/q_addr/q_dta — SYNTHESIS-ONLY (Verilator ignores it), so sim is unchanged. Lint parses the
+  attribute; baseline sim BYTE-IDENTICAL (frame0 7121664c, frame1 2407714 — both match
+  run_v_final_base; whole-ppm md5 is valid here because the baseline arm has no timing
+  perturbation). Patch regenerated (33f3c2a→293870c), shim scp'd to dell (md5 c93e92b0), no-ref
+  hub build relaunched. NEXT: confirm build rc=0, re-STA (expect general[1] setup positive), then
+  the HW decode gate (human's per-run go); target unchanged = settled frames 0-2, frame-0
+  SSIM≥0.95. | advanced: timing root-caused + fixed (RAM→logic), sim byte-identical |
+  blocked: none | building: quartus-dvd on dell.
