@@ -28,7 +28,18 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLI="${ALLI:-0}"
-if [ "$ALLI" = 1 ]; then
+STATIC="${STATIC:-0}"
+if [ "$STATIC" = 1 ]; then
+  # STATIC variant (default out: test480i_static.m2v): freeze testsrc2 frame 0 and encode
+  # DUR seconds of that ONE picture (all-identical, all-intra) frames. Purpose: a PHASE-FREE
+  # decode gate. A free-running HW decoder produces ~780 frames of a looping clip, so a
+  # framestore snapshot lands on an ARBITRARY animation phase; against a sparse reference set
+  # whose own adjacent-frame SSIM is only ~0.92, even a flawless decode can't clear 0.95. A
+  # static clip removes phase entirely — every decoded frame is the same picture, so the
+  # snapshot compares directly to a single reference (expect >=0.95 if decode is correct).
+  # See docs/progress.md 2026-07-03 #8/#9.
+  OUT="${1:-${HERE}/test480i_static.m2v}"; GOP=1; BF=0
+elif [ "$ALLI" = 1 ]; then
   OUT="${1:-${HERE}/test480i_ntsc_allI.m2v}"; GOP=1; BF=0
 else
   OUT="${1:-${HERE}/test480i_ntsc.m2v}"; GOP=12; BF=2
@@ -37,13 +48,27 @@ DUR="${2:-3}"
 
 command -v ffmpeg >/dev/null || { echo "ERROR: ffmpeg not found" >&2; exit 1; }
 
-ffmpeg -hide_banner -loglevel error -y \
-  -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=${DUR}" \
-  -c:v mpeg2video -pix_fmt yuv420p \
-  -flags +ilme+ildct -top 1 -g "$GOP" -bf "$BF" \
-  -b:v 6000k -maxrate 9000k -minrate 0 -bufsize 1835008 \
-  -profile:v 4 -level:v 8 \
-  -f mpeg2video "$OUT"
+if [ "$STATIC" = 1 ]; then
+  STILL="$(mktemp -t still480.XXXXXX).png"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=720x480:rate=30000/1001" -frames:v 1 "$STILL"
+  ffmpeg -hide_banner -loglevel error -y \
+    -loop 1 -i "$STILL" -t "$DUR" -r 30000/1001 \
+    -c:v mpeg2video -pix_fmt yuv420p \
+    -flags +ilme+ildct -top 1 -g "$GOP" -bf "$BF" \
+    -b:v 6000k -maxrate 9000k -minrate 0 -bufsize 1835008 \
+    -profile:v 4 -level:v 8 \
+    -f mpeg2video "$OUT"
+  rm -f "$STILL"
+else
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=720x480:rate=30000/1001:duration=${DUR}" \
+    -c:v mpeg2video -pix_fmt yuv420p \
+    -flags +ilme+ildct -top 1 -g "$GOP" -bf "$BF" \
+    -b:v 6000k -maxrate 9000k -minrate 0 -bufsize 1835008 \
+    -profile:v 4 -level:v 8 \
+    -f mpeg2video "$OUT"
+fi
 
 # Sanity: must be an ES (first 4 bytes = 00 00 01 b3 sequence_header_code).
 hdr="$(xxd -p -l 4 "$OUT")"
