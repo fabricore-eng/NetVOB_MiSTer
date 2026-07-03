@@ -7,8 +7,9 @@ took up the **display-ack wedge** (the parked "scanout freeze ~frame 4" rung) an
 it — with a surprise: **the permanent frame-4 *decoder freeze* reproduced in the memshim
 co-sim was substantially a SIM-CONFIG ARTIFACT (a PAL/NTSC modeline mismatch), not a real
 silicon decode block.** Fixed the sim harness; decode is byte-identical. A real but
-NON-decode-blocking residual (mixer underrun fragility) is scoped as a follow-up. Committed +
-pushed (c7b220e). No board used, no locks held.
+NON-decode-blocking residual (mixer underrun fragility) is now **fully planned** (Plan-agent
+designed + adversarially reviewed): `docs/plans/mixer-hardening-bounded-statewait-resync.md` — that
+is the immediate next action (sim-only, no board). No board used, no locks held.
 
 ## What was established this session (all empirically probe-verified)
 - **Instrumented the co-sim** (`core/sim/memshim/tb_memshim.v`): added the full display-path
@@ -40,16 +41,18 @@ pushed (c7b220e). No board used, no locks held.
   stall). The mixer's underrun-recovery is genuinely fragile — a HW smoothness-margin item.
 
 ## Next steps (ranked)
-1. **(Optional robustness) bounded-STATE_WAIT re-sync in `mixer.v`.** The mixer's clean-path
-   STATE_WAIT dwell is ≤ ~1 line; a broken alignment dwells up to ~1 field. Add a dwell counter:
-   if STATE_WAIT persists > N line-times (N ≫ 1 line, ≪ 1 field), force a drain/re-search so the
-   queue keeps draining and never backpressures decode into a freeze — LOG+count the resync
-   (doctrine #3, never mask). Inert on the clean path (N never trips) → byte-identical. NB the
-   prior workflow's 3 fixes (decouple-picbuf / level-ack / vsync-drain-every-field) were ALL
-   adversarially found RISKY/BROKEN — do not resurrect them verbatim. The mixer FSM differs
-   between the sim (pristine `core/mpeg2fpga`) and HW (fork `core/MiSTer_MPEG2`, only a `clk_en`
-   gate) — apply to both; validate in sim (harsh NTSC must no longer permanently stall + decode
-   byte-identical), never build for it alone.
+1. **(IMMEDIATE — chosen track A) Implement the mixer hardening.** Full, RTL-exact, adversarially
+   reviewed plan: **`docs/plans/mixer-hardening-bounded-statewait-resync.md`**. Summary: add a
+   saturating `wait_dwell` counter in `mixer.v` STATE_WAIT; on `wait_dwell==WAIT_TIMEOUT_N`
+   (N=131071 dot_clks ≈ 0.58 field ≫ the ≤859 clean-path dwell) force `next=STATE_INIT` AND clear
+   `position_in_0 <= ROW_X_COL_X` (this is what avoids the re-park trap — it un-stickies
+   `first_pixel_read` so STATE_INIT actually DRAINS), plus a LOUD `mixer_resync_cnt`. Apply to BOTH
+   mixer.v copies (pristine `core/mpeg2fpga` ungated = what the sim compiles; fork
+   `core/MiSTer_MPEG2` clk_en-gated = HW). `display_first_pixel` is left UNCHANGED (interlace parity
+   safe). Validate in sim ONLY (no FPGA build): baseline `+ddr_rd_latency=30` → `mixer_resync_cnt==0`
+   + per-slot Y-md5 + tv_out byte-identical; harsh `+ddr_rd_latency=30 +ddr_wait_period=8
+   +ddr_rd_jitter=7` → no WATCHDOG stall + decode advances + `mixer_resync_cnt>0` (modest). Do NOT
+   resurrect the 3 broken auto-fixes (vsync-drain / rptr-reset / picbuf-ack-timeout) — see the plan.
 2. **The REAL HW scanout symptom** (black display / OSD-squish) is the SEPARATE video-timing /
    interlace bug — see [[scanout-blind-spot-ddr-vs-crt]]. Triangulate via the Frank-menu test +
    an HDMI OSD grab; this is decode-independent and is NOT the freeze above.
