@@ -19,7 +19,14 @@
 #   make png    -> render a framestore Y plane to PNG (rung: frame-png)
 #
 # Knobs:
-#   MODELINE=MODELINE_PAL_INTERL (default; greyramp geometry)
+#   MODELINE=MODELINE_NTSC_INTERL (default) — MUST match the HW build, whose
+#     core/MiSTer_MPEG2/rtl/mpeg2/modeline.v defaults to MODELINE_NTSC_INTERL
+#     (720x480i, BT.601). The 720x480 NTSC test clips need NTSC display geometry:
+#     under the old PAL default (576-line raster) the mixer's first-pixel-of-line
+#     realign (mixer.v display_first_pixel) can never satisfy a stored ROW_0_COL_0,
+#     so it parks in STATE_WAIT, backpressures resample->disp->addrgen, and PERMANENTLY
+#     wedges the decoder at ~frame 4 — a SIM-CONFIG ARTIFACT the HW never sees. Keep this
+#     matched to the stream/HW. (See docs handoff: display-ack-wedge = PAL-modeline artifact.)
 #   DDR_LATENCY=8   DDR_WAIT=0   DDR_JITTER=0   (passed to ddr3_model via run_memshim.sh)
 
 MPEG2    := $(abspath ../../mpeg2fpga)
@@ -34,7 +41,7 @@ BIN      := $(OBJDIR)/Vtb_memshim
 PATCHDIR := $(abspath ../../patches)
 PATCHES  := $(sort $(wildcard $(PATCHDIR)/*.patch))
 
-MODELINE ?= MODELINE_PAL_INTERL
+MODELINE ?= MODELINE_NTSC_INTERL
 STREAM   ?= $(MPEG2)/tools/streams/greyramp.mpg
 
 # Bench infra: soft FIFOs + behavioral dual-clock CDC (NO Xilinx prims).

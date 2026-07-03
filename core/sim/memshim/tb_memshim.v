@@ -622,6 +622,42 @@ module tb_memshim();
       $display("[tb]   resp router: mem_res_rd_empty=%b tag_rd_empty=%b",
                mpeg2.framestore.framestore_response.mem_res_rd_empty,
                mpeg2.framestore.framestore_response.tag_rd_empty);
+      // === DISPLAY-ACK WEDGE micro-root discriminators ===
+      // rdta_state 6==STATE_READY (pixel-backpressure) ; 1..4==STATE_RD_OSD/Y/U/V (data starvation / pairing desync)
+      $display("[tb]   resample_dta: state=%0d fifo_read=%b fifo_valid=%b disp_fwft_valid=%b disp_fwft_rd_en=%b resample_fwft_valid=%b",
+               mpeg2.resample.resample_dta.state,
+               mpeg2.resample.resample_dta.fifo_read,
+               mpeg2.resample.resample_dta.fifo_valid,
+               mpeg2.resample.resample_dta.disp_fwft_valid,
+               mpeg2.resample.resample_dta.disp_fwft_rd_en,
+               mpeg2.resample.resample_dta.resample_fwft_valid);
+      $display("[tb]   resample_bilinear: state=%0d pixel_wr_afull=%b fifo_read=%b pixel_wr_en=%b",
+               mpeg2.resample.resample_bilinear.state,
+               mpeg2.resample.resample_bilinear.pixel_wr_almost_full,
+               mpeg2.resample.resample_bilinear.fifo_read,
+               mpeg2.resample.resample_bilinear.pixel_wr_en);
+      $display("[tb]   disp_reader: rd_dta_empty=%b rd_dta_aempty=%b rd_dta_valid=%b rd_dta_en=%b wr_dta_full=%b wr_dta_afull=%b rd_addr_empty=%b",
+               mpeg2.disp_reader.rd_dta_empty,
+               mpeg2.disp_reader.rd_dta_almost_empty,
+               mpeg2.disp_reader.rd_dta_valid,
+               mpeg2.disp_reader.rd_dta_en,
+               mpeg2.disp_reader.wr_dta_full,
+               mpeg2.disp_reader.wr_dta_almost_full,
+               mpeg2.disp_reader.rd_addr_empty);
+      $display("[tb]   pixel_queue: cnt_wr=%0d cnt_rd=%0d wr_afull=%b wr_full=%b rd_empty=%b rd_valid=%b rd_underflow=%b do_disp=%b disp_wr_dta_afull=%b",
+               cnt_pixel_wr, cnt_pixel_rd,
+               mpeg2.pixel_wr_almost_full, mpeg2.pixel_wr_full, mpeg2.pixel_rd_empty_pqueue,
+               mpeg2.pixel_rd_valid_pqueue, mpeg2.pixel_rd_underflow_pqueue,
+               mpeg2.framestore.framestore_request.do_disp,
+               mpeg2.framestore.framestore_request.disp_wr_dta_almost_full);
+      // === RASTER-CONSUMER (mixer) — THE ORIGIN of the backpressure cascade ===
+      // mst: 0=INIT 1=WAIT 2=FIRST_PIXEL 4=PIXEL 6=LAST_PIXEL. If h_pos/v_pos are advancing but prd_en stuck 0
+      // in WAIT, display_first_pixel never re-matches the frozen pos0 => the underrun re-align trap.
+      $display("[tb]   mixer: state=%0d pixel_rd_en=%b first_pixel_read=%b display_first_pixel=%b position_in_0=%0d h_pos=%0d v_pos=%0d pixel_en_in=%b h_sync_in=%b v_sync_in=%b",
+               mpeg2.mixer.state, mpeg2.mixer.pixel_rd_en,
+               mpeg2.mixer.first_pixel_read, mpeg2.mixer.display_first_pixel,
+               mpeg2.mixer.position_in_0, mpeg2.mixer.h_pos, mpeg2.mixer.v_pos,
+               mpeg2.mixer.pixel_en_in, mpeg2.mixer.h_sync_in, mpeg2.mixer.v_sync_in);
       ddr3.report_counts;
       $display("================================================================");
     end
@@ -641,19 +677,45 @@ module tb_memshim();
       if (mem_req_rd_addr == 22'h1EFFFF) cnt_valid_ae <= cnt_valid_ae + 1;
     end
 
+  // pixel-path liveness counters (DISPLAY-ACK WEDGE forensics). Sampled on mem_clk;
+  // the 108/27 clock-ratio overcounts by ~4x but that is irrelevant — we only read these
+  // as "advancing (consumer alive)" vs "frozen (consumer dead)" between heartbeats.
+  reg [31:0] cnt_pixel_wr;   // resample_bilinear -> pixel_queue writes  (producer)
+  reg [31:0] cnt_pixel_rd;   // pixel_queue -> mixer valid reads         (raster consumer liveness)
+  always @(posedge mem_clk)
+    if (~rst) begin cnt_pixel_wr <= 0; cnt_pixel_rd <= 0; end
+    else begin
+      if (mpeg2.pixel_wr_en)            cnt_pixel_wr <= cnt_pixel_wr + 1;
+      if (mpeg2.pixel_rd_valid_pqueue)  cnt_pixel_rd <= cnt_pixel_rd + 1;
+    end
+
   // trajectory trace: one line per ~1ms of sim time (108K mem cycles)
   reg [31:0] traj_ctr;
   always @(posedge mem_clk) begin
     if (~rst) traj_ctr <= 0;
     else begin
       traj_ctr <= traj_ctr + 1;
-      if (traj_ctr % 108000 == 0)
+      if (traj_ctr % 108000 == 0) begin
         $display("[traj %0t] i=%0d mb=%0d fr=%0d wr=%h rd=%h vbw_empty=%b busy=%b flush=%b rdcnt=%0d",
                  $time, i, macroblock_address, frame_number,
                  mpeg2.framestore.framestore_request.vbuf_wr_addr,
                  mpeg2.framestore.framestore_request.vbuf_rd_addr,
                  mpeg2.framestore.framestore_request.vbw_rd_empty,
                  busy, mpeg2.flush_vbuf, shim_rd_count);
+        // DISPLAY-path liveness: pwr/prd advancing => consumer alive; rdta/bil states + queue occupancy
+        $display("[pix  %0t] pwr=%0d prd=%0d pix_wr_afull=%b pix_wr_full=%b pix_rd_empty=%b rdta_st=%0d bil_st=%0d disp_wrdta_full=%b do_disp=%b",
+                 $time, cnt_pixel_wr, cnt_pixel_rd,
+                 mpeg2.pixel_wr_almost_full, mpeg2.pixel_wr_full, mpeg2.pixel_rd_empty_pqueue,
+                 mpeg2.resample.resample_dta.state, mpeg2.resample.resample_bilinear.state,
+                 mpeg2.disp_reader.wr_dta_full,
+                 mpeg2.framestore.framestore_request.do_disp);
+        // RASTER-CONSUMER (mixer) liveness: is the raster (h_pos/v_pos) still advancing, and why is the mixer parked?
+        $display("[mix  %0t] mst=%0d prd_en=%b fpx_rd=%b disp_fpx=%b pos0=%0d h_pos=%0d v_pos=%0d px_en=%b vsync=%b",
+                 $time, mpeg2.mixer.state, mpeg2.mixer.pixel_rd_en,
+                 mpeg2.mixer.first_pixel_read, mpeg2.mixer.display_first_pixel,
+                 mpeg2.mixer.position_in_0, mpeg2.mixer.h_pos, mpeg2.mixer.v_pos,
+                 mpeg2.mixer.pixel_en_in, mpeg2.mixer.v_sync_in);
+      end
     end
   end
 

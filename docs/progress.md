@@ -2118,3 +2118,34 @@ building: nothing.
   NEXT rungs (NOT decode): the parked display-ack wedge (freezes scanout ~frame 4), then audio /
   A-V sync / scanout-interlace (the OSD-squish video-timing bug). | advanced: DECODE-CORRECTNESS
   MILESTONE MET ON HW (SSIM 0.9918) | blocked: none | building: —
+- 2026-07-03 #10 (DISPLAY-ACK WEDGE — root-caused; the permanent decode-freeze is a SIM-CONFIG
+  ARTIFACT, plus a real residual mixer fragility) — Took up the "display-ack wedge" rung (scanout
+  freeze ~frame 4). Instrumented `core/sim/memshim/tb_memshim.v` with the full display-path probe
+  set (resample_dta.state / bilinear.state / disp_reader fifo occupancy / pixel_queue cnt_wr·cnt_rd
+  / **mixer.state·pixel_rd_en·display_first_pixel·position_in_0·h_pos·v_pos·pixel_en**) — the "one
+  probe deeper via mpeg2.resample.*" the prior handoff flagged. Reproduced the frame-4 permanent
+  wedge (`+ddr_rd_latency=30`) and mapped the freeze chain end-to-end, EMPIRICALLY (matches the
+  multi-agent workflow forensics; all three of that workflow's candidate fixes were adversarially
+  found RISKY/BROKEN): mixer parks in **STATE_WAIT** with `pixel_rd_en=0` (stored `position_in_0=
+  ROW_0_COL_0`, `display_first_pixel` never satisfied) → pixel_queue fills (`pixel_wr_almost_full`)
+  → resample_bilinear STATE_INIT → resample_dta STATE_READY → disp_rd_dta fills → `do_disp=0` →
+  disp_wr_addr fills → resample_addrgen STATE_WAIT → `output_frame_rd` never pulses → picbuf stuck
+  STATE_IP_FRAME_0 → motcomp_busy → vld_en=0 → decode freeze. `LOST_AT_SHIM=0` (byte-clean; pure
+  backpressure, NOT a pairing desync). **HEADLINE FINDING:** the PERMANENT frame-4 wedge is a
+  **PAL/NTSC modeline-mismatch artifact of the sim harness** — the memshim Makefile forced
+  `MODELINE_PAL_INTERL` (576-line raster) against the 720x480 **NTSC** clip, so a stored
+  ROW_0_COL_0 line-start can never satisfy `display_first_pixel` (needs h_pos==0 && v_pos==0 &&
+  pixel_en simultaneously on a raster whose geometry doesn't match the content) → the mixer parks
+  forever. The **HW build's `core/MiSTer_MPEG2/rtl/mpeg2/modeline.v` DEFAULTS to
+  `MODELINE_NTSC_INTERL`** (matched), so HW never sees this mismatch. Rebuilt the sim with NTSC:
+  it **decodes 8+ frames with no permanent wedge** (mixer self-heals each field). FIXED the
+  harness: `memshim/Makefile` default `MODELINE ?= MODELINE_NTSC_INTERL` (+ comment). Byte-identical
+  proven decode-neutral: all 4 framestore slots hash-identical PAL-vs-NTSC (extract_framestore_slots).
+  **RESIDUAL (real, but not the catastrophe the PAL sim showed):** the mixer underrun-recovery is
+  genuinely fragile — under HARSH latency (rd_lat=30 + wait=8 + jitter=7) even matched NTSC gets very
+  sluggish (long STATE_WAIT parks) though it always recovers (no permanent stall in 300ms sim). A
+  bounded-STATE_WAIT re-sync in the mixer would harden HW smoothness but is NOT decode-blocking.
+  NET: the "display-ack wedge" as a *decode-blocking freeze* was largely a sim artifact; the real HW
+  scanout concern is the SEPARATE video-timing/interlace bug ([[scanout-blind-spot-ddr-vs-crt]]),
+  triangulated via Frank-menu + HDMI-OSD, not this. | advanced: display-wedge root-caused +
+  sim-harness modeline bug FIXED (decode-neutral) | blocked: none | building: —
