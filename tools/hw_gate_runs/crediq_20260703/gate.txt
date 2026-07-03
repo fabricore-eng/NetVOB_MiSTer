@@ -1,0 +1,49 @@
+=== hw_decode_verify.sh ===
+HW bin : /tmp/hw_gate_crediq/fs_crediq.bin  (14680064 bytes)
+Refs   : 6 frames in /Users/human/Dev/fabricore/NetVOB_MiSTer/core/sim/artifacts/decode_ref_set
+
+--- Step 1: render framestore ---
+render_framestore: 14680064 bytes, 720x480, flip=True bias=True
+  FRAME_0 @word 0x0: mean=126.1 nonzero%=100.0 stddev=56.1 -> /tmp/hw_gate_crediq/render/rendered/frame0_Y.png  <-- looks like real image
+  FRAME_1 @word 0x60000: mean=126.0 nonzero%=100.0 stddev=56.1 -> /tmp/hw_gate_crediq/render/rendered/frame1_Y.png  <-- looks like real image
+  FRAME_2 @word 0xc0000: mean=126.0 nonzero%=100.0 stddev=56.1 -> /tmp/hw_gate_crediq/render/rendered/frame2_Y.png  <-- looks like real image
+  FRAME_3 @word 0x120000: mean=126.0 nonzero%=100.0 stddev=56.1 -> /tmp/hw_gate_crediq/render/rendered/frame3_Y.png  <-- looks like real image
+
+--- Step 2: auto-pick decoded slot ---
+  FRAME_0: mean=126.1 stddev=56.13
+  FRAME_1: mean=126.0 stddev=56.13
+  FRAME_2: mean=126.0 stddev=56.14
+  FRAME_3: mean=126.0 stddev=56.13
+PICK_SLOT=2
+PICK_MEAN=126.03
+PICK_SD=56.14
+
+Selected FRAME_2 (mean=126.03 stddev=56.14)
+
+--- Step 3: full-frame best-match SSIM (6 refs) ---
+  ref_frame_01.png: SSIM=0.9206  %diff=7.065  MISMATCH
+  ref_frame_02.png: SSIM=0.9163  %diff=7.256  MISMATCH
+  ref_frame_03.png: SSIM=0.9178  %diff=7.097  MISMATCH
+  ref_frame_04.png: SSIM=0.9185  %diff=7.096  MISMATCH
+  ref_frame_05.png: SSIM=0.9175  %diff=7.451  MISMATCH
+  ref_frame_06.png: SSIM=0.9173  %diff=7.372  MISMATCH
+
+  >>> Best match: ref_frame_01.png  SSIM=0.9206  %diff=7.065  ref-Y-md5=868c34a88acd7fc22c53566c653bc31a
+
+--- Step 4: bars cross-check (crop 120,0,720,480 vs sim_ref_full_frame.png) ---
+  bars SSIM=0.9172  %diff=7.42
+  bars cross-check: PASS  (threshold: SSIM>=0.85)
+
+--- Step 5: VERDICT ---
+  full-frame best SSIM : 0.9206  (need >= 0.95)
+  full-frame %diff     : 7.065  (need <= 2.0)
+  bars cross-check SSIM: 0.9172  (informational, warn < 0.85)
+  matched reference    : ref_frame_01.png  (Y-md5 868c34a88acd7fc22c53566c653bc31a)
+
+  VERDICT=FAIL
+
+=== DECODE GATE: FAIL ===
+
+Interpretation:
+  SSIM=0.9206 below threshold 0.95 — partial decode or RTL arithmetic error.
+  Run with --keep to inspect rendered PNGs: /tmp/hw_gate_crediq/render/rendered/frame2_Y.png

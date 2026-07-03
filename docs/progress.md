@@ -2084,3 +2084,23 @@ building: nothing.
   the HW decode gate (human's per-run go); target unchanged = settled frames 0-2, frame-0
   SSIM≥0.95. | advanced: timing root-caused + fixed (RAM→logic), sim byte-identical |
   blocked: none | building: quartus-dvd on dell.
+- 2026-07-03 #8 (HW GATE run: the STALL is FIXED on silicon; decode is CORRECT; gate 0.95 is
+  unreachable vs an animated free-run — a test-methodology gap, not a decode fault) — Flashed the
+  ramstyle build (rbf 862b7e31) to the SuperStation: warm-reboot → .mgl clip load → framestore
+  dump → SSIM gate. The decoder RUNS HEALTHY past the old slice-2 death: UART U:0 (no zero-fill
+  recovery), FC advancing 0258→030C, RP tracks P, J==Z (whole stream consumed), all 4 framestore
+  slots hold full real frames (mean 126, nonzero 100%, stddev 56). THE WEEKS-LONG STALL IS FIXED
+  ON HW. Gate VERDICT=FAIL at SSIM 0.9206 (<0.95) — but proven to be the animation-PHASE floor, not
+  a decode error: ref01-vs-ref02 (two perfect SIM frames) = 0.9237/7.17%diff, HW-vs-ref01 =
+  0.9206/7.07% — statistically identical; region signatures match (TOP mad 6.6 vs 6.9, MID 4.6 vs
+  4.9, BOT 1.6 vs 1.7) so HW differs from the ref ONLY by animation phase; the static bottom band
+  is near-bit-perfect (0.9918). testsrc2 free-runs (~780 frames of a looping clip decoded) so the
+  framestore slots are arbitrary-phase; the full 4-slot×6-ref SSIM matrix is uniformly ~0.92 with
+  no aligned pair. The 0.95 bar sits BELOW the ref-vs-ref floor (0.9237) ⇒ unachievable for ANY
+  non-phase-aligned frame. So: no objective ≥0.95 number yet — the milestone can't be formally
+  claimed until the gate is phase-robust. NEXT: re-gate with a STATIC clip (freeze one frame,
+  encode all-identical → free-running decode always produces the same content → compares to one
+  reference phase-free, expect ≥0.95 if decode is correct). Clip+ref prep is FPGA-independent; the
+  re-gate itself needs a board go. Board released clean, menu.rbf reloaded. | advanced: STALL FIXED
+  ON HW + decode-correctness objectively evidenced | blocked: valid milestone verdict needs a
+  phase-robust (static-clip) re-gate | building: —
