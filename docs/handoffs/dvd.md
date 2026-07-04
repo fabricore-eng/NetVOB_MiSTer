@@ -10,8 +10,21 @@ is **full-height, not squished** — so the handoff's "fix interlace/HALFLINE" l
 video area is **pure flat black**. The display pipeline (framestore→resample→pixel_queue→mixer) can't feed
 one pixel/dot-clock in real time under f2sdram latency → the pixel_queue underruns → the mixer emits its
 default **Y=16,U=V=128 = pure black** (mixer.v:221). Decode is unaffected (no deadline; it just runs slower).
-**Confirmed the lever + quantified it; designed the fix; did NOT implement it** (it's a careful cross-module
-change to a placement-marginal core — deserves a focused validated cycle). RTL tree is clean (experiment reverted).
+**Confirmed the lever + quantified it. Implemented + sim-validated one candidate fix (arbiter reprioritization)
+— it is INERT (negative result; the oracle caught it pre-build), reverted.** The remaining fix (display read
+bursting) is bigger; deferred to a focused cycle. RTL tree is clean.
+
+## FIX ATTEMPT THIS SESSION — arbiter reprioritization: INERT (sim-validated negative)
+Hypothesis: reserve the shared read-slots for the real-time display by suppressing the deadline-free decode
+reference reads (`do_fwd`/`do_bwd`) when the display data FIFO is low (`disp_rd_dta_almost_empty`). Implemented
+in `framestore_request.v` (single file, no interface change), sim-validated at lat120/240: **zero change**
+(peak field mean 13.5→13.5). Why it failed: (1) the design's arbiter ALREADY makes display the TOP read
+priority (framestore_request.v:161-176 comment) — reprioritizing is redundant; (2) `[tb hb]` telemetry shows
+`rd-rsp=4` pinned (throttle saturated at 4 outstanding) with `do_disp=0` — display isn't losing an arbitration
+race, it's **throughput-capped**: the display's data+address FIFOs drain together so the guard rarely fired,
+and even if it did, total outstanding reads stay at 4. **Lesson: reprioritization within a fixed outstanding-
+read cap cannot help. The ONLY lever that moved the display was raising the TOTAL cap (ceiling exp 4→8 =
+13.5→45), which is HW-limited to 5 (→18, insufficient).** ⇒ the fix must raise per-slot THROUGHPUT = bursting.
 
 ## What this session established (empirically; sim + live HW with the human)
 - **Isolation is airtight.** DDR framestore dump (`/dev/mem 0x30000000`) renders a clean color test pattern
@@ -44,20 +57,24 @@ raw-DAC path — but that is NOT the current black-video bug). The prior "mixer 
 — which the last handoff had listed as an *optional* "only if a smoothness problem is observed" item. It is the
 PRIMARY blocker.
 
-## Next steps (ranked) — the FIX (design done, implementation pending)
-1. **Reserved read credits for the display client (preferred, HW-safe).** Give the real-time display dedicated
-   outstanding-read slots and throttle the deadline-free decode, keeping TOTAL ≤5 (below the 6-lock). e.g.
-   decode throttled at `outstanding>=3`, display allowed up to 5 → display always has ≥2 slots decode can't
-   take. **Requires cross-module plumbing:** the mem_shim throttle is BLIND (`mem_req_rd_cmd[1:0]` = only
-   NOOP/REFRESH/READ/WRITE, mem_shim.sv:7,41-44) — add an `is_display_read` bit from `framestore_request.v`
-   (it knows `do_disp` vs `do_fwd/do_bwd`, priority scheme :466-486) → mpeg2video port → emu.sv wiring →
-   mem_shim throttle. VALIDATE in the sim oracle at lat120/240 (target: peak field mean back toward ~74) BEFORE
-   a build. Watch: don't starve decode so hard it can't produce frames; keep the resp_timeout/wedge recovery intact.
-2. **Alternative — display read bursting** (`ddr3_burstcnt>1` for display): N words/read → N× throughput per
-   outstanding slot, stays HW-safe on count. More robust but bigger (framestore tiling means scanlines aren't
-   contiguous — burst within a macroblock row). Bigger change; consider if reserved-credits proves insufficient.
-3. **Combine with:** deeper `pixel_queue`/DISP FIFOs + prefetch-during-blank + priming the mixer (don't paint
-   until the queue fills) so a single underflow doesn't blank a whole field (mixer.v:131,136). Secondary.
+## Next steps (ranked) — the FIX (reprioritization ruled out; throughput is the lever)
+0. **Cheap diagnostics FIRST (no build), to pick the right big fix:**
+   (a) Add `disp_rd_addr_empty` + the `~mem_req_wr_almost_full/~tag_wr_almost_full` gate to the tb `[pix]` line
+   (tb_memshim.v:706) and rerun lat120 — confirm WHY `do_disp=0`: address-gen-bound (`disp_rd_addr_empty`) vs
+   throttle-bound. If address-gen-bound, a deeper `disp_wr_addr` prefetch (fifo_size DISP_ADDR) may be a lighter fix.
+   (b) Turn on the f2sdram reorder/drop knobs the latency sweep never used: `+ddr_reorder=7 +ddr_drop=2000`
+   (ddr3_model.v). The sim floors at ~13-85% black under pure latency but HW is 100% black — if reorder/drop
+   drives the sim to FULL black, then mem_shim response mis-routing (positional tag demux, no per-read ID —
+   mem_shim.sv burstcnt=1) is a CO-CONTRIBUTOR and needs a routing fix, not just throughput.
+1. **Display read bursting (leading throughput fix).** `ddr3_burstcnt>1` for display reads → N words/read → N×
+   throughput per outstanding slot, HW-safe on outstanding COUNT (stays ≤5). This is the only way to beat the
+   throughput ceiling inside the HW read cap. Bigger change (framestore_request issue + mem_shim burst + response
+   handling; note framestore tiling — burst within a macroblock row where addresses are contiguous). Validate in
+   the sim oracle at lat120/240 (target peak field mean → ~74) BEFORE a build.
+2. **Combine with:** deeper `pixel_queue`/DISP FIFOs + prime the mixer (don't paint until the queue fills) so a
+   single underflow doesn't blank a whole field (mixer.v:131,136). Secondary; won't fix throughput alone.
+3. **RULED OUT (do not repeat):** arbiter reprioritization (display is already top read-priority) — sim-proven
+   inert this session. And a plain READ_LIMIT bump (max HW-safe 5 → only 18 vs ~74 needed).
 4. **After the black is fixed:** the minor OSD color tint (component/YPbPr level) and then audio / A-V sync.
 
 ## Reproduce / validate (sim-only, from core/sim/memshim; each iter ~1-2 min, NO FPGA build)
