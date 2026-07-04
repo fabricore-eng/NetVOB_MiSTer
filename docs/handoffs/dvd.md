@@ -1,84 +1,77 @@
-# Handoff — dvd — 2026-07-03 (late)
-Branch: feat-decoder-bringup   ·   Repo: ~/Dev/fabricore/NetVOB_MiSTer   ·   HEAD: c7b220e
+# Handoff — dvd — 2026-07-03 (latest)
+Branch: feat-decoder-bringup   ·   Repo: ~/Dev/fabricore/NetVOB_MiSTer
 
 ## TL;DR
-The decode-correctness milestone remains **MET on HW** (frame-0 SSIM 0.9918). This session
-took up the **display-ack wedge** (the parked "scanout freeze ~frame 4" rung) and root-caused
-it — with a surprise: **the permanent frame-4 *decoder freeze* reproduced in the memshim
-co-sim was substantially a SIM-CONFIG ARTIFACT (a PAL/NTSC modeline mismatch), not a real
-silicon decode block.** Fixed the sim harness; decode is byte-identical. A real but
-NON-decode-blocking residual (mixer underrun fragility) is now **fully planned** (Plan-agent
-designed + adversarially reviewed): `docs/plans/mixer-hardening-bounded-statewait-resync.md` — that
-is the immediate next action (sim-only, no board). No board used, no locks held.
+The decode-correctness milestone remains **MET on HW** (frame-0 SSIM 0.9918). This session took the
+planned immediate action — **implement the mixer bounded-STATE_WAIT re-sync** — implemented it exactly
+per the plan in BOTH mixer.v copies, validated it **sim-only**, and the validation **FALSIFIED the
+plan**: the fix corrupts the *clean* path (fires ~2×/frame even at zero latency) because the plan's
+premise ("clean STATE_WAIT dwell ≤ 859 dot_clks") is empirically false — the mixer legitimately parks
+up to ~1.77 fields at every frame boundary waiting for the field-top raster line. Clean and harsh peak
+dwells are *identical* (~401k dot_clks) ⇒ no threshold can separate them. The fix was **cleanly
+reverted** (tree byte-identical to pre-fix reference); the plan doc is banner-marked ⛔ FALSIFIED.
+**Net: there is no mixer-FSM bug to fix here** — the "mixer underrun fragility" the prior handoff
+flagged is the mixer *correctly* waiting for the raster while the decoder is briefly memory-starved. No
+board used, no locks held.
 
-## What was established this session (all empirically probe-verified)
-- **Instrumented the co-sim** (`core/sim/memshim/tb_memshim.v`): added the full display-path
-  probe set to the periodic heartbeat + stall report — `resample_dta.state`,
-  `resample_bilinear.state`, `disp_reader` fifo occupancy, pixel_queue producer/consumer
-  counters, and the **mixer** state + raster (`h_pos`/`v_pos`/`pixel_en`/`position_in_0`). This
-  is the "one probe deeper via mpeg2.resample.*" the prior handoff flagged. Reusable kit.
-- **Freeze chain, empirically mapped** (matches the multi-agent workflow forensics exactly;
-  `LOST_AT_SHIM=0` throughout → pure backpressure, NOT a pairing desync — the old §FINAL
-  "disp addr/data resync" framing was off): mixer parks in **STATE_WAIT** `pixel_rd_en=0`
-  (stored `position_in_0=ROW_0_COL_0`, `display_first_pixel` never satisfied) →
-  `pixel_wr_almost_full` → resample_bilinear STATE_INIT → resample_dta STATE_READY →
-  `disp_wr_dta_almost_full` → `do_disp=0` → `disp_wr_addr_almost_full` → resample_addrgen
-  STATE_WAIT → `output_frame_rd` never pulses → picbuf stuck STATE_IP_FRAME_0 → motcomp_busy →
-  `vld_en=0` → decode freeze at frame 4.
-- **HEADLINE:** the permanent wedge is a **PAL/NTSC modeline mismatch**. The memshim `Makefile`
-  forced `MODELINE_PAL_INTERL` (576-line raster) against the 720x480 **NTSC** clip; a stored
-  `ROW_0_COL_0` can never satisfy `display_first_pixel` (needs `h_pos==0 && v_pos==0 &&
-  pixel_en` co-incident) on the wrong-geometry raster → mixer parks forever. The **HW build's
-  `core/MiSTer_MPEG2/rtl/mpeg2/modeline.v` DEFAULTS to `MODELINE_NTSC_INTERL`** (matched), so
-  silicon never sees the mismatch. Rebuilt sim with NTSC → **decodes 8+ frames, no permanent
-  wedge** (mixer self-heals each field).
-- **FIX (this session):** `core/sim/memshim/Makefile` now defaults
-  `MODELINE ?= MODELINE_NTSC_INTERL` (+ comment). **Decode byte-identical** across modelines —
-  all 4 framestore slots hash-match PAL-vs-NTSC (`extract_framestore_slots.py`); modeline feeds
-  only syncgen/display, never the decode data path.
-- **RESIDUAL (real, NOT decode-blocking):** under HARSH latency (`rd_lat=30 wait=8 jitter=7`)
-  even matched NTSC goes very sluggish (long STATE_WAIT parks) but always recovers (no permanent
-  stall). The mixer's underrun-recovery is genuinely fragile — a HW smoothness-margin item.
+## What this session established (all empirically probe-verified, sim-only)
+- Implemented the fix per plan (saturating `wait_dwell` → `wait_timeout` at N=131071 → force STATE_INIT
+  + clear `position_in_0<=ROW_X_COL_X` + LOUD `mixer_resync_cnt`), pristine ungated + fork clk_en-gated;
+  diff-shape verified (copies differ ONLY by clk_en), fork lints clean, sim builds clean.
+- **Inertness gate FAILED:** not byte-identical on baseline (`+ddr_rd_latency=30`, resync=8) NOR on the
+  zero-latency clean path (`+ddr_zero_latency`, resync=8). Fires ~2.0×/frame at zero latency, 2.8×/frame
+  harsh — i.e. it fires on NORMAL frame sync, not a distinct pathology.
+- **Why the plan is wrong (mechanism-level):** STATE_WAIT exits on `h_pos==0 && display_first_pixel`.
+  For a **ROW_X_COL_0** code that matches at the next line (≤1-line wait — the plan's assumption, correct
+  only here). For **ROW_0_COL_0 / ROW_1_COL_0** (field-top line-starts) it needs `v_pos==0 / v_pos==1` =
+  the raster reaching the top of the field, recurring ~once/frame ⇒ a legit wait up to ~1.77 fields every
+  frame boundary. Empirically every dwell >50k carried pos0=0 or pos0=1; none pos0=2.
+- **Passive max-dwell measurement (fix disabled, N unreachable, 32-bit counter + tb MAXDWELL latch):**
+  peak continuous STATE_WAIT dwell clean(zero-lat)=**401,111** vs harsh=**401,095** dot_clks — identical
+  (one NTSC field ≈ 225,917). ⇒ NO N is inert-on-clean yet fires-on-harsh. Mechanism unsalvageable.
+- **Reverted** all 3 touched files (both mixer.v + tb_memshim.v) to committed; reverted tree rebuilds
+  **byte-identical** to the pre-fix reference (sanity-confirmed). No broken RTL shipped.
+
+## Corrected mental model (supersedes prior handoff's "RESIDUAL: mixer fragility")
+The prior handoff called the harsh sluggishness "mixer underrun-recovery fragility" and proposed the
+bounded-STATE_WAIT re-sync. That framing is now **retired**: under the NTSC-matched modeline there is no
+mixer freeze — the long STATE_WAIT parks are the mixer's *normal, correct* frame-boundary raster sync.
+Under harsh latency the DECODER is briefly starved (a memory-throughput/pacing effect); the mixer then
+waits (correctly). A mixer-FSM change is the wrong layer and can only corrupt output. Observed once under
+harsh: a momentary decode starvation (`[traj] i` frozen for one heartbeat) that self-recovers — benign.
 
 ## Next steps (ranked)
-1. **(IMMEDIATE — chosen track A) Implement the mixer hardening.** Full, RTL-exact, adversarially
-   reviewed plan: **`docs/plans/mixer-hardening-bounded-statewait-resync.md`**. Summary: add a
-   saturating `wait_dwell` counter in `mixer.v` STATE_WAIT; on `wait_dwell==WAIT_TIMEOUT_N`
-   (N=131071 dot_clks ≈ 0.58 field ≫ the ≤859 clean-path dwell) force `next=STATE_INIT` AND clear
-   `position_in_0 <= ROW_X_COL_X` (this is what avoids the re-park trap — it un-stickies
-   `first_pixel_read` so STATE_INIT actually DRAINS), plus a LOUD `mixer_resync_cnt`. Apply to BOTH
-   mixer.v copies (pristine `core/mpeg2fpga` ungated = what the sim compiles; fork
-   `core/MiSTer_MPEG2` clk_en-gated = HW). `display_first_pixel` is left UNCHANGED (interlace parity
-   safe). Validate in sim ONLY (no FPGA build): baseline `+ddr_rd_latency=30` → `mixer_resync_cnt==0`
-   + per-slot Y-md5 + tv_out byte-identical; harsh `+ddr_rd_latency=30 +ddr_wait_period=8
-   +ddr_rd_jitter=7` → no WATCHDOG stall + decode advances + `mixer_resync_cnt>0` (modest). Do NOT
-   resurrect the 3 broken auto-fixes (vsync-drain / rptr-reset / picbuf-ack-timeout) — see the plan.
-2. **The REAL HW scanout symptom** (black display / OSD-squish) is the SEPARATE video-timing /
-   interlace bug — see [[scanout-blind-spot-ddr-vs-crt]]. Triangulate via the Frank-menu test +
-   an HDMI OSD grab; this is decode-independent and is NOT the freeze above.
-3. **Audio / A-V sync / PS→ES demux** (real DVD VOBs are program streams; current ingest is ES).
+1. **The REAL HW scanout symptom** (black display / OSD-squish) — the SEPARATE video-timing / interlace
+   bug, [[scanout-blind-spot-ddr-vs-crt]]. Decode-independent, NOT the (retired) mixer story. Triangulate
+   via the Frank-menu test + an HDMI OSD grab before touching syncgen interlace.
+2. **Audio / A-V sync / PS→ES demux** — real DVD VOBs are program streams; current ingest is ES.
+3. **(OPTIONAL, only if a smoothness problem is ever OBSERVED on HW)** characterize decode throughput vs
+   memory latency at the **memory/pacing layer** (NOT the mixer). This is a "does the decoder get data
+   fast enough under real DVD bitrate + f2sdram latency" question. Do not touch the bus without evidence
+   of a real HW symptom; the sim shows decode always advances (no watchdog) even under harsh latency.
 
-## Reproduce / validate
-- Wedge (artifact): `cd core/sim/memshim && make build MODELINE=MODELINE_PAL_INTERL &&
-  ./run_memshim.sh run_pal 9 900 -- +ddr_rd_latency=30` → permanent STALL at frame 4.
-- Healthy (HW-matched): `make build && ./run_memshim.sh run_ntsc 9 900 -- +ddr_rd_latency=30`
-  → 8+ frames, no permanent stall. (`make build` now defaults NTSC.)
-- Byte-identical: `python3 tools/build/extract_framestore_slots.py <run>/framestore_0000.ppm
-  <out>` → all 4 slot Y-md5s match across modelines.
+## Reproduce / validate (sim-only, from core/sim/memshim; each iter a few min, no FPGA build)
+- Falsification (fix was here, now reverted): the fix fired 8× on `run_memshim.sh run 4 300 --
+  +ddr_zero_latency` (should be 0 for a valid inert fix). To re-measure the true dwell if ever needed:
+  re-apply a passive `wait_dwell` counter + a tb `max_wait_dwell` latch with N unreachable, run zero vs
+  harsh, compare peaks (they match at ~401k → no viable timeout).
+- Healthy baseline (current committed tree): `make build && ./run_memshim.sh run 4 300 --
+  +ddr_rd_latency=30` → 4 frames, no stall. `make build` defaults NTSC (keep it matched to the clip).
+- Byte-identical anchor: whole-file md5 of framestore_0000..0002 + tv_out_0000..0012 (drop the LAST of
+  each series — the sim is killed mid-write so the last ppm is partial/non-deterministic).
 
 ## Landmarks
-- `core/sim/memshim/tb_memshim.v` — display-path probes: `[pix ...]`/`[mix ...]` heartbeats +
-  the extended stall report (mixer/resample_dta/pixel_queue block).
-- `core/sim/memshim/Makefile:37` — `MODELINE ?= MODELINE_NTSC_INTERL` (the harness fix).
-- `core/MiSTer_MPEG2/rtl/mpeg2/mixer.v:120-131` — the STATE_WAIT / `display_first_pixel` /
-  underrun-abandon logic (the fragility origin). `resample_addrgen.v:186,222` (STATE_WAIT +
-  the pulse-only `output_frame_rd`). `motcomp_picbuf.v:145` (the level-latched valid it acks).
-- `docs/progress.md` #10 — the detailed trail. Memory: [[display-wedge-pal-modeline-artifact]].
+- `docs/plans/mixer-hardening-bounded-statewait-resync.md` — ⛔ FALSIFIED banner + postmortem at top.
+- `core/mpeg2fpga/rtl/mpeg2/mixer.v:109-114` — `first_pixel_read` / `display_first_pixel` (the
+  ROW_0/1_COL_0 field-top-wait vs ROW_X_COL_0 next-line-wait distinction the plan missed). `:122`
+  STATE_WAIT arm. `syncgen.v` v_pos parity (`v_pos LSB = ~odd_field`). Fork copy identical + clk_en.
+- `core/sim/memshim/Makefile:37` — `MODELINE ?= MODELINE_NTSC_INTERL` (harness fix from #10; keep matched).
+- `docs/progress.md` #11 — full trail with numbers. #10 — the PAL-modeline root-cause it builds on.
+- Memory: [[mixer-hardening-falsified-field-top-wait]], [[display-wedge-pal-modeline-artifact]].
 
 ## Open questions / risks
-- **The mixer FSM differs sim-vs-HW** (only `clk_en`); a mixer fix must land in both and the sim
-  (pristine) is what validates it. Decode-path FSMs (resample*, picbuf, framestore*) are byte
-  identical across the two trees.
-- The sim's dot_clk free-runs; HW paces the mixer via `dot_ce`. Underrun dynamics may differ
-  slightly on HW — treat the sluggishness threshold as indicative, not exact.
-- Never re-introduce a modeline mismatch in the sim: keep `MODELINE` matched to the clip/HW.
+- Is there ANY observed HW smoothness problem to justify pursuing the throughput residual? None seen yet
+  (decode advances on HW; the sim never watchdogs under harsh). Treat as "no bug until a HW symptom".
+- The sim's dot_clk free-runs; HW paces the mixer via `dot_ce`. Underrun *dynamics* differ slightly, but
+  the falsification is structural (field-top waits exist on any correct raster) and holds regardless.
+- Keep the sim MODELINE matched to the clip (NTSC) — never re-introduce the PAL mismatch (#10).

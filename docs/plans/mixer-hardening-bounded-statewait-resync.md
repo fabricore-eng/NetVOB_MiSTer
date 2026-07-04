@@ -1,6 +1,35 @@
 # Plan — mixer underrun hardening (bounded-STATE_WAIT re-sync)
 
-**Status:** designed + adversarially reviewed (Plan agent, 2026-07-03), NOT yet implemented.
+> ## ⛔ FALSIFIED BY SIM — DO NOT IMPLEMENT (2026-07-03, late)
+> This mechanism was implemented exactly as specified below and **validated sim-only — it FAILED.**
+> The plan's load-bearing premise ("clean-path STATE_WAIT dwell ≤ 859 dot_clks / one line") is
+> **empirically false.** On the *cleanest possible* path (`+ddr_zero_latency`, a memory that can
+> never underrun) the mixer's **continuous** STATE_WAIT dwell peaks at **401,111 dot_clks (~1.77
+> fields)** — and the **harsh** path peaks at **401,095**, i.e. *identical*. So there is **no N**
+> that is inert on the clean path yet fires on the pathological one; any `N < ~401k` corrupts normal
+> output, any `N > ~401k` never fires (dead code).
+>
+> **Root cause of the plan's error:** STATE_WAIT exits on `h_pos==0 && display_first_pixel`.
+> `display_first_pixel` for a **ROW_X_COL_0** code (v_pos ∉ {0,1}) matches at the very next line
+> (≤1-line wait — the plan's assumption, correct *only* for this code). But for **ROW_0_COL_0 /
+> ROW_1_COL_0** (the *field-top* line-starts) it requires `v_pos==0 / v_pos==1`, i.e. the raster
+> reaching the **top of the field**, which recurs ~once per frame ⇒ a legitimate wait of up to
+> ~1.77 fields at **every frame boundary**. This is normal, correct raster-sync, present even at
+> zero latency. Empirically **every** dwell > 50k dot_clks carried `pos0=0` or `pos0=1`; none
+> carried `pos0=2` (ROW_X_COL_0). The dwell-timeout fired **~2.0×/frame on the zero-latency clean
+> path** (8 resyncs / 4 frames), only 2.8×/frame under harsh — i.e. it fires on normal frame sync,
+> not on a distinct pathology. Output was **not** byte-identical on baseline OR zero-latency (gate A/A0 FAIL).
+>
+> **Deeper conclusion:** with the NTSC-matched modeline the permanent wedge is *already gone* (it was
+> the PAL artifact, [[display-wedge-pal-modeline-artifact]]). What remains under harsh latency is the
+> mixer **correctly** waiting for the raster while the decoder is briefly starved — a decode-throughput /
+> memory-pacing symptom, **not** a mixer-FSM bug, and not separable from normal behavior by dwell time.
+> A dwell-timeout is the **wrong layer**. The fix (both mixer.v copies + tb probes) was **reverted**;
+> the tree is back to committed. Do **NOT** resurrect this — it now joins the 3 prior broken auto-fixes.
+> Evidence + method: `docs/progress.md` #11; run dirs `core/sim/memshim/run_{meas,post}_*`.
+
+**Status:** ⛔ FALSIFIED (implemented + sim-validated 2026-07-03; reverted). Originally: designed +
+adversarially reviewed (Plan agent, 2026-07-03).
 **Scope:** sim-validatable, no FPGA build required to prove it. Follow-up to the display-ack-wedge
 root-cause ([[display-wedge-pal-modeline-artifact]], progress.md #10, handoff docs/handoffs/dvd.md).
 **Why:** with the HW-matched NTSC modeline the permanent frame-4 wedge is gone, but the mixer's

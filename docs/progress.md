@@ -2149,3 +2149,33 @@ building: nothing.
   scanout concern is the SEPARATE video-timing/interlace bug ([[scanout-blind-spot-ddr-vs-crt]]),
   triangulated via Frank-menu + HDMI-OSD, not this. | advanced: display-wedge root-caused +
   sim-harness modeline bug FIXED (decode-neutral) | blocked: none | building: —
+- 2026-07-03 #11 (MIXER-HARDENING PLAN **FALSIFIED BY SIM** — implemented, validated, reverted) —
+  Implemented the bounded-STATE_WAIT re-sync exactly per `docs/plans/mixer-hardening-bounded-statewait-resync.md`
+  in BOTH mixer.v copies (pristine `core/mpeg2fpga` ungated = the sim's DUT; fork `core/MiSTer_MPEG2`
+  clk_en-gated = HW) + a `mixer_resync_cnt`/`wait_dwell` tb probe: saturating `wait_dwell` counter,
+  `wait_timeout=(wait_dwell==WAIT_TIMEOUT_N=131071)` → on timeout force `next=STATE_INIT` AND clear
+  `position_in_0<=ROW_X_COL_X`, plus a LOUD resync counter. Diff-shape verified (the two copies differ
+  ONLY by the clk_en port/gates; the new param decl + combinational STATE_WAIT arm are byte-identical
+  across copies), fork lints clean, sim builds clean. **Validation FAILED the inertness gate:** the fix
+  is NOT byte-identical on baseline (`+ddr_rd_latency=30`, resync=8) NOR on the zero-latency clean path
+  (`+ddr_zero_latency`, resync=8) — it fires **~2.0×/frame even at zero latency** (a memory that cannot
+  underrun), only 2.8×/frame under harsh. **Root cause of the plan's error, proven with a passive
+  max-dwell probe (fix disabled, N unreachable):** the plan's premise "clean-path STATE_WAIT dwell ≤ 859
+  (one line)" is empirically FALSE. STATE_WAIT for a **ROW_X_COL_0** code exits at the next line (≤1 line
+  — plan correct here), but for **ROW_0_COL_0 / ROW_1_COL_0** (field-top line-starts) it must wait for
+  `v_pos==0 / v_pos==1` = the raster reaching the top of the field, which recurs ~once/frame ⇒ a
+  legitimate wait of up to **~1.77 fields at every frame boundary**. Measured peak CONTINUOUS dwell:
+  clean(zero-lat)=**401,111** dot_clks vs harsh=**401,095** — *identical* (one field≈225,917). Every dwell
+  >50k carried pos0=0 or pos0=1; none pos0=2. So clean and pathological parks are indistinguishable by
+  dwell time → NO viable N (any N<401k corrupts normal output; any N>401k is dead code). **Deeper
+  conclusion:** with the NTSC-matched modeline the permanent wedge is already gone (the PAL artifact,
+  #10); the residual harsh sluggishness is the mixer CORRECTLY waiting for the raster while the decoder
+  is briefly starved — a decode-throughput/memory-pacing symptom, NOT a mixer-FSM bug, and a dwell-timeout
+  is the wrong layer (dropping mixer pixels can't feed the decoder faster). **REVERTED** all 3 files to
+  committed; reverted tree rebuilds byte-identical to the pre-fix reference (sanity-checked). Plan doc
+  banner-marked ⛔ FALSIFIED so no session re-attempts it (joins the 3 prior broken auto-fixes). Also
+  observed under harsh: a momentary decode starvation (`[traj] i` frozen one heartbeat) that self-recovers
+  — a real-but-benign throughput residual to characterize at the memory/pacing layer if ever pursued, NOT
+  here. Evidence: `core/sim/memshim/run_{meas,post,pre}_*`. | advanced: mixer-hardening approach
+  DISPROVEN + cleanly reverted (no broken RTL shipped); plan's field-top-wait blind spot documented |
+  blocked: none | building: —
