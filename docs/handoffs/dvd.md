@@ -62,10 +62,12 @@ PRIMARY blocker.
    (a) Add `disp_rd_addr_empty` + the `~mem_req_wr_almost_full/~tag_wr_almost_full` gate to the tb `[pix]` line
    (tb_memshim.v:706) and rerun lat120 — confirm WHY `do_disp=0`: address-gen-bound (`disp_rd_addr_empty`) vs
    throttle-bound. If address-gen-bound, a deeper `disp_wr_addr` prefetch (fifo_size DISP_ADDR) may be a lighter fix.
-   (b) Turn on the f2sdram reorder/drop knobs the latency sweep never used: `+ddr_reorder=7 +ddr_drop=2000`
-   (ddr3_model.v). The sim floors at ~13-85% black under pure latency but HW is 100% black — if reorder/drop
-   drives the sim to FULL black, then mem_shim response mis-routing (positional tag demux, no per-read ID —
-   mem_shim.sv burstcnt=1) is a CO-CONTRIBUTOR and needs a routing fix, not just throughput.
+   (b) [DONE this session — H2 REFUTED] `+ddr_reorder=7 @lat30` had ZERO effect: decode framestore byte-mean
+   identical to baseline AND display peak unchanged (74.7). So the mem_shim response routing IS reorder-robust
+   (the 4-deep CREDIT-queue hardening handles it) — response mis-routing is NOT a contributor. This + the
+   perfect-decode fact (any real drop/reorder would corrupt decode too, but HW decode is flawless) confirms the
+   display-black is PURE THROUGHPUT STARVATION. (Could still test `+ddr_drop`/`+ddr_refresh_period` for the
+   sim-85%→HW-100% gap, but that gap is most simply explained by HW effective latency > sim lat240, not routing.)
 1. **Display read bursting (leading throughput fix).** `ddr3_burstcnt>1` for display reads → N words/read → N×
    throughput per outstanding slot, HW-safe on outstanding COUNT (stays ≤5). This is the only way to beat the
    throughput ceiling inside the HW read cap. Bigger change (framestore_request issue + mem_shim burst + response
