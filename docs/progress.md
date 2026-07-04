@@ -2147,7 +2147,7 @@ building: nothing.
   bounded-STATE_WAIT re-sync in the mixer would harden HW smoothness but is NOT decode-blocking.
   NET: the "display-ack wedge" as a *decode-blocking freeze* was largely a sim artifact; the real HW
   scanout concern is the SEPARATE video-timing/interlace bug ([[scanout-blind-spot-ddr-vs-crt]]),
-  triangulated via Frank-menu + HDMI-OSD, not this. | advanced: display-wedge root-caused +
+  triangulated via the human-menu + HDMI-OSD, not this. | advanced: display-wedge root-caused +
   sim-harness modeline bug FIXED (decode-neutral) | blocked: none | building: —
 - 2026-07-03 #11 (MIXER-HARDENING PLAN **FALSIFIED BY SIM** — implemented, validated, reverted) —
   Implemented the bounded-STATE_WAIT re-sync exactly per `docs/plans/mixer-hardening-bounded-statewait-resync.md`
@@ -2179,3 +2179,32 @@ building: nothing.
   here. Evidence: `core/sim/memshim/run_{meas,post,pre}_*`. | advanced: mixer-hardening approach
   DISPROVEN + cleanly reverted (no broken RTL shipped); plan's field-top-wait blind spot documented |
   blocked: none | building: —
+- 2026-07-03 #12 (SCANOUT "BLACK VIDEO" **ROOT-CAUSED = display-read starvation under memory latency**;
+  reproduced in the memshim sim; fix designed, not yet implemented) — Live-triangulated the persistent CRT
+  black-video symptom WITH the human (he set the SuperStation to `direct_video=1`, component→CRT, `vga_scaler=0`).
+  **Isolation airtight:** `/dev/mem 0x30000000` framestore dump renders a CLEAN detailed color frame (gate
+  SSIM 0.92 = animated-clip phase floor); UART healthy (`P≈RP`, `VL/BN` nonzero); yet the CRT video is **pure
+  flat black** with a slightly-tinted (working) framework OSD. Crucially the OSD is **full-height, NOT squished**
+  → the handoff's "fix interlace/HALFLINE" lead is WRONG/moot; HALFLINE and the mixer-resync (#11) are BOTH
+  not-the-cause. **Mechanism:** the display chain framestore→resample→pixel_queue→mixer must feed 1px/dot-clock
+  in real time; under f2sdram latency the pixel_queue underruns and the mixer emits its default Y=16/U=V=128 =
+  pure black (mixer.v:219-232; leaves STATE_INIT only on `first_pixel_read`, mixer.v:110; mid-line underflow →
+  STATE_INIT blanks the field, :131,136). Decode is unaffected (no deadline; just runs slower). **This confirms
+  #11's parenthetical** ("characterize the throughput residual at the memory/pacing layer") — it's the PRIMARY
+  blocker, not optional. **Sim reproduces it (the oracle):** `core/sim/memshim` dumps `tv_out_*.ppm`; peak field
+  brightness collapses with `+ddr_rd_latency`: lat30→74.7, lat60→42, lat120→13.5, lat240→9.2(≈black); at lat240
+  only the first ~140px/line render then underrun→black = the CRT symptom exactly. **Bottleneck localized +
+  quantified:** `mem_shim.sv:144 READ_LIMIT=4` throttles ALL reads at `outstanding>=4`, SHARED decode+display;
+  HPS bridge LOCKS at 6 → max HW-safe=5. At lat120: `READ_LIMIT 4→13.5, 5→18.1, 8→45.5` (8 HW-UNSAFE, ceiling
+  ref only) — **the simple bump to 5 is INSUFFICIENT.** Throughput math: display needs ~1.9M reads/s; shared-4
+  under HW latency starves the real-time client while deadline-free decode completes (bandwidth is fine; it's
+  latency×outstanding-reads, mem_shim `burstcnt=1`). **Fix designed (NOT implemented — deferred to a focused
+  validated cycle on this placement-marginal core):** reserved read credits for the display client (dedicated
+  slots, throttle decode, total ≤5) — needs cross-module plumbing of an `is_display_read` bit
+  (framestore_request→mpeg2video→emu→mem_shim; the shim throttle is blind, sees only cmd[1:0]). Alt = display
+  read bursting. Validate in the sim oracle at lat120/240 (peak mean back toward ~74) BEFORE any build. RTL tree
+  clean (READ_LIMIT experiment reverted to 4; no broken RTL shipped). Board released, no locks held. New memory:
+  [[scanout-black-display-read-starvation]]. Full detail + landmarks: `docs/handoffs/dvd.md`. | advanced:
+  root-caused the #1 blocker (black scanout) + built an offline sim repro + confirmed/quantified the lever
+  (READ_LIMIT) + designed the HW-safe fix | blocked: fix implementation (cross-module reserved-credits, next
+  cycle) | building: —
