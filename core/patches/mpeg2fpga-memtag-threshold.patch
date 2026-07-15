@@ -1,0 +1,19 @@
+diff --git a/rtl/mpeg2/fifo_size.v b/rtl/mpeg2/fifo_size.v
+index 7eb20c2..0504aad 100644
+--- a/rtl/mpeg2/fifo_size.v
++++ b/rtl/mpeg2/fifo_size.v
+@@ -204,7 +204,13 @@ parameter
+  */
+ 
+   MEMTAG_DEPTH      = 9'd5,
+-  MEMTAG_THRESHOLD  = MEM_THRESHOLD,
++  MEMTAG_THRESHOLD  = 9'd8,  /* was MEM_THRESHOLD(16): reserve 8 free slots instead of 16.
++                                prog_full now asserts at occupancy >= 24 of 32; the gate-to-stop
++                                slip is <=2-3 requests (registered flag), so the fifo cannot
++                                overflow, and the deeper in-flight allowance stops the tag gate
++                                from throttling the display during response-router backlog
++                                (tag_af duty was 45-78% under HW-like DDR latency — the 0a
++                                diagnostic 2026-07-14; display starves through this gate). */
+ 
+ /*
+  * mem_response_fifo. 64 bits wide.

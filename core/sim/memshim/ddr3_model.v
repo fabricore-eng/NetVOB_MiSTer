@@ -153,6 +153,27 @@ module ddr3_model (
   integer refresh_hold;       // +ddr_refresh_hold=H    ... hold waitrequest high for H cycles (refresh/
                               //                        arbitration outage bursts the master never sees in
                               //                        the fixed-latency model)
+  integer tail_drop_period;   // +ddr_tail_drop_period=N  PARTIAL-BURST LOSS (2026-07-15 review): on every
+                              //                        Nth burst read (len>1) schedule only beats 0..len-2
+                              //                        and silently drop the LAST beat — models the f2sdram
+                              //                        wedging mid-burst (beat 0 delivered, tail lost). This
+                              //                        is the exact event the mem_shim resp_timeout recovery
+                              //                        exists for and that whole-transaction +ddr_drop never
+                              //                        produced; it exercises the burst-recovery paths.
+  integer tail_drop_max;      // +ddr_tail_drop_max=M   cap total tail-drops (default 8) so recovery stalls
+                              //                        (16383 cyc each) don't starve the frame budget.
+  integer burst_rd_count;     // accepted burst reads (len>1), for the period counter
+  integer tail_dropped;
+  integer outage_at;          // +ddr_outage_at=T   RECOVERABLE FULL BEAT OUTAGE (2026-07-15): from
+                              //                    mem_clk cycle T, HOLD all readdatavalid emission
+  integer outage_len;         // +ddr_outage_len=W  for W cycles, then resume. Beats are DEFERRED
+                              //                    (not dropped): countdowns keep ticking, emission
+                              //                    is gated, they flush in seq order afterwards. This
+                              //                    is the ONLY way to make mem_shim's resp_timeout
+                              //                    fire (16383-cycle beat silence with txns
+                              //                    outstanding) — it exercises the burst-recovery
+                              //                    retire path (review 2026-07-15 Bugs 1 & 2). Commands
+                              //                    are still accepted so the shim keeps its state.
 
   initial begin
     rd_latency   = 8;
@@ -177,6 +198,12 @@ module ddr3_model (
     corrupt_hi   = END_OF_MEM[21:0];
     refresh_period = 0;
     refresh_hold   = 0;
+    tail_drop_period = 0;
+    tail_drop_max    = 8;
+    burst_rd_count   = 0;
+    tail_dropped     = 0;
+    outage_at        = 0;
+    outage_len       = 0;
     if ($value$plusargs("ddr_rd_latency=%d", rd_latency));
     if ($value$plusargs("ddr_wait_period=%d", wait_period));
     if ($value$plusargs("ddr_rd_jitter=%d", rd_jitter));
@@ -198,6 +225,10 @@ module ddr3_model (
     if ($value$plusargs("ddr_corrupt_hi=%h", corrupt_hi));
     if ($value$plusargs("ddr_refresh_period=%d", refresh_period));
     if ($value$plusargs("ddr_refresh_hold=%d", refresh_hold));
+    if ($value$plusargs("ddr_tail_drop_period=%d", tail_drop_period));
+    if ($value$plusargs("ddr_tail_drop_max=%d", tail_drop_max));
+    if ($value$plusargs("ddr_outage_at=%d", outage_at));
+    if ($value$plusargs("ddr_outage_len=%d", outage_len));
     if (zero_latency) begin rd_latency = 0; wait_period = 0; rd_jitter = 0; end
     $display("[ddr3_model] rd_latency=%0d wait_period=%0d rd_jitter=%0d zero_latency=%0d",
              rd_latency, wait_period, rd_jitter, zero_latency);
@@ -259,10 +290,19 @@ module ddr3_model (
   // but we support a small depth so the model is not artificially in-lockstep.
   // Each accepted read schedules a response 'lat' cycles out with its data.
   // ---------------------------------------------------------------------------
-  localparam PIPE = 64;            // max outstanding responses tracked
+  localparam PIPE = 64;            // max outstanding response BEATS tracked
   reg        rsp_pending [0:PIPE-1];
   reg [31:0] rsp_countdown[0:PIPE-1];
   reg [63:0] rsp_data     [0:PIPE-1];
+  // BURST support (2026-07-14): one accepted read with ddr3_burstcnt=N schedules N
+  // beats — first at cur_lat, the rest back-to-back (+1 cycle each), data sampled
+  // mem[addr+k] at accept. Beats carry a global sequence number and the drain emits
+  // strictly in sequence order (the f2sdram returns responses strictly in order;
+  // the old lowest-free-slot-index scan could interleave two in-flight bursts).
+  // rsp_last marks the final beat of its transaction (drives rd_responded).
+  reg [31:0] rsp_seq      [0:PIPE-1];
+  reg        rsp_last     [0:PIPE-1];
+  reg [31:0] seq_next;             // next sequence number to assign
   integer    k;
 
   // Address bookkeeping for instrumentation
@@ -340,7 +380,10 @@ module ddr3_model (
         rsp_pending[k]   <= 1'b0;
         rsp_countdown[k] <= 0;
         rsp_data[k]      <= 64'd0;
+        rsp_seq[k]       <= 0;
+        rsp_last[k]      <= 1'b1;
       end
+      seq_next <= 0;
       wq_head <= 0; wq_tail <= 0;
       raw_stale_reads <= 0; wq_overflows <= 0;
       corrupt_rd_count <= 0; corrupt_wr_count <= 0;
@@ -468,50 +511,80 @@ module ddr3_model (
         // read-after-posted-write hazard). Counted + printed for diagnosis.
         if (wr_commit_delay > 0) begin : raw_check
           integer hit;
+          integer rb;
           hit = 0;
           for (j = 0; j < WQ; j = j + 1)
-            if (wq_pending[j] && wq_addr[j] == word_addr) hit = 1;
+            for (rb = 0; rb < ((ddr3_burstcnt == 0) ? 1 : ddr3_burstcnt); rb = rb + 1)
+              if (wq_pending[j] && wq_addr[j] == word_addr + rb[21:0]) hit = 1;
           if (hit) begin
             raw_stale_reads <= raw_stale_reads + 1;
             $display("[ddr3_model %0t] *** RAW-STALE: read word=%h served STALE (posted write in flight; raw_stale=%0d) ***",
                      $time, word_addr, raw_stale_reads+1);
           end
         end
-        // latency = base + optional jitter
+        // latency = base + optional jitter (per TRANSACTION; beats stay contiguous)
         cur_lat = rd_latency;
         if (rd_jitter > 0) cur_lat = rd_latency + (lfsr % (rd_jitter+1));
         if (cur_lat < 1) cur_lat = 1;   // at least 1 cycle: response is registered
-        // find a free pipe slot
+        // schedule burstcnt beats: beat b ready at cur_lat+b, data mem[addr+b]
         begin : alloc
           integer free_slot;
-          free_slot = -1;
-          for (k = 0; k < PIPE; k = k + 1)
-            if (!rsp_pending[k] && free_slot < 0) free_slot = k;
-          if (free_slot < 0) begin
-            $display("[ddr3_model %0t] *** ERROR: response pipe overflow (>%0d outstanding) ***", $time, PIPE);
-          end else begin
-            rsp_pending[free_slot]   <= 1'b1;
-            rsp_countdown[free_slot] <= cur_lat[31:0];
-            if (word_addr > END_OF_MEM[21:0]) begin
-              oob_seen <= 1'b1;
-              rsp_data[free_slot] <= 64'd0;
-              if (do_trace) $display("[ddr3_model %0t] RD OOB word_addr=%h -> 0", $time, word_addr);
-            end else begin
-              // optional read-response bit corruption (+ddr_corrupt_rd, windowed)
-              if (corrupt_rd != 0 && word_addr >= corrupt_lo[21:0] && word_addr <= corrupt_hi[21:0]) begin
-                corrupt_rd_count <= corrupt_rd_count + 1;
-                if (((corrupt_rd_count + 1) % corrupt_rd) == 0) begin
-                  rsp_data[free_slot] <= mem[word_addr] ^ (64'h1 << lfsr[5:0]);
-                  corrupted_rd <= corrupted_rd + 1;
-                  $display("[ddr3_model %0t] *** CORRUPT-RD: word=%h bit=%0d (corrupted_rd=%0d) ***",
-                           $time, word_addr, lfsr[5:0], corrupted_rd+1);
-                end else
-                  rsp_data[free_slot] <= mem[word_addr];
-              end else
-                rsp_data[free_slot] <= mem[word_addr];
+          integer b;
+          integer nbeats;
+          integer sched_beats;           // beats actually scheduled (< nbeats when tail-dropping)
+          reg [PIPE-1:0] taken;          // slots claimed this cycle (rsp_pending is NBA-stale)
+          reg [21:0] beat_addr;
+          nbeats = (ddr3_burstcnt == 0) ? 1 : ddr3_burstcnt;  // burstcnt=0 is illegal Avalon; treat as 1
+          sched_beats = nbeats;
+          // PARTIAL-BURST LOSS: on every tail_drop_period-th burst read, drop the
+          // last beat (schedule nbeats-1). seq_next still advances by nbeats so the
+          // in-order drain never delivers the missing beat — the transaction wedges
+          // until mem_shim's resp_timeout retires it. (Counted, capped.)
+          if (tail_drop_period != 0 && nbeats > 1 && tail_dropped < tail_drop_max) begin
+            burst_rd_count = burst_rd_count + 1;
+            if ((burst_rd_count % tail_drop_period) == 0) begin
+              sched_beats  = nbeats - 1;
+              tail_dropped <= tail_dropped + 1;
+              $display("[ddr3_model %0t] *** TAIL-DROP: burst addr=%h len=%0d — dropping last beat (tail_dropped=%0d) ***",
+                       $time, word_addr, nbeats, tail_dropped + 1);
             end
-            if (do_trace) $display("[ddr3_model %0t] RD accept addr=%h word=%h lat=%0d (issued=%0d)", $time, ddr3_addr, word_addr, cur_lat, rd_issued+1);
           end
+          taken = {PIPE{1'b0}};
+          for (b = 0; b < sched_beats; b = b + 1) begin
+            beat_addr = word_addr + b[21:0];
+            free_slot = -1;
+            for (k = 0; k < PIPE; k = k + 1)
+              if (!rsp_pending[k] && !taken[k] && free_slot < 0) free_slot = k;
+            if (free_slot < 0) begin
+              $display("[ddr3_model %0t] *** ERROR: response pipe overflow (>%0d outstanding beats) ***", $time, PIPE);
+            end else begin
+              taken[free_slot]         = 1'b1;
+              rsp_pending[free_slot]   <= 1'b1;
+              rsp_countdown[free_slot] <= cur_lat[31:0] + b;
+              rsp_seq[free_slot]       <= seq_next + b;
+              rsp_last[free_slot]      <= (b == nbeats - 1);
+              if (beat_addr > END_OF_MEM[21:0]) begin
+                oob_seen <= 1'b1;
+                rsp_data[free_slot] <= 64'd0;
+                if (do_trace) $display("[ddr3_model %0t] RD OOB word_addr=%h -> 0", $time, beat_addr);
+              end else begin
+                // optional read-response bit corruption (+ddr_corrupt_rd, windowed)
+                if (corrupt_rd != 0 && beat_addr >= corrupt_lo[21:0] && beat_addr <= corrupt_hi[21:0]) begin
+                  corrupt_rd_count <= corrupt_rd_count + 1;
+                  if (((corrupt_rd_count + 1) % corrupt_rd) == 0) begin
+                    rsp_data[free_slot] <= mem[beat_addr] ^ (64'h1 << lfsr[5:0]);
+                    corrupted_rd <= corrupted_rd + 1;
+                    $display("[ddr3_model %0t] *** CORRUPT-RD: word=%h bit=%0d (corrupted_rd=%0d) ***",
+                             $time, beat_addr, lfsr[5:0], corrupted_rd+1);
+                  end else
+                    rsp_data[free_slot] <= mem[beat_addr];
+                end else
+                  rsp_data[free_slot] <= mem[beat_addr];
+              end
+            end
+          end
+          seq_next <= seq_next + nbeats;
+          if (do_trace) $display("[ddr3_model %0t] RD accept addr=%h word=%h burst=%0d lat=%0d (issued=%0d)", $time, ddr3_addr, word_addr, nbeats, cur_lat, rd_issued+1);
         end
       end
 
@@ -527,27 +600,49 @@ module ddr3_model (
       //   reorder/drop     : decided when a slot first becomes "ready"
       begin : drain
         integer emitted;
-        integer ready0;            // index of first (in-order) ready slot
-        integer ready1;            // index of second ready slot (for reorder)
+        reg     outage_now;        // this cycle is inside the +ddr_outage window
+        integer ready0;            // ready slot with the SMALLEST sequence number (in-order)
+        integer ready1;            // ready slot with the second-smallest seq (for reorder)
         integer chosen;
         emitted = 0;
         ready0  = -1;
         ready1  = -1;
 
-        // 1) tick down all countdowns; collect up to two ready slots in order.
+        // 1) tick down all countdowns; pick the two lowest-seq ready slots.
+        //    (Sequence order == accept+beat order == the f2sdram's strict
+        //    response order. The old lowest-INDEX scan could interleave beats
+        //    of two in-flight bursts once slots recycle.)
         for (k = 0; k < PIPE; k = k + 1) begin
           if (rsp_pending[k]) begin
             if (rsp_countdown[k] <= 1) begin
-              if (ready0 < 0)      ready0 = k;
-              else if (ready1 < 0) ready1 = k;
+              if (ready0 < 0 || rsp_seq[k] < rsp_seq[ready0]) begin
+                ready1 = ready0;
+                ready0 = k;
+              end else if (ready1 < 0 || rsp_seq[k] < rsp_seq[ready1]) begin
+                ready1 = k;
+              end
             end else begin
               rsp_countdown[k] <= rsp_countdown[k] - 1;
             end
           end
         end
 
+        // 1b) RECOVERABLE FULL OUTAGE: while in the outage window, hold all
+        //     emission (beats stay pending, countdowns already ticked). Countdowns
+        //     saturate at 1 (the ready test is <=1) so no beat is lost; they flush
+        //     in seq order once the window ends. This starves mem_shim of beats ->
+        //     resp_timer saturates -> resp_timeout fires (the recovery path).
+        outage_now = (outage_len != 0) && (post_reset_cycles >= outage_at[31:0])
+                     && (post_reset_cycles < (outage_at[31:0] + outage_len[31:0]));
+        if (outage_now) begin
+          if (post_reset_cycles == outage_at[31:0])
+            $display("[ddr3_model %0t] *** OUTAGE START: holding all beats for %0d cycles (post_reset=%0d) ***",
+                     $time, outage_len, post_reset_cycles);
+        end else if ((outage_len != 0) && (post_reset_cycles == (outage_at[31:0] + outage_len[31:0])))
+          $display("[ddr3_model %0t] *** OUTAGE END: resuming beat delivery (post_reset=%0d) ***", $time, post_reset_cycles);
+
         // 2) emit a pending DUPLICATE first (extra response, contract violation).
-        if (dup_pending && !locked) begin
+        if (dup_pending && !locked && !outage_now) begin
           ddr3_readdatavalid <= 1'b1;
           ddr3_readdata      <= dup_data;
           dup_pending        <= 1'b0;
@@ -557,7 +652,7 @@ module ddr3_model (
         end
 
         // 3) otherwise, normal/non-conformant emission of a ready response.
-        if (!emitted && !locked && ready0 >= 0 &&
+        if (!emitted && !locked && !outage_now && ready0 >= 0 &&
             (late_after_reset == 0 || post_reset_cycles >= late_after_reset[31:0])) begin
           drain_count <= drain_count + 1;
 
@@ -584,7 +679,9 @@ module ddr3_model (
             ddr3_readdatavalid  <= 1'b1;
             ddr3_readdata       <= rsp_data[chosen];
             rsp_pending[chosen] <= 1'b0;
-            rd_responded        <= rd_responded + 1;
+            // rd_responded counts completed TRANSACTIONS (last beat emitted), so
+            // outstanding_now = rd_issued - rd_responded stays txn-granular under bursts.
+            if (rsp_last[chosen]) rd_responded <= rd_responded + 1;
             emitted             = 1;
 
             // DUP: arm a duplicate of this response for next cycle.

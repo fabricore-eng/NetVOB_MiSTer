@@ -1,116 +1,151 @@
-# Handoff — dvd — 2026-07-03 (latest)
+# Handoff — dvd — 2026-07-15 (latest)
 Branch: feat-decoder-bringup   ·   Repo: ~/Dev/fabricore/NetVOB_MiSTer
 
 ## TL;DR
-**Root-caused the #1 open blocker — the CRT "black video" scanout bug — and reproduced it OFFLINE in the
-memshim sim.** It is **display-read starvation under memory latency**, NOT interlace/HALFLINE, NOT decode,
-NOT the mixer FSM. Live-triangulated with the human on the CRT (he set the SuperStation to `direct_video=1`):
-the decoder writes a **correct, detailed frame to DDR** (rendered clean color video), the raster runs (OSD
-is **full-height, not squished** — so the handoff's "fix interlace/HALFLINE" lead is **wrong/moot**), yet the
-video area is **pure flat black**. The display pipeline (framestore→resample→pixel_queue→mixer) can't feed
-one pixel/dot-clock in real time under f2sdram latency → the pixel_queue underruns → the mixer emits its
-default **Y=16,U=V=128 = pure black** (mixer.v:221). Decode is unaffected (no deadline; it just runs slower).
-**Confirmed the lever + quantified it. Implemented + sim-validated one candidate fix (arbiter reprioritization)
-— it is INERT (negative result; the oracle caught it pre-build), reverted.** The remaining fix (display read
-bursting) is bigger; deferred to a focused cycle. RTL tree is clean.
+**Implemented + SIM-VALIDATED the CRT black-video fix: DISPLAY READ BURSTING in `mem_shim.sv`.** The scanout
+black was display-read starvation under f2sdram latency (root-caused 2026-07-03). The lever, quantified last
+session, is words-per-outstanding-transaction — i.e. **bursting**, the only way to beat the throughput ceiling
+inside the ≤5-outstanding HW read cap. Built a burst prefetch engine in the shim; in the memshim sim oracle at
+`+ddr_rd_latency=120` the tv_out peak field mean **recovers 13.5 → 74.9 (= the healthy lat30 baseline of 74.7),
+a full recovery**, with decode bit-exact vs baseline and no regression at lat30. A 5-lens adversarial review
+found **2 real bugs in the recovery (`resp_timeout`) path** — both fixed and re-validated. **NOT yet built on
+dell.** The #1 remaining risk is TIMING/placement (see Watch out). RTL changes are committed to the
+`MiSTer_MPEG2` submodule; sim harness + patch committed to `NetVOB_MiSTer`.
 
-## FIX ATTEMPT THIS SESSION — arbiter reprioritization: INERT (sim-validated negative)
-Hypothesis: reserve the shared read-slots for the real-time display by suppressing the deadline-free decode
-reference reads (`do_fwd`/`do_bwd`) when the display data FIFO is low (`disp_rd_dta_almost_empty`). Implemented
-in `framestore_request.v` (single file, no interface change), sim-validated at lat120/240: **zero change**
-(peak field mean 13.5→13.5). Why it failed: (1) the design's arbiter ALREADY makes display the TOP read
-priority (framestore_request.v:161-176 comment) — reprioritizing is redundant; (2) `[tb hb]` telemetry shows
-`rd-rsp=4` pinned (throttle saturated at 4 outstanding) with `do_disp=0` — display isn't losing an arbitration
-race, it's **throughput-capped**: the display's data+address FIFOs drain together so the guard rarely fired,
-and even if it did, total outstanding reads stay at 4. **Lesson: reprioritization within a fixed outstanding-
-read cap cannot help. The ONLY lever that moved the display was raising the TOTAL cap (ceiling exp 4→8 =
-13.5→45), which is HW-limited to 5 (→18, insufficient).** ⇒ the fix must raise per-slot THROUGHPUT = bursting.
+## What the fix is (mem_shim.sv burst prefetch engine)
+Reads BELOW the vbuf window (frame stores + OSD, `addr < 22'h1C0000`) are issued to DDR3 as **`ddr3_burstcnt=8`
+Avalon bursts** instead of single words. Beat 0 answers the requesting read; all 8 beats land in one of **8
+fully-associative prefetch buffers**. Later reads are served three ways:
+- **HIT** — address falls in a COMPLETED (VALID) buffer → answered from the buffer, **no DDR transaction**.
+- **FORWARD** — address falls in a buffer whose burst is still IN FLIGHT → waits for that exact beat (no
+  duplicate burst issued).
+- **MISS** — issue a fresh burst, evicting a buffer (INVALID → cold-VALID → any; hot-bit protects live display
+  line buffers from motcomp-miss churn, CLOCK-style).
 
-## What this session established (empirically; sim + live HW with the human)
-- **Isolation is airtight.** DDR framestore dump (`/dev/mem 0x30000000`) renders a clean color test pattern
-  (SSIM 0.92 = animated-clip phase floor). UART healthy (`P≈RP`, `VL/BN` nonzero). CRT = pure flat black +
-  a **slightly color-tinted** framework OSD (the human: "right-ish but tinted/shifted" → output/DAC path works;
-  minor component/YPbPr level thing, deferred). So: decode✓, memory-bus✓, output-path✓, **display-readout✗**.
-- **Black mechanism (mixer.v):** emits real pixels only in `displaying` states; else Y=16/U=128/V=128 = black
-  (mixer.v:219-232). Leaves STATE_INIT only on `first_pixel_read = pixel_rd_valid && first-pixel-position`
-  (mixer.v:110). Empty pixel_queue → stuck in STATE_INIT → pure black. Mid-line `pixel_rd_underflow` →
-  STATE_INIT → rest of line black (mixer.v:131,136) — one underflow blanks the whole field (fragile).
-- **Sim reproduces it (the oracle).** `core/sim/memshim` dumps `tv_out_*.ppm` (the mixer's scanout). Peak
-  field brightness **collapses with `+ddr_rd_latency`**: lat30→**74.7**, lat60→42, lat120→**13.5**, lat240→9.2
-  (≈black). At lat240 only the first ~140px of top lines render then underrun→black = the CRT symptom.
-- **Bottleneck = the outstanding-read throttle `READ_LIMIT=4`** (`mem_shim.sv:144`), which gates ALL reads at
-  `outstanding_reads>=4` and is **shared decode+display**. The HPS f2sdram bridge **LOCKS at 6 outstanding**
-  (mem_shim.sv:139-141) → **max HW-safe READ_LIMIT = 5**. Quantified at lat120: `READ_LIMIT 4→13.5, 5→18.1,
-  8→45.5` (need ~74 for clean). **The simple bump to 5 is INSUFFICIENT** (still mostly black). The display
-  needs *effectively* more read throughput than a shared-5 budget provides.
-- **Throughput math** (why): display needs ~1.9M reads/s (720×480 YUV420, burstcnt=1, 8B/read, 30fps).
-  Available = `READ_LIMIT × 108MHz / latency`, *shared with decode*. Under HW latency the shared-4 budget
-  starves the real-time display while deadline-free decode still completes. Bandwidth is fine (~864MB/s peak
-  ≫ ~15MB/s needed) — it's a **latency × outstanding-reads** problem, mem_shim uses `ddr3_burstcnt=1`.
+The display's six interleaved sequential streams (OSD/Y pairs + U-upper/lower + V-upper/lower, per
+`resample_addrgen.v`) then cost **~1 transaction per macroblock instead of 8**; motcomp row pairs cost 1 instead
+of 2-3. Measured hit+fwd rate at lat120 ≈ **80%** of display words served without a DDR round-trip.
 
-## Corrected mental model (supersedes the prior handoff)
-The prior lead ("triangulate then fix syncgen HALFLINE/interlace") is **retired**: under direct_video the OSD
-is full-height (interlace geometry is fine). HALFLINE=0-vs-428 is a **separate** analog-half-line question
-(and `vga_out.sv` provably does NO weave — so IF the analog interlace ever needs fixing, 428 is right for the
-raw-DAC path — but that is NOT the current black-video bug). The prior "mixer STATE_WAIT" story is also not it
-([[mixer-hardening-falsified-field-top-wait]]). The real bug is **memory-pacing starving the DISPLAY client**
-— which the last handoff had listed as an *optional* "only if a smoothness problem is observed" item. It is the
-PRIMARY blocker.
+**The contract it preserves** (from a 5-agent contract audit of `framestore_response.v` / the FIFOs / `emu.sv`):
+`framestore_response` pops one tag + one response word in **positional lockstep** — every read must produce
+**exactly one** `mem_res_wr` word in **exact global request order**, hits and misses alike; one lost/dup/reordered
+word = permanent silent decode wedge. So ALL responses — DDR beat-0s, hits, forwards, ADDR_ERR synthetics,
+timeout recoveries — funnel through **one 16-deep in-order response queue (`rq`)** that is the SOLE driver of
+`mem_res_wr_*`, allocated at request time, drained strictly head-first. (This also fixed a latent pre-existing
+hazard: the old direct ADDR_ERR synthetic path could emit ahead of an outstanding earlier read.)
 
-## Next steps (ranked) — the FIX (reprioritization ruled out; throughput is the lever)
-0. **Cheap diagnostics FIRST (no build), to pick the right big fix:**
-   (a) Add `disp_rd_addr_empty` + the `~mem_req_wr_almost_full/~tag_wr_almost_full` gate to the tb `[pix]` line
-   (tb_memshim.v:706) and rerun lat120 — confirm WHY `do_disp=0`: address-gen-bound (`disp_rd_addr_empty`) vs
-   throttle-bound. If address-gen-bound, a deeper `disp_wr_addr` prefetch (fifo_size DISP_ADDR) may be a lighter fix.
-   (b) [DONE this session — H2 REFUTED] `+ddr_reorder=7 @lat30` had ZERO effect: decode framestore byte-mean
-   identical to baseline AND display peak unchanged (74.7). So the mem_shim response routing IS reorder-robust
-   (the 4-deep CREDIT-queue hardening handles it) — response mis-routing is NOT a contributor. This + the
-   perfect-decode fact (any real drop/reorder would corrupt decode too, but HW decode is flawless) confirms the
-   display-black is PURE THROUGHPUT STARVATION. (Could still test `+ddr_drop`/`+ddr_refresh_period` for the
-   sim-85%→HW-100% gap, but that gap is most simply explained by HW effective latency > sim lat240, not routing.)
-1. **Display read bursting (leading throughput fix).** `ddr3_burstcnt>1` for display reads → N words/read → N×
-   throughput per outstanding slot, HW-safe on outstanding COUNT (stays ≤5). This is the only way to beat the
-   throughput ceiling inside the HW read cap. Bigger change (framestore_request issue + mem_shim burst + response
-   handling; note framestore tiling — burst within a macroblock row where addresses are contiguous). Validate in
-   the sim oracle at lat120/240 (target peak field mean → ~74) BEFORE a build.
-2. **Combine with:** deeper `pixel_queue`/DISP FIFOs + prime the mixer (don't paint until the queue fills) so a
-   single underflow doesn't blank a whole field (mixer.v:131,136). Secondary; won't fix throughput alone.
-3. **RULED OUT (do not repeat):** arbiter reprioritization (display is already top read-priority) — sim-proven
-   inert this session. And a plain READ_LIMIT bump (max HW-safe 5 → only 18 vs ~74 needed).
-4. **After the black is fixed:** the minor OSD color tint (component/YPbPr level) and then audio / A-V sync.
+Key invariants (all from the audit, all honored):
+- Outstanding **transactions** stay ≤ `READ_LIMIT` (raised 4→**5**; HW bridge locks at 6). Beat-vs-transaction
+  counting reworked: `outstanding`/write-gate/`resp_timeout` all count transactions (decrement on last beat).
+- Writes ALWAYS issue `burstcnt=1` (`ddr3_burstcnt` is shared read/write; the f2sdram safe-terminator tracks
+  write bursts and would wedge on a multi-beat write).
+- Bursts are **clamped at the VBUF boundary** (`blen = min(8, VBUF-addr)`) so no burst tail spills into the
+  RAW-guarded vbuf ring. vbuf reads stay single-word on the exact pre-existing RAW-guarded path.
+- An accepted WRITE **invalidates** any buffer whose fetched range covers it (VALID→INVALID; in-flight→killed at
+  completion), computed combinationally so a same-cycle write-vs-completion resolves correctly.
+- Response-fifo overflow-safe: every `rq` entry admitted only while `!mem_res_wr_almost_full` (asserts at ≥64
+  used of 128 → 64 free); committed words bounded by `RQ_DEPTH=16 ≪ 64`.
+- Also raised `MEMTAG_THRESHOLD` 16→**8** (`fifo_size.v`): the 0a diagnostic showed the display starves through
+  the **tag** almost-full gate (tag_af duty 45-78% under HW latency), not the address-gen or data gate. Reserving
+  8 free tag slots (of 32) instead of 16 stops that gate throttling the display; slip is ≤2-3 requests (registered
+  flag) so the tag fifo still can't overflow.
 
-## Reproduce / validate (sim-only, from core/sim/memshim; each iter ~1-2 min, NO FPGA build)
-- Repro the black: `make build && ./run_memshim.sh run_lat240 4 300 -- +ddr_rd_latency=240` → render
-  `run_lat240/tv_out_*.ppm`; peak field mean ≈9 (black). Baseline `+ddr_rd_latency=30` → ~74 (clean picture).
-- Brightness metric (per field, drop the last partial ppm): `Image.convert('L')` histogram mean; "content"
-  fields reach mean ~74 when healthy, collapse to <15 when starved.
-- Lever check (already done): edit `mem_shim.sv:144 READ_LIMIT`, `make build`, rerun at lat120, compare peak
-  mean. 4→13.5, 5→18.1, 8→45.5 (8 is HW-UNSAFE, ceiling reference only). **Revert to 4 after** (done).
-- Gate telemetry: `grep '\[pix' run_*/run.log` shows `do_disp`, `pix_rd_empty`; `[traj]` shows decode mb/frame
-  (at lat240 decode also crawls — lat240 over-stresses; lat90-120 is the "decode-fine, display-starved" regime).
+## 0a diagnostic (did FIRST, as the handoff said) — result
+Added `disp_rd_addr_empty` + do_disp gate-component duty counters to the tb `[gate]` line, reran lat30 vs lat120.
+Verdict: do_disp is **throttle-bound, not address-gen-bound** — `disp_rd_addr_empty` duty was identical at lat30
+and lat120 (address gen keeps up), while `tag_wr_almost_full` duty rose from ~45% (lat30) to **~78% (lat120)**.
+So the display loses at the shared request/tag gate under latency → confirmed a THROUGHPUT fix (bursting +
+tag-threshold), not a deeper disp-addr prefetch. Baselines reproduced exactly: lat30 peak **74.7**, lat120 **13.5**.
 
-## Landmarks (file:line)
-- `core/MiSTer_MPEG2/rtl/mpeg2/mixer.v:110,131,136,219-232` — black-emit + underflow→STATE_INIT fragility.
-- `core/MiSTer_MPEG2/rtl/mpeg2/framestore_request.v:466-486` — mem-client priority (display is HIGH prio) +
-  the `do_disp` gate (`~mem_req_wr_almost_full && ~tag_wr_almost_full`, :480).
-- `core/MiSTer_MPEG2/rtl/mem_shim.sv:139-146` — READ_LIMIT=4 throttle + the 6-outstanding bridge-lock note.
-- `core/MiSTer_MPEG2/rtl/mpeg2/fifo_size.v:34-35,158-177` — FIFO depths/thresholds ("scale threshold with
-  latency"); `PIXEL_DEPTH=10`, `DISP_DTA_DEPTH=8`, `DTA_THRESHOLD=64`.
-- `core/MiSTer_MPEG2/rtl/emu.sv:372-459,510-539` — mpeg2video+mem_shim instantiation, VGA output wiring.
-- `core/MiSTer_MPEG2/rtl/mpeg2/modeline.v:137-155` — NTSC_INTERL, HALFLINE=0 (interlace, separate issue).
-- `core/sim/memshim/` — the oracle (run_memshim.sh, tb_memshim.v telemetry, ddr3_model.v latency knobs).
+## Sim validation (memshim oracle, `core/sim/memshim`, NO FPGA build)
+| run | peak field mean | notes |
+|---|---|---|
+| lat30 baseline (pre-fix) | 74.7 | healthy reference |
+| lat120 baseline (pre-fix) | **13.5** | the black-video repro |
+| **lat120 + fix** | **74.9** | **full recovery** (= baseline) |
+| lat30 + fix | 74.5 | no regression; **decode frames bit-exact** vs baseline (content-hash match) |
+| lat240 + fix | 54 (peak) / 42 mean | was 9.2 (≈black); large improvement under 2× HW latency |
+| lat120 + jitter (±60) | 76.7 | 0 stalls under variable latency |
+| lat120 + ADDR_ERR inject (period 997) | 74.6 | synthetic-response path clean, 0 stalls |
+| lat120 soak (8 frames) | 74.9 | 46 fields, 0 stalls/BUG, cache steady |
+
+Decode is untouched by design (no deadline) and stays bit-exact; the fix only changes WHERE/WHEN display words
+arrive, never how many or in what order. Metric tool: `core/sim/memshim/tv_metric.py` (per-field luma mean;
+content fields reach ~74 healthy, <15 starved).
+
+## Adversarial review (5 lenses) → 2 bugs found + FIXED + re-validated
+All findings clustered in the **`resp_timeout` recovery path** (fires only when the bridge drops responses — the
+historical HW wedge). No default sim exercises it, so these were exactly the rare-path bugs the review targeted.
+1. **CRITICAL (confirmed by full verify, found by 3 lenses):** a FORWARD allocated on the *exact cycle*
+   `resp_timeout` retires its target head transaction was orphaned on a dead tx slot → permanent drain wedge (or
+   wrong-data on tx-slot wrap). The retire's forward-synthesis loop reads pre-edge `rq_state` and can't see the
+   NBA-allocated forward; `pfm_pend` had no `resp_timeout` term (the existing `+rdv_q` guard is 0 on a timeout
+   cycle). **Fix:** exclude the head buffer from `pfm_pend` when `resp_timeout` (mem_shim.sv:244-247) → the read
+   re-fetches (MISS) or holds one cycle instead. Mirrors the existing beat-completion guard.
+2. **minor→real (found by 4 lenses):** timeout beat-0 synthesis keyed on `rq_state[tx_rq[tx_head]]==RQ_MISS`, but
+   after a partial-burst loss (beat 0 arrived, entry drained + recycled through the 16-wrap) that stale rq index
+   can alias a live read's entry and zero it → count desync. **Fix:** added a per-transaction `tx_b0done` bit; the
+   timeout synthesizes the requester only when `!tx_b0done[tx_head]` (unambiguous, no stale deref).
+
+**Adjudicated NOT-fixed (documented residuals, argued against the code):**
+- *Soft-reset with beats in flight* — the decoder does ~491k STATE_CLEAR write cycles before its first read and
+  stale beats drain in <1024 cycles with `tx_count==0`, so the stray-beat guard drops them; the new guard is
+  strictly better than the old shim's unconditional `mem_res_wr_en<=rdv_q`. Not a regression.
+- *Below-VBUF posted-write RAW cached* — pre-existing hazard class (below-VBUF RAW was never guarded); recon-write
+  vs display-read rarely hit the same address (different frame buffers); quality not correctness. Widened modestly
+  by caching; documented, not fixed (a proper fix needs a below-VBUF RAW guard, a bigger change).
+- *Timing / M10K extraction* — build-time observables, see Watch out.
+
+**Recovery-path fixes re-validated in sim (new DDR-model injection knobs):**
+- `+ddr_tail_drop_period=N` (drop a burst's last beat) — 8 partial losses at lat120: **0 stalls, 0 BUG/LOST, 4
+  frames decoded, display 74.8**. (Proves partial loss doesn't wedge/desync; count preserved via the rq.)
+- `+ddr_outage_at/_len` (full recoverable beat outage — the ONLY way to actually FIRE `resp_timeout`; a
+  30k-cycle beat hold during active display, `+ddr_outage_at=3500000 +ddr_outage_len=30000`): **`resp_timeout`
+  fired 6× (`recov=6`), `wedged=0`, 0 stalls/BUG, decode resumed and reached 4 frames.** The recovery path is
+  exercised and the fixed engine recovers cleanly — no permanent wedge, no count desync. (An earlier outage at
+  cycle 2M fired 0 recoveries because it landed in frame-1 decode before display bursting began — no burst txns
+  were outstanding to time out; retriggered during active display.)
+
+## Landmarks (file:line, post-fix)
+- `core/MiSTer_MPEG2/rtl/mem_shim.sv` — the whole burst engine. Header block ~:115. Buffers/rq/tx decls ~:180-210.
+  `pfm_valid`/`pfm_pend` hit logic + eviction :236-283. Reset :440-475. Response drain :484-500. Beat router
+  :517-551. `resp_timeout` retire :552-577. S_IDLE decision (HIT/FWD/MISS/vbuf/ADDR_ERR) :605-720.
+- `core/MiSTer_MPEG2/rtl/mpeg2/fifo_size.v:206` — `MEMTAG_THRESHOLD=9'd8` (also mirrored to sim via the
+  `core/patches/mpeg2fpga-memtag-threshold.patch` + the incdir symlink; and in `core/mpeg2fpga` working tree).
+- `core/sim/memshim/ddr3_model.v` — burst-aware response pipeline (seq-ordered drain, `rsp_last` = txn boundary)
+  + injection knobs `ddr_tail_drop_*` and `ddr_outage_*`.
+- `core/sim/memshim/tb_memshim.v` — `[gate]` (0a duty counters), `[cache]` (hit/fwd/miss/recov/wedged).
+- `core/sim/memshim/tv_metric.py` — the per-field brightness metric (stdlib, no PIL).
+
+## Next steps (ranked)
+0. **BUILD on dell and READ THE TIMING REPORT** (`fabricore:dell-build`; DELL_PROJECT=dvd DELL_TARGET=mpeg2fpga
+   DELL_REPO=NetVOB_MiSTer/core/MiSTer_MPEG2). The engine adds a wide S_IDLE combinational decision cone (8× 22-bit
+   subtract/compare + priority encoders + raw_collides → consumed_a/rd_en) at 108 MHz on a placement-marginal core
+   — timing closure is the real risk, NOT function. If Fmax fails, pipeline the hit-detection: register
+   `saved_addr`-derived `pf_off`/hit vectors one stage ahead of the FSM decision (the request backlog is deep, so
+   +1 latency is free). Check f2sdram bridge placement didn't re-roll (re-verify the decode gate on HW).
+1. **On HW: re-run the bridge lock-probe with bursts.** READ_LIMIT=5 was characterized at burstcnt=1; whether the
+   bridge throttles on TRANSACTIONS or BEATS under bursts is an OPEN question (4-5 × 8-beat = 32-40 beats in
+   flight). If it counts beats, drop `READ_LIMIT` or `BURST_N`. The FPGA side always drains read data
+   (rd_ready tied 1) so beats shouldn't pool, but verify.
+2. **Warm-reboot the board, capture, `tools/verify_frame.sh`** — objective PASS/FAIL vs a reference, not a vision
+   read. Expect the CRT video area to go from flat black → picture.
+3. After the black is fixed: the minor OSD color tint (component/YPbPr level), then audio / A-V sync.
 
 ## Board / setup notes
-- **the human set the SuperStation (mister) to `direct_video=1`** (component-video → his CRT; `vga_scaler=0`).
-  So the core owns 100% of timing; no HDMI capture on mister (only de10 has a capture card). Keep direct_video.
-- Deployed core = `mpeg2fpga_dvd_staticgate.rbf` (HALFLINE=0). Board released, no locks held.
-- Memories: [[scanout-black-display-read-starvation]] (this root cause), [[scanout-blind-spot-ddr-vs-crt]],
-  [[feed-gate-solved-mgl-abspath]] (READ_LIMIT=4 / bridge-lock origin), [[bridge-placement-marginal-root-cause]].
+- SuperStation (mister) is on `direct_video=1` (component → CRT, `vga_scaler=0`); core owns 100% of timing. Keep it.
+- The `MiSTer_MPEG2` submodule working tree still carries **prior-session uncommitted HW changes** (emu.sv,
+  modeline.v, mpeg2fpga.qsf, holdfix.sdc, rld.v, uart_debug.sv, audio_out.v) — that is the deployed-core state, NOT
+  mine; I committed ONLY mem_shim.sv + fifo_size.v. Don't sweep those into a burst-fix commit.
+- Memories: [[scanout-black-display-read-starvation]] (root cause), [[dvd-display-read-bursting-fix]] (this fix).
 
 ## Watch out
-- **READ_LIMIT must stay <6 on HW** (bridge locks at 6). Never ship READ_LIMIT=8 (that was a sim-only ceiling test).
-- **Placement-marginal core:** any netlist change can re-roll the f2sdram bridge placement. Prior rushed fixes
-  to this core repeatedly backfired (3 broken auto-fixes; falsified mixer-resync; HW-stalling gap-fix). Validate
-  in sim first; keep changes minimal; expect to re-verify the decode gate after any RTL change.
-- Do NOT re-chase HALFLINE/interlace or the mixer-resync for the black video — proven not the cause this session.
+- **READ_LIMIT must stay <6 on HW** (bridge locks at 6). Now 5. Never ship the sim-only ceiling test values.
+- **TIMING is the #1 build risk** — placement-marginal core + a new wide decision cone. Sim proves function, not
+  Fmax. Read the timing report; be ready to pipeline hit-detection. Prior rushed fixes to this core backfired 3×;
+  keep changes minimal, re-verify the decode gate after the build.
+- **Burst bridge behavior is HW-unverified:** burstcnt=8 legality + the outstanding-transaction-vs-beat lock
+  question (step 1). The framework itself ships 16/128-beat bursts on sibling f2sdram ports, so burstcnt=8 is
+  representable — but not proof for f2h_sdram1 under this traffic.
+- Do NOT re-attempt arbiter reprioritization (sim-proven inert 2026-07-02) or HALFLINE/mixer-resync (ruled out).
 - Keep the sim MODELINE matched to the clip (NTSC), never PAL.

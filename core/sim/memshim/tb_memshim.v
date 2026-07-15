@@ -689,6 +689,27 @@ module tb_memshim();
       if (mpeg2.pixel_rd_valid_pqueue)  cnt_pixel_rd <= cnt_pixel_rd + 1;
     end
 
+  // 0a DIAGNOSTIC (2026-07-14): WHY is do_disp low? Cumulative duty counters for
+  // each input of the do_disp gate (framestore_request.v:480), sampled @27MHz clk
+  // (framestore_request's domain). Distinguishes address-gen-bound
+  // (disp_rd_addr_empty) from throttle-bound (mem_req/tag almost_full) from
+  // well-fed (disp_wr_dta_almost_full).
+  reg [31:0] cnt_dd_on;        // cycles do_disp asserted
+  reg [31:0] cnt_da_empty;     // disp_rd_addr_empty (display address fifo empty)
+  reg [31:0] cnt_dta_afull;    // disp_wr_dta_almost_full (display data fifo backpressure)
+  reg [31:0] cnt_req_afull;    // mem_req_wr_almost_full (shared request queue backed up)
+  reg [31:0] cnt_tag_afull;    // tag_wr_almost_full
+  always @(posedge clk)
+    if (~rst) begin
+      cnt_dd_on <= 0; cnt_da_empty <= 0; cnt_dta_afull <= 0; cnt_req_afull <= 0; cnt_tag_afull <= 0;
+    end else begin
+      if (mpeg2.framestore.framestore_request.do_disp)                 cnt_dd_on     <= cnt_dd_on + 1;
+      if (mpeg2.framestore.framestore_request.disp_rd_addr_empty)      cnt_da_empty  <= cnt_da_empty + 1;
+      if (mpeg2.framestore.framestore_request.disp_wr_dta_almost_full) cnt_dta_afull <= cnt_dta_afull + 1;
+      if (mpeg2.framestore.framestore_request.mem_req_wr_almost_full)  cnt_req_afull <= cnt_req_afull + 1;
+      if (mpeg2.framestore.framestore_request.tag_wr_almost_full)      cnt_tag_afull <= cnt_tag_afull + 1;
+    end
+
   // trajectory trace: one line per ~1ms of sim time (108K mem cycles)
   reg [31:0] traj_ctr;
   always @(posedge mem_clk) begin
@@ -709,6 +730,22 @@ module tb_memshim();
                  mpeg2.resample.resample_dta.state, mpeg2.resample.resample_bilinear.state,
                  mpeg2.disp_reader.wr_dta_full,
                  mpeg2.framestore.framestore_request.do_disp);
+        // 0a: do_disp gate anatomy — instantaneous inputs + cumulative duty counters (27MHz cycles)
+        $display("[gate %0t] dae=%b dta_af=%b req_af=%b tag_af=%b | dd_on=%0d dae_c=%0d dta_af_c=%0d req_af_c=%0d tag_af_c=%0d",
+                 $time,
+                 mpeg2.framestore.framestore_request.disp_rd_addr_empty,
+                 mpeg2.framestore.framestore_request.disp_wr_dta_almost_full,
+                 mpeg2.framestore.framestore_request.mem_req_wr_almost_full,
+                 mpeg2.framestore.framestore_request.tag_wr_almost_full,
+                 cnt_dd_on, cnt_da_empty, cnt_dta_afull, cnt_req_afull, cnt_tag_afull);
+        // burst prefetch engine stats (mem_shim): hits serve with NO DDR txn,
+        // fwds piggyback an in-flight burst, misses/singles are real txns
+        $display("[cache %0t] hit=%0d fwd=%0d miss=%0d single=%0d tx=%0d rq=%0d recov=%0d wedged=%0d",
+                 $time,
+                 mem_shim_inst.pf_cnt_hit, mem_shim_inst.pf_cnt_fwd,
+                 mem_shim_inst.pf_cnt_miss, mem_shim_inst.pf_cnt_single,
+                 mem_shim_inst.tx_count, mem_shim_inst.rq_count,
+                 mem_shim_inst.recovery_count, mem_shim_inst.wedged);
         // RASTER-CONSUMER (mixer) liveness: is the raster (h_pos/v_pos) still advancing, and why is the mixer parked?
         $display("[mix  %0t] mst=%0d prd_en=%b fpx_rd=%b disp_fpx=%b pos0=%0d h_pos=%0d v_pos=%0d px_en=%b vsync=%b",
                  $time, mpeg2.mixer.state, mpeg2.mixer.pixel_rd_en,
