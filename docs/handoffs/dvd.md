@@ -137,6 +137,12 @@ historical HW wedge). No default sim exercises it, so these were exactly the rar
 - The `MiSTer_MPEG2` submodule working tree still carries **prior-session uncommitted HW changes** (emu.sv,
   modeline.v, mpeg2fpga.qsf, holdfix.sdc, rld.v, uart_debug.sv, audio_out.v) — that is the deployed-core state, NOT
   mine; I committed ONLY mem_shim.sv + fifo_size.v. Don't sweep those into a burst-fix commit.
+- **The burst-fix RTL is a LOCAL submodule commit** (`MiSTer_MPEG2` HEAD `9250f09`, detached HEAD — the same
+  vendoring pattern as the prior "Update MPEG2 core" commits). The submodule's only remote is mrchrisster's
+  UPSTREAM, so it is **not pushed** (and must not be). It reaches dell through the build launcher's `DELL_REPO`
+  sync — a plain `git pull` won't fetch it. The parent `NetVOB_MiSTer` IS pushed (fabricore-eng, feat-decoder-bringup)
+  with the gitlink at `9250f09` + all sim/doc work. So: build from THIS Mac's checkout; the fix is not fetchable
+  on a fresh clone.
 - Memories: [[scanout-black-display-read-starvation]] (root cause), [[dvd-display-read-bursting-fix]] (this fix).
 
 ## Watch out
